@@ -1,0 +1,76 @@
+{
+ "skills": {
+  "code-context-paper-retrieval": {
+   "description": "Retrieves code-context-relevant papers from local knowledge base in two modes (brief/deep), with fixed order paperCollection -> paperAnalysis -> optional paperPDFs. Trigger timing: BEFORE code modification — when agent receives a coding task involving model/method changes, it should ask the user whether to retrieve relevant papers first. Environment detection prioritizes codebase environment files; asks user if none found.",
+   "path": ".claude/skills/code-context-paper-retrieval/SKILL.md"
+  },
+  "idea-focus-coach": {
+   "description": "Guides research ideation from broad thoughts to a focused, testable plan with explicit scope cuts, prioritized hypotheses, and immediate next experiments. Calls papers-query-knowledge-base for local KB evidence and web search for frontier context. Use when the user wants co-creation and step-by-step narrowing, not review verdicts. Can be used independently from reviewer-stress-test.",
+   "path": ".claude/skills/idea-focus-coach/SKILL.md"
+  },
+  "notes-export-share-version": {
+   "description": "Converts internal research notes into shareable Obsidian-friendly Markdown files. Use when the user explicitly asks to make a share version, export a note for sharing, hide knowledge base traces, replace internal wiki links with public paper links, rewrite internal wording for external readers, or generate a content-driven share filename.",
+   "path": ".claude/skills/notes-export-share-version/SKILL.md"
+  },
+  "papers-analyze-pdf": {
+   "description": "Analyzes academic PDFs into structured Markdown under paperAnalysis. Reads local PDFs only (no network, no image generation). Use when the user asks to analyze one PDF or a folder of PDFs, or to run paper analysis for the local knowledge base. Handles path resolution so that if the PDF is already under paperPDFs/<Category>/<Venue_Year>/, the .md is written to paperAnalysis in the same structure; otherwise infers category and venue (e.g. CVPR_2025), copies the PDF into paperPDFs, and writes the .md to paperAnalysis.",
+   "path": ".claude/skills/papers-analyze-pdf/SKILL.md"
+  },
+  "papers-audit-metadata-consistency": {
+   "description": "Runs a unified metadata consistency audit across paperAnalysis logs and analysis notes, checking title/venue/year/category consistency, link/pdf_ref completeness, duplicates, and structure anomalies; writes quality_report_*.md under paperAnalysis.",
+   "path": ".claude/skills/papers-audit-metadata-consistency/SKILL.md"
+  },
+  "papers-build-collection-index": {
+   "description": "Builds/refreshes `paperCollection/` index notes from `paperAnalysis/` frontmatter. Use when the user asks to update/rebuild `paperCollection`, regenerate indexes (by task/technique/venue), or after adding/editing analysis notes and PDF refs.",
+   "path": ".claude/skills/papers-build-collection-index/SKILL.md"
+  },
+  "papers-collect-from-github-awesome": {
+   "description": "Collects paper candidates from a GitHub awesome / curated repo README. Agent fetches the README, analyzes its format, writes a one-off parser, and outputs rows aligned with analysis_log.csv. No pre-built scripts — agent adapts to each repo's format on the fly.",
+   "path": ".claude/skills/papers-collect-from-github-awesome/SKILL.md"
+  },
+  "papers-collect-from-web": {
+   "description": "Collects paper candidates from web URLs by fetching and storing pages locally, then generating a pipe-delimited triage list (status | title | venue&time | paper link | project/github link | category) under `paperAnalysis/`. Use when the user provides URLs + keyword constraints + venue/year and wants a processing list like ICLR_2026.txt.",
+   "path": ".claude/skills/papers-collect-from-web/SKILL.md"
+  },
+  "papers-compare-table": {
+   "description": "Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user asks to compare methods, generate a related-work table, or needs a side-by-side summary of multiple papers.",
+   "path": ".claude/skills/papers-compare-table/SKILL.md"
+  },
+  "papers-download-from-list": {
+   "description": "Uses colocated paper download tools to download, verify, and repair local PDFs according to triage logs (e.g., ICLR_2026.txt) so that `paperPDFs/` stays complete and deduplicated. Use when you have a curated candidate list under `paperAnalysis/` and want all corresponding PDFs downloaded/checked before analysis or collection rebuild.",
+   "path": ".claude/skills/papers-download-from-list/SKILL.md"
+  },
+  "papers-query-knowledge-base": {
+   "description": "Queries the local paper collection and analysis notes for research. Finds papers by task, technique, or venue; summarizes or compares methods; cites core_operator and primary_logic from analysis frontmatter. Use when the user asks to find papers, list papers by topic/technique/venue, compare motion or interaction methods, cite from their paper analyses, or when the workspace contains the local vault (paperCollection, paperAnalysis). Index layer paperCollection (254 papers, 7 tasks, 587 technique tags, 17 venues) links to paperAnalysis notes and PDFs.",
+   "path": ".claude/skills/papers-query-knowledge-base/SKILL.md"
+  },
+  "pdfs-compress-large-files": {
+   "description": "Checks and compresses all PDFs larger than 20 MB under paperPDFs/ using Ghostscript, preserving high quality. Use when the user asks to compress PDFs, reduce PDF sizes, or prepare paperPDFs for analysis. Runs scripts/compress_large_pdfs.py which scans paperPDFs/, compresses in-place with /ebook settings (fallback to /screen), and prints a summary report.",
+   "path": ".claude/skills/pdfs-compress-large-files/SKILL.md"
+  },
+  "research-brainstorm-from-kb": {
+   "description": "Structures and refines research ideas into `paperIDEAs/` notes using the paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based on `paperCollection` + `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.",
+   "path": ".claude/skills/research-brainstorm-from-kb/SKILL.md"
+  },
+  "research-question-bank": {
+   "description": "Given a research direction and rough task description, generates a structured question/challenge list grounded in local KB and web search, covering domain open problems, top-venue reviewer concerns, and actionable research cuts. Saves output to QuestionBank/. Use when the user wants to map out the question landscape for a research area before committing to a specific idea.",
+   "path": ".claude/skills/research-question-bank/SKILL.md"
+  },
+  "research-workflow": {
+   "description": "Unified entry for the research pipeline. Maps current work to one stage (collect/download/analyze/build/query/ideate/compare/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.",
+   "path": ".claude/skills/research-workflow/SKILL.md"
+  },
+  "reviewer-stress-test": {
+   "description": "Runs a strict-but-fair ICLR/CVPR/SIGGRAPH reviewer challenge on idea, roadmap, or full paper, with major-risk diagnostics and actionable repair paths. Use when the user wants high-pressure review questioning instead of brainstorming. Can be used independently from idea-focus-coach.",
+   "path": ".claude/skills/reviewer-stress-test/SKILL.md"
+  },
+  "skill-fit-guard": {
+   "description": "Detects post-invocation skill mismatch patterns, summarizes why they may recur, and asks whether to revise the skill now. Use when a called .claude skill output is clearly unfit for the user intent and similar mismatch is likely to happen again.",
+   "path": ".claude/skills/skill-fit-guard/SKILL.md"
+  },
+  "domain-fork": {
+   "description": "Migrates ResearchFlow's architecture to a new professional domain (e.g. frontend dev, accounting, journalism). Interactive session: confirms domain, generates concept mapping, adapts all skills and folder structure. Explicit trigger only — must be directly invoked by the user.",
+   "path": ".claude/skills/domain-fork/SKILL.md"
+  }
+ }
+}

@@ -1,0 +1,59 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="70" y1="24" x2="1140" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="0.48" stop-color="#132A45"/>
+      <stop offset="1" stop-color="#134E4A"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="170" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#DBEAFE"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="230" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#34D399"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="12" y="12" width="1176" height="296" rx="34" fill="url(#bg)"/>
+  <circle cx="1080" cy="72" r="82" fill="#38BDF8" fill-opacity="0.08"/>
+  <circle cx="1030" cy="250" r="118" fill="#34D399" fill-opacity="0.07"/>
+  <circle cx="188" cy="262" r="92" fill="#60A5FA" fill-opacity="0.08"/>
+
+  <g transform="translate(76 78)">
+    <rect x="0" y="22" width="150" height="112" rx="18" fill="url(#paper)" opacity="0.82"/>
+    <rect x="20" y="0" width="150" height="112" rx="18" fill="url(#paper)" opacity="0.9"/>
+    <rect x="40" y="22" width="150" height="112" rx="18" fill="url(#paper)"/>
+    <rect x="64" y="48" width="102" height="10" rx="5" fill="#0F172A" fill-opacity="0.9"/>
+    <rect x="64" y="68" width="86" height="8" rx="4" fill="#334155" fill-opacity="0.7"/>
+    <rect x="64" y="84" width="95" height="8" rx="4" fill="#334155" fill-opacity="0.55"/>
+    <rect x="64" y="100" width="74" height="8" rx="4" fill="#334155" fill-opacity="0.45"/>
+  </g>
+
+  <g transform="translate(306 136)">
+    <path d="M0 22H154" stroke="url(#accent)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M132 0L154 22L132 44" stroke="url(#accent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(920 82)">
+    <circle cx="82" cy="76" r="30" fill="#0F172A" stroke="#7DD3FC" stroke-width="6"/>
+    <circle cx="24" cy="22" r="18" fill="#0F172A" stroke="#93C5FD" stroke-width="5"/>
+    <circle cx="146" cy="26" r="18" fill="#0F172A" stroke="#6EE7B7" stroke-width="5"/>
+    <circle cx="146" cy="132" r="18" fill="#0F172A" stroke="#F0ABFC" stroke-width="5"/>
+    <circle cx="22" cy="132" r="18" fill="#0F172A" stroke="#FDE68A" stroke-width="5"/>
+    <path d="M36 32L62 56" stroke="#93C5FD" stroke-width="4" stroke-linecap="round"/>
+    <path d="M132 36L104 58" stroke="#6EE7B7" stroke-width="4" stroke-linecap="round"/>
+    <path d="M132 122L104 94" stroke="#F0ABFC" stroke-width="4" stroke-linecap="round"/>
+    <path d="M36 122L60 96" stroke="#FDE68A" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <text x="398" y="126" fill="#F8FAFC" font-family="Verdana, DejaVu Sans, Arial, sans-serif" font-size="54" font-weight="700">
+    ResearchFlow
+  </text>
+  <text x="398" y="174" fill="#CBD5E1" font-family="Verdana, DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600">
+    Agent-ready local research knowledge base
+  </text>
+  <text x="398" y="224" fill="#93C5FD" font-family="Verdana, DejaVu Sans, Arial, sans-serif" font-size="23">
+    collect -&gt; analyze -&gt; build -&gt; assist
+  </text>
+</svg>

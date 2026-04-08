@@ -1,0 +1,74 @@
+[
+  {
+    "query": "MotionFlux rectified flow matching preference alignment motion",
+    "title": "MotionFlux: Efficient Text-Guided Motion Generation through Rectified Flow Matching and Preference Alignment",
+    "alias": "MotionFlux",
+    "arxiv_id": "2508.19527",
+    "project_link": "no",
+    "importance": "B",
+    "category": "Motion_Generation_Text_Speech_Music_Driven",
+    "sort": "Motion_Generation_Text_Speech_Music_Driven",
+    "venue": "arXiv 2025",
+    "require_keywords": ["motion", "rectified flow", "preference"]
+  },
+  {
+    "query": "DualFlow unified multi-modal interactive reactive 3D motion generation rectified flow",
+    "title": "Unified Multi-Modal Interactive & Reactive 3D Motion Generation via Rectified Flow",
+    "alias": "DualFlow",
+    "arxiv_id": "2509.24099",
+    "project_link": "no",
+    "importance": "B",
+    "category": "Human_Human_Interaction",
+    "sort": "Human_Human Interaction",
+    "venue": "arXiv 2025",
+    "require_keywords": ["interactive", "reactive", "motion", "rectified flow"]
+  },
+  {
+    "query": "VersatileMotion unified framework motion synthesis comprehension",
+    "title": "VersatileMotion: A Unified Framework for Motion Synthesis and Comprehension",
+    "alias": "VersatileMotion",
+    "arxiv_id": "2411.17335",
+    "project_link": "no",
+    "importance": "B",
+    "category": "Motion_Generation_Text_Speech_Music_Driven",
+    "sort": "Motion_Generation_Text_Speech_Music_Driven",
+    "venue": "arXiv 2024",
+    "require_keywords": ["motion", "synthesis", "comprehension"]
+  },
+  {
+    "query": "Self-Flow self-supervised flow matching scalable multi-modal synthesis",
+    "title": "Self-Supervised Flow Matching for Scalable Multi-Modal Synthesis",
+    "alias": "Self-Flow",
+    "arxiv_id": "2603.06507",
+    "project_link": "no",
+    "importance": "B",
+    "category": "Video_Generation",
+    "sort": "Video_Generation",
+    "venue": "arXiv 2026",
+    "require_keywords": ["flow matching", "multi-modal", "synthesis"]
+  },
+  {
+    "query": "HunyuanVideo systematic framework for large video generative models",
+    "title": "HunyuanVideo: A Systematic Framework For Large Video Generative Models",
+    "alias": "HunyuanVideo",
+    "arxiv_id": "2412.03603",
+    "project_link": "https://github.com/Tencent/HunyuanVideo",
+    "importance": "B",
+    "category": "Video_Generation",
+    "sort": "Video_Generation",
+    "venue": "arXiv 2024",
+    "require_keywords": ["video", "generative models"]
+  },
+  {
+    "query": "ShareGPT-4o-Image aligning multimodal models with GPT-4o-level image generation Janus-4o",
+    "title": "ShareGPT-4o-Image: Aligning Multimodal Models with GPT-4o-Level Image Generation",
+    "alias": "Janus-4o / ShareGPT-4o-Image",
+    "arxiv_id": "2506.18095",
+    "project_link": "no",
+    "importance": "B",
+    "category": "Image_Generation",
+    "sort": "Image_Generation",
+    "venue": "arXiv 2025",
+    "require_keywords": ["gpt-4o", "image generation", "janus-4o"]
+  }
+]
