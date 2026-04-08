@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./LOGO.jpg" alt="ResearchFlow logo" width="220"/>
+  <img src="./assets/researchflow-logo-transparent.png" alt="ResearchFlow logo" width="420"/>
 </p>
 
 <h1 align="center">ResearchFlow</h1>
@@ -272,9 +272,10 @@ cd ResearchFlow
 
 Optional Obsidian setup:
 
-```bash
-cp -r "obsidian setting" .obsidian
-```
+1. Download the shared Obsidian package from [Google Drive](https://drive.google.com/file/d/1tSEfV6kVI5dViojqZjDU42AYY8viZ0M4/view?usp=sharing).
+2. Unzip it locally.
+3. Rename the extracted folder to `.obsidian`.
+4. Place that `.obsidian` folder at the repository root.
 
 Optional code repository linkage:
 
@@ -313,7 +314,8 @@ ResearchFlow/
 - If analysis notes are added or modified, rebuild the index before using the knowledge base for broader research assistance
 - The main state flow in `analysis_log.csv` is `Wait -> Downloaded -> checked`, with `Missing` and `Skip` as side states
 - Obsidian is optional; the repository still works as a normal local folder for agents
-- The shared `obsidian setting/` template is public-safe and has had private workspace state and share tokens removed
+- The shared Obsidian package is public-safe and has had private workspace state and share tokens removed
+- If the extracted folder is named `obsidian setting`, rename it to `.obsidian` before placing it in the repository root
 
 ## Skill Usage Details
 

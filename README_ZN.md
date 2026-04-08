@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./LOGO.jpg" alt="ResearchFlow logo" width="220"/>
+  <img src="./assets/researchflow-logo-transparent.png" alt="ResearchFlow logo" width="420"/>
 </p>
 
 <h1 align="center">ResearchFlow</h1>
@@ -271,9 +271,10 @@ cd ResearchFlow
 
 可选的 Obsidian 配置：
 
-```bash
-cp -r "obsidian setting" .obsidian
-```
+1. 从 [Google Drive](https://drive.google.com/file/d/1tSEfV6kVI5dViojqZjDU42AYY8viZ0M4/view?usp=sharing) 下载共享的 Obsidian 压缩包。
+2. 在本地解压。
+3. 将解压后的文件夹重命名为 `.obsidian`。
+4. 把这个 `.obsidian` 文件夹放到仓库根目录。
 
 可选的代码仓库联动：
 
@@ -312,7 +313,8 @@ ResearchFlow/
 - 需要使用知识库辅助科研前，如果 analysis note 有新增或修改，就应先 rebuild index，防止 KB 索引滞后
 - `analysis_log.csv` 的论文状态主线是 `Wait -> Downloaded -> checked`，旁支状态为 `Missing` 与 `Skip`
 - Obsidian 是可选的；即使只把仓库当普通本地目录给 agent 使用，也完全可行
-- 仓库里的 `obsidian setting/` 是可公开分享的模板，已经去除了私有 workspace 状态和分享 token
+- 共享的 Obsidian 配置包是可公开分享的模板，已经去除了私有 workspace 状态和分享 token
+- 如果解压后文件夹名是 `obsidian setting`，请先改名为 `.obsidian`，再放到仓库根目录
 
 ## Skill 使用细节
 
