@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./LOGO.png" alt="ResearchFlow logo" width="220"/>
+  <img src="./LOGO.jpg" alt="ResearchFlow logo" width="220"/>
 </p>
 
 <h1 align="center">ResearchFlow</h1>
@@ -288,7 +288,7 @@ ln -s /path/to/ResearchFlow ./ResearchFlow
 ```text
 ResearchFlow/
 ├── AGENTS.md
-├── LOGO.png
+├── LOGO.jpg
 ├── .claude/skills/
 ├── .agents/skills -> ../.claude/skills
 ├── paperAnalysis/

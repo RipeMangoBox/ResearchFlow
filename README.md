@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./LOGO.png" alt="ResearchFlow logo" width="220"/>
+  <img src="./LOGO.jpg" alt="ResearchFlow logo" width="220"/>
 </p>
 
 <h1 align="center">ResearchFlow</h1>
@@ -289,7 +289,7 @@ One code repository can link one ResearchFlow, and multiple code repositories ca
 ```text
 ResearchFlow/
 ├── AGENTS.md
-├── LOGO.png
+├── LOGO.jpg
 ├── .claude/skills/
 ├── .agents/skills -> ../.claude/skills
 ├── paperAnalysis/
