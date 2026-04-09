@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/researchflow-logo-transparent.png" alt="ResearchFlow logo" width="420"/>
+  <img src="./assets/LOGO.png" alt="ResearchFlow logo" width="420"/>
 </p>
 
 <h1 align="center">ResearchFlow</h1>
