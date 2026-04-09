@@ -1,6 +1,6 @@
 # User README (Skill Usage Guide)
 
-[English](User_README.md) | [中文](User_README_ZN.md)
+[English](User_README.md) | [Chinese](User_README_ZN.md)
 
 This file is a **quick skill selection guide**.
 It is navigation-only and does not participate in execution.
@@ -11,7 +11,7 @@ It is navigation-only and does not participate in execution.
 - Collect papers from the web or GitHub: `papers-collect-from-web` / `papers-collect-from-github-awesome`
 - Batch download and repair PDFs: `papers-download-from-list`
 - Analyze PDFs into the KB: `papers-analyze-pdf`
-- Rebuild indexes and search the KB: `papers-build-collection-index` / `papers-query-knowledge-base`
+- Rebuild statistics / navigation pages or search the KB: `papers-build-collection-index` / `papers-query-knowledge-base`
 - Build a paper comparison table: `papers-compare-table`
 - Explore research ideas: `research-brainstorm-from-kb`
 - Generate a question bank for a direction: `research-question-bank`
@@ -55,14 +55,14 @@ It is navigation-only and does not participate in execution.
   - Output: a consistency audit report and quality issue list.
 
 - `papers-build-collection-index`
-  - When to use: analysis notes changed and indexes need refresh.
+  - When to use: analysis notes changed and `paperCollection/` statistics / navigation pages need refresh.
   - Input: frontmatter in `paperAnalysis/`.
   - Output: refreshed `paperCollection/`.
 
 ### 2.2 KB query and code-context retrieval
 
 - `papers-query-knowledge-base`
-  - When to use: you need papers by task, technique, or venue, or want a comparison summary.
+  - When to use: you need papers, evidence, or a comparison summary from the local KB.
   - Input: a research question, optionally with direction and constraints.
   - Output: KB-grounded answers with local evidence.
 
@@ -138,7 +138,7 @@ All skills are triggered either by description matching or explicit invocation. 
 | `pdfs-compress-large-files` | suggestive | Suggest when downloaded PDFs exceed 20 MB |
 | `papers-analyze-pdf` | explicit / suggestive | Suggest after download is complete |
 | `papers-audit-metadata-consistency` | suggestive | Suggest after a batch analysis pass |
-| `papers-build-collection-index` | suggestive | Suggest after analysis is complete |
+| `papers-build-collection-index` | suggestive | Suggest after analysis is complete if refreshed statistics / navigation pages are needed |
 | `papers-query-knowledge-base` | explicit / silent | Explicit for user queries; silent as an internal dependency |
 | `papers-compare-table` | explicit | When the user asks for a comparison |
 | `code-context-paper-retrieval` | explicit / suggestive | Suggest before model- or method-related code edits |
@@ -166,5 +166,6 @@ Trigger mode notes:
 ## 5. Safety note
 
 - Actual routing depends only on `.claude/skills-config.json` and each skill's `SKILL.md`.
+- `.claude/skills` is the maintained source of truth. Run `python3 scripts/setup_shared_skills.py` or `py -3 scripts\setup_shared_skills.py` if you also need `.agents/skills` / `.codex/skills` compatibility aliases.
 - This `User_README.md` is not part of the registry and does not affect execution.
 - `User_README_ZN.md` is also navigation-only and does not affect execution.

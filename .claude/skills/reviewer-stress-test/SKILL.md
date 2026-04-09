@@ -14,7 +14,7 @@ Provide a strong reviewer-mode stress test for:
 - full paper draft
 
 Default strictness is **strong review**.
-The skill must still be fair and must provide repair paths.
+The skill must remain fair and must provide repair paths.
 
 ## Positioning
 
@@ -26,7 +26,7 @@ This is an **evaluative** mode, not a co-creation ideation mode.
 ## Evidence protocol
 
 1. **KB-first**: first ground analysis via `papers-query-knowledge-base`.
-2. **On-demand web checks**: search web only for high-risk or uncertain claims (e.g., novelty/SOTA/parallel work).
+2. **On-demand web checks**: search web only for high-risk or uncertain claims (for example novelty/SOTA/parallel work).
 3. Separate missing evidence from actual invalidity.
 
 ## Mandatory user clarification
@@ -73,4 +73,4 @@ Return structured sections:
 
 ## Independence
 
-本 skill 可独立使用，不依赖 `idea-focus-coach` 或 `research-brainstorm-from-kb` 的输出。用户可以直接带着已成型的 idea、roadmap 或 paper draft 进入 stress-test。
+This skill can be used independently and does not depend on outputs from `idea-focus-coach` or `research-brainstorm-from-kb`. Users can directly bring a formed idea, roadmap, or paper draft into stress testing.

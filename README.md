@@ -1,24 +1,12 @@
-<p align="center">
-  <img src="./assets/LOGO.png" alt="ResearchFlow logo" width="280"/>
-</p>
 
-<h1 align="center">ResearchFlow</h1>
 
-<p align="center"><strong>Semi-automated local research knowledge base and research assistant for paper analysis, ideation, coding, experiments, writing, and publication workflows.</strong></p>
+# ResearchFlow
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README_ZN.md">Chinese</a>
-</p>
+**Semi-automated local research knowledge base and research assistant for paper analysis, ideation, coding, experiments, writing, and publication workflows.**
 
-<p align="center">
-  <img alt="Semi-automated" src="https://img.shields.io/badge/Semi--automated-Research%20Workflow-1f6feb?style=flat-square"/>
-  <img alt="Knowledge base" src="https://img.shields.io/badge/Local-Knowledge%20Base-0f766e?style=flat-square"/>
-  <img alt="Claude Code compatible" src="https://img.shields.io/badge/Claude%20Code-compatible-d97706?style=flat-square"/>
-  <img alt="Codex CLI compatible" src="https://img.shields.io/badge/Codex%20CLI-compatible-7c3aed?style=flat-square"/>
-  <img alt="Obsidian optional" src="https://img.shields.io/badge/Obsidian-optional-475569?style=flat-square"/>
-  <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-111827?style=flat-square"/>
-</p>
+[English](README.md) | [Chinese](README_ZN.md)
+
+
 
 ---
 
@@ -31,10 +19,10 @@ collect paper list -> paper analysis -> build index -> research assist
 It can serve three usage modes at the same time:
 
 - Claude Code / Cursor: via `.claude/skills`
-- Codex CLI: via `AGENTS.md`, which routes into `.claude/skills`
+- Codex CLI: via `AGENTS.md` plus generated `.agents/skills` / `.codex/skills` compatibility aliases
 - Other AI research tools: by directly reading local Markdown, PDFs, and indexes
 
-Its focus is not just "paper management". The real goal is to turn local literature accumulation into an agent-ready knowledge base that can be retrieved, compared, reused for ideation, and linked to a code repository.
+Its focus is not just "paper management". The real goal is to turn local literature accumulation into an agent-ready knowledge base that can be retrieved, compared, reused for ideation, and linked with local codebases while keeping ResearchFlow itself as the active workspace.
 
 ## Domain Fork
 
@@ -56,8 +44,8 @@ You are also welcome to try YourAnyFlow!
 
 - Collect candidate papers for a topic from conference pages, blogs, and GitHub awesome repositories
 - Turn local PDFs into structured paper analysis notes with reusable fields such as `core_operator`, `primary_logic`, tags, venue, and year
-- Automatically rebuild indexes organized by task, technique, and venue
-- After `build index`, use the knowledge base for comparison, question lists, idea generation, reviewer-style critique, and paper retrieval before implementation
+- Automatically rebuild `paperCollection/` pages for statistics, Obsidian navigation, and backlink-friendly browsing
+- Use `paperAnalysis/` as the main agent-facing retrieval and evidence layer for comparison, question lists, idea generation, reviewer-style critique, and paper retrieval before implementation
 - Let multiple agents, research projects, and code repositories reuse the same local knowledge base
 
 ## Usage Examples
@@ -175,9 +163,9 @@ I designed a new motion representation in @paperIDEAs/2026-10-10_new_motion_repr
 Please act like a top-tier conference reviewer, point out the main weaknesses of the current plan, its overlap with related work, the core evaluation criteria, and major risks, and write the result back into the markdown file.
 ```
 
-### 5. Link the knowledge base with a code repository
+### 5. Link a code repository into the knowledge-base workspace
 
-After linking `./ResearchFlow` into a code repository, the agent can retrieve relevant papers before changing code, which makes the implementation more faithful to the idea or roadmap.
+Link the target codebase under `linkedCodebases/` inside ResearchFlow. This keeps ResearchFlow as the active workspace, so Claude Code and Codex can still discover the shared skills while the agent retrieves relevant papers before changing code.
 
 ```text
 /code-context-paper-retrieval
@@ -200,8 +188,8 @@ ResearchFlow can serve as a high-quality local knowledge base and be combined wi
 /papers-query-knowledge-base
 Treat `ResearchFlow/` as the shared research memory and evidence layer for multiple agents in this project.
 Follow these conventions while working:
-- start retrieval from `paperCollection/`
-- then look for evidence in `paperAnalysis/`
+- start retrieval from `paperAnalysis/`
+- use `paperCollection/` only when you want statistics, overview pages, or Obsidian navigation / backlink exploration
 - write new question lists into `QuestionBank/`
 - write new research ideas into `paperIDEAs/`
 - if the local knowledge base already covers the relevant papers, do not restate the whole literature chain from scratch
@@ -211,24 +199,28 @@ Follow these conventions while working:
 
 ## Core Workflow
 
-| Phase | Goal | Main outputs |
-| --- | --- | --- |
-| Collect paper list | Collect candidate papers from web pages or GitHub lists | candidate list aligned with the local workflow |
-| Paper analysis | Download PDFs and convert them into structured analysis notes | `paperPDFs/`, `paperAnalysis/`, `analysis_log.csv` |
-| Build index | Rebuild retrieval entries from analysis notes | `paperCollection/` organized by task, technique, and venue |
-| Research assist | Query, compare, generate ideas, run reviewer stress tests, and connect to code | answers, tables, `QuestionBank/`, `paperIDEAs/`, implementation plans |
 
-`Download` belongs to the intake stage between collect and analysis, but from the repository perspective, the four steps above are the core mainline.
+| Phase              | Goal                                                                           | Main outputs                                                          |
+| ------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Collect paper list | Collect candidate papers from web pages or GitHub lists                        | candidate list aligned with the local workflow                        |
+| Paper analysis     | Download PDFs and convert them into structured analysis notes                  | `paperPDFs/`, `paperAnalysis/`, `analysis_log.csv`                    |
+| Build index        | Rebuild statistics / navigation pages from analysis notes                       | `paperCollection/` organized by task, technique, and venue            |
+| Research assist    | Query, compare, generate ideas, run reviewer stress tests, and connect to code | answers, tables, `QuestionBank/`, `paperIDEAs/`, implementation plans |
 
-## How Research Assist Works After `build index`
 
-Once `paperCollection/` is built, ResearchFlow is no longer just a paper archive directory.
+`Download` belongs to the intake stage between collect and analysis. For agent retrieval, `paperAnalysis/` is the primary source; `build index` mainly refreshes the generated `paperCollection/` pages for statistics and Obsidian-side navigation.
 
-| Layer | Main directories | Role |
-| --- | --- | --- |
-| Retrieval layer | `paperCollection/` | Quickly find candidate papers by task, technique, and venue |
-| Evidence layer | `paperAnalysis/` | Provides structured depth such as operators, logic, links, and tags |
-| Output layer | `QuestionBank/`, `paperIDEAs/`, linked code repositories | Turns knowledge into question lists, ideas, implementation plans, and code decisions |
+## How `paperAnalysis` and `paperCollection` Work Together
+
+Once `paperAnalysis/` accumulates structured notes, ResearchFlow is no longer just a paper archive directory. `paperCollection/` can then be regenerated as a companion layer for statistics and Obsidian-friendly navigation.
+
+
+| Layer           | Main directories                                   | Role                                                                                 |
+| --------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Agent-facing evidence layer | `paperAnalysis/`                       | Primary retrieval and evidence layer for agents, with structured fields such as operators, logic, links, and tags |
+| Statistics / navigation layer | `paperCollection/`                   | Generated overview pages for task / technique / venue statistics, Obsidian jumps, and backlink exploration |
+| Output layer    | `QuestionBank/`, `paperIDEAs/`, `linkedCodebases/` | Turns knowledge into question lists, ideas, implementation plans, and code decisions |
+
 
 Based on the interaction of these three layers, several forms of research assist naturally emerge:
 
@@ -250,41 +242,95 @@ ResearchFlow ships with `.claude/skills`, so tools that support this convention 
 ResearchFlow also supports Codex CLI in two layers:
 
 - `AGENTS.md` is the stable Codex entry point for repo-level instructions
-- the actual reusable workflow definitions live in `.claude/skills/`
-- when a task matches a workflow, Codex should open the corresponding `.claude/skills/<skill>/SKILL.md`
+- `scripts/setup_shared_skills.py` creates `.agents/skills`, `.agents/skills-config.json`, `.codex/skills`, and `.codex/skills-config.json` as compatibility aliases pointing to the same `.claude/skills` source of truth
+- on macOS/Linux the script uses symlinks; on Windows it uses directory junctions plus a hard-linked config file
 
-This keeps one canonical skill library in normal tracked files, which works for GitHub clones, Windows setups without symlink support, and GitHub ZIP downloads.
+This keeps one canonical skill library while still giving Claude Code and Codex the compatibility paths they expect on different platforms.
 
 ### Other AI Research Tools
 
 Even without skill support, this repository still works directly as a local knowledge base:
 
-- start from `paperCollection/` for coarse retrieval
-- enter `paperAnalysis/` for detailed evidence
+- start from `paperAnalysis/` for agent-facing retrieval and evidence
+- use `paperCollection/` only if you want overview pages, statistics, or Obsidian-style navigation
 - open `paperPDFs/` when deeper verification is needed
-- write outputs into `QuestionBank/`, `paperIDEAs/`, or linked code repositories
+- write outputs into `QuestionBank/`, `paperIDEAs/`, or code repositories linked under `linkedCodebases/`
 
 ## Quick Start
+
+For the minimum working setup, complete Step 1 and Step 2 first. Step 3 and Step 4 are optional add-ons.
+
+### 1. Clone the repository
+
+Clone ResearchFlow and enter the workspace root:
 
 ```bash
 git clone https://github.com/<your-username>/ResearchFlow.git
 cd ResearchFlow
 ```
 
-Optional Obsidian setup:
+### 2. Initialize shared skills for Claude Code and Codex
+
+This step keeps `.claude/skills` as the only maintained skill library while automatically exposing the same files to Codex-compatible paths.
+
+macOS / Linux:
+
+```bash
+python3 scripts/setup_shared_skills.py
+```
+
+Windows:
+
+```powershell
+py -3 scripts\setup_shared_skills.py
+```
+
+### 3. Optional: Add the shared Obsidian setup
+
+Use this if you want the recommended Obsidian workspace configuration.
 
 1. Download the shared Obsidian package from [Google Drive](https://drive.google.com/file/d/1tSEfV6kVI5dViojqZjDU42AYY8viZ0M4/view?usp=sharing).
 2. Unzip it locally.
 3. Rename the extracted folder to `.obsidian`.
 4. Place that `.obsidian` folder at the repository root.
 
-Optional code repository linkage:
+### 4. Optional: Link an external code repository
+
+Use this when you want to keep ResearchFlow as the active workspace while making one or more local codebases available under `linkedCodebases/`.
+
+Recommended automated setup:
+
+macOS / Linux:
 
 ```bash
-ln -s /path/to/ResearchFlow ./ResearchFlow
+python3 scripts/link_codebase.py /path/to/your-codebase
 ```
 
-One code repository can link one ResearchFlow, and multiple code repositories can share the same ResearchFlow.
+Windows:
+
+```powershell
+py -3 scripts\link_codebase.py C:\path\to\your-codebase
+```
+
+Custom alias under `linkedCodebases/`:
+
+```bash
+python3 scripts/link_codebase.py /path/to/your-codebase --name your-codebase
+```
+
+Manual fallback:
+
+```bash
+ln -s /path/to/your-codebase linkedCodebases/your-codebase
+```
+
+Windows PowerShell fallback:
+
+```powershell
+New-Item -ItemType Junction -Path .\linkedCodebases\your-codebase -Target C:\path\to\your-codebase
+```
+
+One ResearchFlow can host links to multiple codebases while staying the workspace that exposes Claude/Codex skills.
 
 ## Repository Structure
 
@@ -293,28 +339,35 @@ ResearchFlow/
 ├── AGENTS.md
 ├── LOGO.png
 ├── .claude/skills/
+├── .claude/skills-config.json
+├── .agents/
+│   └── skills/                  # generated by scripts/setup_shared_skills.py
+├── .codex/
+│   └── skills/                  # generated by scripts/setup_shared_skills.py
 ├── paperAnalysis/
 │   └── analysis_log.csv
 ├── paperCollection/
 ├── paperPDFs/
 ├── QuestionBank/
 ├── paperIDEAs/
+├── linkedCodebases/
 ├── scripts/
 └── obsidian setting/
 ```
 
-- `paperCollection/` is the retrieval entry layer
-- `paperAnalysis/` is the main knowledge layer
+- `paperCollection/` is the generated statistics / navigation layer
+- `paperAnalysis/` is the main agent-facing knowledge and retrieval layer
 - `QuestionBank/` and `paperIDEAs/` are downstream research output layers
+- `linkedCodebases/` stores local symlinks or junctions to external code repositories
 - `scripts/` stores maintenance and automation utilities
 - `.claude/skills/User_README.md` and `.claude/skills/User_README_ZN.md` provide the quickest bilingual skill map
 
 ## Notes
 
-- If analysis notes are added or modified, rebuild the index before using the knowledge base for broader research assistance
+- If analysis notes are added or modified and you want refreshed `paperCollection/` pages, rebuild the index
 - The main state flow in `analysis_log.csv` is `Wait -> Downloaded -> checked`, with `Missing` and `Skip` as side states
 - Obsidian is optional; the repository still works as a normal local folder for agents
-- For Codex, prefer `AGENTS.md` + `.claude/skills/` over any symlink-based `.agents/` mirror
+- If `.agents/skills` or `.codex/skills` is missing, rerun `scripts/setup_shared_skills.py`
 - The shared Obsidian package is public-safe and has had private workspace state and share tokens removed
 - If the extracted folder is named `obsidian setting`, rename it to `.obsidian` before placing it in the repository root
 

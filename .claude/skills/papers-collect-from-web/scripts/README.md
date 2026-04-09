@@ -16,11 +16,11 @@ python3 ".claude/skills/papers-collect-from-web/scripts/collect_from_urls.py" \
 
 ## Output columns (pipe-delimited)
 
-`状态 | title | 会议&时间 | paper link | project link/github link | 文章分类`
+`state | title | venue&time | paper link | project link/github link | category`
 
 Notes:
-- `状态` defaults to `Wait`. Use `--status checked` if you want.
-- `文章分类` is intentionally left blank for per-item manual fill.
+- `state` defaults to `Wait`. Use `--status checked` if needed.
+- `category` is intentionally left blank for per-item manual fill.
 
 ## Where HTML is stored
 
@@ -31,6 +31,5 @@ Fetched pages are stored under:
 ## Tips for better extraction
 
 - Prefer pages that already contain direct arXiv/OpenReview links.
-- Run per-source URL separately if one page is too noisy.
+- Run each source URL separately if one page is too noisy.
 - Tighten `--include/--exclude` keywords to reduce false positives.
-

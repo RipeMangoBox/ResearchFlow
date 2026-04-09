@@ -7,119 +7,119 @@ description: Given a research direction and rough task description, generates a 
 
 ## Purpose
 
-用户给出一个研究方向和粗略任务描述，agent 通过检索本地论文知识库（`paperCollection` + `paperAnalysis`）和 web 搜索，生成该领域的结构化问题/挑战清单，覆盖：
+Given a research direction and rough task description, the agent retrieves evidence from the local paper knowledge base (primarily `paperAnalysis`, with `paperCollection` only for statistics/navigation support) plus web search, and generates a structured question/challenge list covering:
 
-1. 领域核心开放问题
-2. 顶会审稿人关注视角
-3. 可执行的研究切口
+1. Core open problems in the domain
+2. Top-venue reviewer concern perspectives
+3. Executable research entry points
 
-产出保存到 `QuestionBank/` 目录，作为长期可复用的问题资产。
+Output is saved under `QuestionBank/` as a long-term reusable question asset.
 
 ## Positioning
 
-- 这是一个**问题发现**工具，不是 idea 生成工具（那是 `research-brainstorm-from-kb`）
-- 不是审稿模拟（那是 `reviewer-stress-test`）
-- 定位：idea 之前的上游——先搞清楚"这个方向有哪些值得问的问题"，再决定做哪个
+- This is a **question discovery** tool, not an idea generation tool (that is `research-brainstorm-from-kb`)
+- It is not reviewer simulation (that is `reviewer-stress-test`)
+- Position in pipeline: upstream of ideation — first clarify "what questions are worth asking in this direction," then choose what to build
 
 ## Input
 
-用户提供：
-- **研究方向**：如"human motion generation"、"multi-modal interaction"、"video diffusion evaluation"
-- **粗略任务描述**（可选）：如"想做 text-to-motion 的评测改进"、"想探索 interaction-aware generation"
-- **目标 venue**（可选）：如 CVPR、ICLR、SIGGRAPH（影响审稿人视角的侧重）
+User provides:
+- **Research direction**: for example "human motion generation", "multi-modal interaction", "video diffusion evaluation"
+- **Rough task description** (optional): for example "improve text-to-motion evaluation", "explore interaction-aware generation"
+- **Target venue** (optional): for example CVPR, ICLR, SIGGRAPH (influences reviewer perspective emphasis)
 
 ## Knowledge Protocol
 
-1. **KB-first**：通过 `papers-query-knowledge-base` 检索本地知识库
-   - 按 `by_task/` 定位该方向已有论文
-   - 按 `by_technique/` 识别主流技术路线
-   - 读取相关 `paperAnalysis/` 的 `core_operator`、`primary_logic` 提取方法共性与差异
-2. **Web supplement**：搜索该方向最新进展
-   - 近 1-2 年顶会 accepted papers 趋势
-   - 知名团队的最新工作方向
-   - 公开的 reviewer comments / OpenReview discussions（如有）
-3. **综合生成**：基于 KB 证据 + web 信息，生成问题清单
+1. **KB-first**: retrieve from local KB via `papers-query-knowledge-base`
+   - Prioritize title, task path, tags, venue, year, `core_operator`, `primary_logic` in `paperAnalysis/`
+   - Read `core_operator` and `primary_logic` from relevant `paperAnalysis/` to extract method commonalities and differences
+   - Reference `paperCollection/` only when overview pages/statistics/Obsidian navigation aid is needed
+2. **Web supplement**: search latest progress in this direction
+   - Trends in accepted papers at top venues over the last 1-2 years
+   - Latest direction shifts from leading teams
+   - Public reviewer comments / OpenReview discussions (if available)
+3. **Synthesis**: generate the question list based on KB evidence + web information
 
 ## Output Structure
 
-生成的 Markdown 文件遵循以下结构：
+Generated Markdown should follow this structure:
 
 ```markdown
 ---
 created: {{ISO_DATE}}
 updated: {{ISO_DATE}}
-direction: {{研究方向}}
+direction: {{ResearchDirection}}
 tags:
   - question-bank
-  - {{方向标签}}
+  - {{DirectionTag}}
 ---
 
-# Question Bank: {{研究方向}}
+# Question Bank: {{ResearchDirection}}
 
-> 基于 paperCollection + paperAnalysis 本地知识库检索与 web 搜索生成。
+> Generated from local knowledge-base retrieval primarily on `paperAnalysis` plus web search; `paperCollection` is referenced only when statistics/navigation support is needed.
 
-## 一、领域核心开放问题
+## 1. Core open problems in the domain
 
-按子领域/子任务分组，每个问题附：
-- 问题陈述（1-2 句）
-- 为什么重要（1 句）
-- 当前进展概况（引用 KB 中的论文或 web 来源）
+Group by sub-domain/sub-task. For each question include:
+- question statement (1-2 sentences)
+- why it matters (1 sentence)
+- current progress snapshot (cite KB papers or web sources)
 
-## 二、顶会审稿人关注视角
+## 2. Top-venue reviewer concern perspectives
 
-按审稿维度组织（参考目标 venue 的评审标准）：
+Organize by review dimensions (aligned with target venue standards):
 
 ### 2.1 Novelty & Non-triviality
-- 审稿人会问的典型问题
-- 该方向常见的"看似新实则不新"陷阱
+- typical reviewer questions
+- common "looks new but is not" traps in this direction
 
 ### 2.2 Technical Soundness
-- 该方向常见的技术漏洞
-- 容易被质疑的假设
+- common technical weaknesses in this direction
+- assumptions that are easily challenged
 
 ### 2.3 Experimental Rigor
-- 该方向的 baseline 共识与争议
-- 评测指标的已知缺陷
-- 常被要求的 ablation 类型
+- baseline consensus and debates in this direction
+- known flaws of evaluation metrics
+- ablation types commonly requested by reviewers
 
 ### 2.4 Significance & Impact
-- 审稿人对该方向的"疲劳点"（什么类型的工作已经太多）
-- 什么样的贡献更容易被认可
+- reviewer fatigue points (what kind of work is already oversaturated)
+- what contributions are more likely to be recognized
 
-## 三、可执行研究切口
+## 3. Executable research cuts
 
-基于上述问题，给出 3-5 个具体的研究切口建议：
-- 切口描述（1-2 句）
-- 对应的核心问题（引用上方编号）
-- 预估难度与所需资源
-- 最小验证方案
+Based on the questions above, provide 3-5 concrete research-cut suggestions:
+- cut description (1-2 sentences)
+- corresponding core question(s) (reference IDs above)
+- estimated difficulty and required resources
+- minimum validation plan
 
-## 四、问题模板（可复用）
+## 4. Reusable question templates
 
-提供 5-7 个通用问题模板，用户未来遇到新想法时可直接套用。
+Provide 5-7 general question templates users can reuse when exploring new ideas later.
 ```
 
-## File Naming & Storage
+## File Naming and Storage
 
-- 目录：`QuestionBank/`（位于仓库根目录）
-- 文件名：`YYYY-MM-DD_<topic>.md`
-  - `YYYY-MM-DD`：创建日期，如 `2026-04-08`
-  - `<topic>`：英文小写 + 下划线，如 `motion_generation`、`video_diffusion_evaluation`
-  - 完整示例：`2026-04-08_motion_generation.md`
-- 如果同日同 topic 文件已存在：追加新的分节，不覆盖已有内容
+- Directory: `QuestionBank/` (under repository root)
+- Filename: `YYYY-MM-DD_<topic>.md`
+  - `YYYY-MM-DD`: creation date, e.g. `2026-04-08`
+  - `<topic>`: lowercase English with underscores, e.g. `motion_generation`, `video_diffusion_evaluation`
+  - Example: `2026-04-08_motion_generation.md`
+- If same-date same-topic file already exists: append new sections instead of overwriting
 
 ## Workflow
 
-1. 接收用户的方向和任务描述
-2. 通过 `papers-query-knowledge-base` 检索本地 KB
-3. Web 搜索补充最新进展和审稿人视角
-4. 按 Output Structure 生成问题清单
-5. 写入 `QuestionBank/` 目录
-6. 向用户汇报：生成了多少问题、覆盖了哪些维度、建议优先关注哪几个
+1. Receive user direction and task description
+2. Retrieve local KB via `papers-query-knowledge-base`
+3. Use web search to supplement latest progress and reviewer perspectives
+4. Generate the question list following the Output Structure
+5. Write under `QuestionBank/`
+6. Report back: number of questions generated, covered dimensions, and recommended priorities
 
 ## Boundaries
 
-- 不生成具体的 idea 或方案（那是 `research-brainstorm-from-kb` 和 `idea-focus-coach` 的职责）
-- 不做审稿模拟打分（那是 `reviewer-stress-test` 的职责）
-- 不依赖特定项目代码或实验结果
-- 问题清单应保持方向级别的通用性，不绑定到用户的某个具体项目
+- Do not generate specific ideas or full plans (that belongs to `research-brainstorm-from-kb` and `idea-focus-coach`)
+- Do not run reviewer scoring simulation (that belongs to `reviewer-stress-test`)
+- Do not depend on project-specific code or experiment results
+- Keep the question list at direction level (generalizable), not bound to a single user project

@@ -69,31 +69,30 @@ Typical items to remove or rewrite:
 - `[[paperAnalysis/...|...]]`
 - internal folder paths
 - `Local Reading`
-- `本地 PDF`
+- `local PDF`
 - `paperAnalysis`
 - `paperCollection`
 - `knowledge base`
-- `知识库`
-- wording like `路径：`, `本地索引：`, `对应本地论文：`
+- wording like `path:`, `local index:`, `local paper mapping:`
 
 Rewrite them into external-reader-friendly phrasing, for example:
 
-- `对应论文：` → `代表论文：`
-- `路径：` → `论文：`
-- `知识库里可见` → `相关工作中可以看到`
-- `我这里把它归类为` → `可以将其归入`
+- `mapped paper:` → `representative paper:`
+- `path:` → `paper:`
+- `visible in the knowledge base` → `seen in related work`
+- `I classify this as` → `this can be categorized as`
 
 ### Step 5: Rewrite wording for external readers
 
-The share version should sound like a polished research note, not a personal working memo.
+The share version should read like a polished research note, not a personal working memo.
 
-Rewrite when needed to:
+Rewrite where needed to:
 
 - remove references to personal workflow
-- remove references to local collections or folders
+- remove references to local collections/folders
 - make transitions smoother
-- reduce “我这里/我会/我在知识库里” style phrasing
-- keep the analysis content and conclusions intact
+- reduce first-person workflow phrasing
+- keep analysis content and conclusions intact
 
 Preferred tone:
 
@@ -109,9 +108,9 @@ Unless the user says otherwise, add a short 3-sentence abstract near the top.
 Use this structure:
 
 ```md
-> 这篇笔记聚焦……
-> 核心整理了……
-> 如果只想快速把握主线，优先看……
+> This note focuses on ...
+> It summarizes ...
+> If you only want the main thread quickly, start with ...
 ```
 
 Keep it short and useful for forwarding.
@@ -130,22 +129,22 @@ Rules:
 
 - numbered list
 - abbreviation first, then full title
-- use the same public URL as the body citation when possible
+- reuse the same public URL as body citation when possible
 - deduplicate repeated papers
-- preserve reading order when reasonable; otherwise group by first appearance
+- preserve reading order when practical; otherwise group by first appearance
 
 ### Step 8: Validate markdown formatting
 
-After edits, run a markdown lint check on the exported file.
-Fix any introduced formatting problems.
+After edits, run markdown lint on the exported file.
+Fix any introduced formatting issues.
 
 ## Editing policy
 
 When transforming a note:
 
 - prefer editing a generated share copy rather than the source note
-- keep the original structure unless sharing readability clearly improves with light restructuring
-- do not remove substantive analytical content unless it only exists to describe internal tooling or note organization
+- keep original structure unless readability clearly improves with light restructuring
+- do not remove substantive analysis unless it only describes internal tooling or note organization
 
 ## Decision rules
 
@@ -153,20 +152,20 @@ When transforming a note:
 
 Still do the following:
 
-- verify filename matches the share rule
+- verify filename follows share rule
 - verify all paper links are public
 - verify a `References` section exists
 - verify no internal traces remain
 
 ### If a paper link cannot be found
 
-Use a stable fallback in this order:
+Use this fallback order:
 
 1. venue paper page
 2. arXiv
 3. project page
 
-Never leave an internal wiki link in the share version.
+Never leave internal wiki links in the share version.
 
 ## Example transformations
 
@@ -203,17 +202,17 @@ vq-codebook-motion-text-alignment-survey_share.md
 Before:
 
 ```md
-路径：[[...|MoMask]]
+path: [[...|MoMask]]
 ```
 
 After:
 
 ```md
-论文：[MoMask](https://arxiv.org/abs/2312.00063)
+paper: [MoMask](https://arxiv.org/abs/2312.00063)
 ```
 
 ## Notes
 
 - This skill is for **share export**, not for building or exposing the internal knowledge base.
-- Internal resources may be used to resolve links, but must not be exposed in the final exported note.
-- Keep the final note Obsidian-friendly, but ensure all citations are standard shareable Markdown links.
+- Internal resources may be used to resolve links, but must not be exposed in final exported notes.
+- Keep the final note Obsidian-friendly, while ensuring all citations are standard shareable Markdown links.

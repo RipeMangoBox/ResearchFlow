@@ -5,9 +5,7 @@ task: Motion_Generation_Text_Speech_Music_Driven
 tags:
   - paperCollection
   - index/task
-generated: 2026-04-06T23:55
-created: 2026-04-06T23:55
-updated: 2026-04-06T23:55
+generated: 2026-04-09T19:19
 ---
 
 # Task: Motion_Generation_Text_Speech_Music_Driven

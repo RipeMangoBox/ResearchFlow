@@ -23,11 +23,11 @@ Default behavior:
 
 Use this skill only when the user explicitly asks for a share version, such as:
 
-- “做分享版”
-- “导出分享稿”
-- “给别人看的版本”
-- “隐藏 knowledge base”
-- “把内部笔记清洗成可分享版本”
+- "make a share version"
+- "export a share draft"
+- "version for external readers"
+- "hide knowledge base traces"
+- "clean internal notes into a shareable version"
 
 Do not apply automatically for normal note editing.
 

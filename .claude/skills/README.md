@@ -1,5 +1,8 @@
 ## ResearchFlow Skills Overview
 
+Single source of truth: keep the maintained skill library in `.claude/skills`.
+If you also want Codex-compatible paths, run `python3 scripts/setup_shared_skills.py` on macOS/Linux or `py -3 scripts\setup_shared_skills.py` on Windows to generate `.agents/skills` and `.codex/skills` aliases without copying.
+
 This skills directory supports the local paper workflow covering **collect -> download -> analyze -> build -> query -> compare -> ideate -> focus -> review**.
 
 ### 1. Workflow entry
@@ -23,12 +26,12 @@ This skills directory supports the local paper workflow covering **collect -> do
 - **papers-audit-metadata-consistency**
   - Audit consistency between logs and analysis notes.
 - **papers-build-collection-index**
-  - Rebuild `paperCollection/` from `paperAnalysis/` frontmatter.
+  - Rebuild `paperCollection/` from `paperAnalysis/` frontmatter for statistics, Obsidian navigation, and backlink-friendly browsing.
 
 ### 3. KB query and code context
 
 - **papers-query-knowledge-base**
-  - Query the knowledge base by task, technique, and venue.
+  - Query the knowledge base primarily from `paperAnalysis/`, with `paperCollection/` as optional navigation support.
 - **papers-compare-table**
   - Generate structured comparison tables for multiple papers.
 - **code-context-paper-retrieval**
@@ -64,7 +67,7 @@ This skills directory supports the local paper workflow covering **collect -> do
 - Need candidate papers from a GitHub curated repository -> `papers-collect-from-github-awesome`
 - Already have candidate rows and need PDFs -> `papers-download-from-list`
 - Already have PDFs and need analysis notes -> `papers-analyze-pdf`
-- Changed or added notes and need indexes -> `papers-build-collection-index`
+- Changed or added notes and want refreshed statistics / navigation pages -> `papers-build-collection-index`
 - Need a metadata quality pass -> `papers-audit-metadata-consistency`
 - Need to search, compare, or cite papers -> `papers-query-knowledge-base`
 - Need a side-by-side comparison table -> `papers-compare-table`

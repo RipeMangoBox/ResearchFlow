@@ -4,7 +4,7 @@ updated: 2026-03-17T19:54
 ---
 # paper_collector_online
 
-Generate triage lists like `paperAnalysis/ICLR_2026.txt` by fetching web pages, saving the HTML locally, extracting paper candidates, and writing a pipe-delimited list.
+Generate triage lists like `paperAnalysis/ICLR_2026.txt` by fetching web pages, saving HTML locally, extracting paper candidates, and writing a pipe-delimited list.
 
 ## Quick start
 
@@ -20,15 +20,14 @@ python3 ".claude/skills/papers-collect-from-web/scripts/paper_collector_online/c
 
 ## Output columns
 
-`状态 | title | 会议&时间 | paper link | project link/github link | 文章分类`
+`state | title | venue&time | paper link | project link/github link | category`
 
 Notes:
-- `状态` defaults to `Wait` (use `--status checked` if you want).
-- `文章分类` is left blank for per-item manual fill.
+- `state` defaults to `Wait` (use `--status checked` if you want).
+- `category` is left blank for per-item manual fill.
 
 ## Where HTML is stored
 
 Default:
 
 `paperSources/<venue_time>_<timestamp>/...`
-

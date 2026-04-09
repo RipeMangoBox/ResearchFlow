@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import re
 import subprocess
@@ -48,20 +49,43 @@ def sanitize_filename(name: str, max_len: int = 120) -> str:
     return s
 
 
-def parse_frontmatter(md_text: str) -> Dict[str, object]:
-    lines = md_text.splitlines()
+def parse_frontmatter_bounds(lines: List[str]) -> Optional[Tuple[int, int]]:
     if not lines or not FRONTMATTER_BOUNDARY.match(lines[0]):
-        return {}
-
-    # locate closing boundary
-    end_idx = None
+        return None
     for i in range(1, len(lines)):
         if FRONTMATTER_BOUNDARY.match(lines[i]):
-            end_idx = i
-            break
-    if end_idx is None:
+            return (0, i)
+    return None
+
+
+def parse_inline_list(raw: str) -> Optional[List[str]]:
+    s = raw.strip()
+    if not (s.startswith("[") and s.endswith("]")):
+        return None
+    inner = s[1:-1].strip()
+    if inner == "":
+        return []
+    try:
+        row = next(csv.reader([inner], skipinitialspace=True))
+    except Exception:
+        return None
+    out: List[str] = []
+    for it in row:
+        x = it.strip()
+        if (x.startswith('"') and x.endswith('"')) or (x.startswith("'") and x.endswith("'")):
+            x = x[1:-1].strip()
+        if x:
+            out.append(x)
+    return out
+
+
+def parse_frontmatter(md_text: str) -> Dict[str, object]:
+    lines = md_text.splitlines()
+    bounds = parse_frontmatter_bounds(lines)
+    if not bounds:
         return {}
 
+    _, end_idx = bounds
     fm_lines = lines[1:end_idx]
     data: Dict[str, object] = {}
 
@@ -113,12 +137,29 @@ def parse_frontmatter(md_text: str) -> Dict[str, object]:
 
         # inline scalar
         val = rest.strip()
+        if key == "tags":
+            inline_list = parse_inline_list(val)
+            if inline_list is not None:
+                data[key] = inline_list
+                i += 1
+                continue
         if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
             val = val[1:-1]
         data[key] = val
         i += 1
 
     return data
+
+
+def extract_frontmatter_and_body(md_text: str) -> Tuple[Dict[str, object], str]:
+    lines = md_text.splitlines()
+    bounds = parse_frontmatter_bounds(lines)
+    if not bounds:
+        return {}, md_text
+    _, end_idx = bounds
+    fm = parse_frontmatter(md_text)
+    body = "\n".join(lines[end_idx + 1 :])
+    return fm, body
 
 
 def infer_task(fm: Dict[str, object], analysis_rel: str) -> str:
@@ -133,33 +174,90 @@ def infer_task(fm: Dict[str, object], analysis_rel: str) -> str:
     return "Uncategorized"
 
 
-def infer_technique_tags(fm: Dict[str, object], task: str) -> Tuple[str, ...]:
-    tags = fm.get("tags")
-    if not isinstance(tags, list):
-        return tuple()
+def normalize_tag_value(raw: str, task: str) -> Optional[str]:
+    s = str(raw).strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    if not s:
+        return None
+    if s.startswith("#"):
+        s = s[1:].strip()
+    if not s:
+        return None
+    if s == task:
+        return None
+    if s.startswith("status/"):
+        return None
+    return s
+
+
+def split_scalar_tags(raw: str) -> List[str]:
+    s = raw.strip()
+    if not s:
+        return []
+    # Prefer hashtag tokens when present, otherwise comma split fallback.
+    hash_tokens = [m.group(0) for m in re.finditer(r"(?<![\w/])#[A-Za-z0-9][A-Za-z0-9_\-/]*", s)]
+    if hash_tokens:
+        return hash_tokens
+    if "," in s:
+        return [p.strip() for p in s.split(",") if p.strip()]
+    return [s]
+
+
+def extract_body_hashtags(body_text: str) -> List[str]:
     out: List[str] = []
-    for t in tags:
-        s = str(t).strip()
-        # Normalize common YAML scalar quoting in list items.
-        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
-            s = s[1:-1].strip()
-        # YAML tags should not include leading '#', but some notes may.
-        # Normalize so technique tags are consistent with Obsidian-style rendering.
-        if s.startswith("#"):
-            s = s[1:].strip()
-        if not s or s == task:
+    in_fence = False
+    for raw_line in body_text.splitlines():
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
             continue
-        if s.startswith("status/"):
+        if in_fence:
             continue
-        out.append(s)
-    # keep original order but unique
+
+        # skip markdown heading lines
+        if re.match(r"^\s{0,3}#{1,6}\s+", line):
+            continue
+
+        # remove inline code spans
+        cleaned = re.sub(r"`[^`]*`", " ", line)
+        # remove markdown link anchors like ](#section)
+        cleaned = re.sub(r"\]\(#.*?\)", " ", cleaned)
+
+        for m in re.finditer(r"(?<![\w/])#([A-Za-z0-9][A-Za-z0-9_\-/]*)", cleaned):
+            out.append(m.group(1))
+    return out
+
+
+def infer_technique_tags(fm: Dict[str, object], task: str, body_text: str = "") -> Tuple[str, ...]:
+    tags_raw = fm.get("tags")
+    candidates: List[str] = []
+
+    if isinstance(tags_raw, list):
+        candidates.extend(str(x) for x in tags_raw)
+    elif isinstance(tags_raw, str):
+        inline_list = parse_inline_list(tags_raw)
+        if inline_list is not None:
+            candidates.extend(inline_list)
+        else:
+            candidates.extend(split_scalar_tags(tags_raw))
+
+    if body_text:
+        candidates.extend(extract_body_hashtags(body_text))
+
+    out: List[str] = []
     seen = set()
-    uniq: List[str] = []
-    for t in out:
-        if t not in seen:
-            seen.add(t)
-            uniq.append(t)
-    return tuple(uniq)
+    for c in candidates:
+        s = normalize_tag_value(c, task)
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return tuple(out)
 
 
 def read_text(path: Path) -> str:
@@ -175,7 +273,7 @@ def load_papers() -> List[Paper]:
     for md_path in iter_analysis_mds():
         rel = md_path.relative_to(VAULT_ROOT).as_posix()
         text = read_text(md_path)
-        fm = parse_frontmatter(text)
+        fm, body = extract_frontmatter_and_body(text)
         title = str(fm.get("title") or md_path.stem).strip()
         venue = str(fm.get("venue") or "").strip() or "UnknownVenue"
         year = str(fm.get("year") or "").strip() or "UnknownYear"
@@ -187,7 +285,7 @@ def load_papers() -> List[Paper]:
             continue
 
         task = infer_task(fm, rel)
-        tech = infer_technique_tags(fm, task)
+        tech = infer_technique_tags(fm, task, body)
 
         papers.append(
             Paper(
@@ -271,23 +369,23 @@ def build_readme(papers: List[Paper], now: str) -> str:
     lines.append("")
     lines.append("# paperCollection")
     lines.append("")
-    lines.append("这个目录由脚本自动从 `paperAnalysis/` 生成索引页，用于 **分类阅读** 与 **知识库入口层**。")
+    lines.append("This directory is auto-generated from `paperAnalysis/` and is used for **statistical overview**, **Obsidian jumps**, and **backlink-friendly browsing**.")
     lines.append("")
     lines.append("## Start here")
     lines.append("")
     lines.append(f"- {md_link('paperCollection/_AllPapers.md', 'All papers (grouped)')}")
-    lines.append("- 按任务（Task）")
+    lines.append("- By task")
     for t in tasks:
         lines.append(f"  - {md_link(f'paperCollection/by_task/{sanitize_filename(t)}.md', t)}")
-    lines.append("- 按技术（Technique tags）")
+    lines.append("- By technique (Technique tags)")
     lines.append(f"  - {md_link('paperCollection/by_technique/_Index.md', 'Technique index')}")
-    lines.append("- 按会议/期刊（Venue）")
+    lines.append("- By venue/journal")
     lines.append(f"  - {md_link('paperCollection/by_venue/_Index.md', 'Venue index')}")
     lines.append("")
     lines.append("## Notes")
     lines.append("")
-    lines.append("- 本索引默认只链接，不嵌入 PDF（避免页面过重）。")
-    lines.append("- `paperAnalysis` 才是主内容；`paperCollection` 是便于检索与聚合的入口层。")
+    lines.append("- This index links out by default and does not embed PDFs (to avoid heavy pages).")
+    lines.append("- `paperAnalysis` is the primary agent-facing content layer; `paperCollection` is mainly for statistics, navigation, and aggregated browsing.")
     lines.append("")
     lines.append("## Counts")
     lines.append("")
@@ -407,11 +505,13 @@ def build_technique_page(technique: str, papers: List[Paper], now: str) -> str:
     for p in papers:
         alias = f"{p.title} ({p.venue} {p.year})"
         ana = md_link(p.analysis_rel, alias)
+        task_link = md_link(f'paperCollection/by_task/{sanitize_filename(p.category)}.md', p.category)
+        tags_text = format_tech_tags(p.tags)
         if p.pdf_ref:
             pdf = md_link(p.pdf_ref, "PDF")
-            lines.append(f"- {ana} · {pdf} · task: {md_link(f'paperCollection/by_task/{sanitize_filename(p.category)}.md', p.category)}")
+            lines.append(f"- {ana} · {pdf} · task: {task_link} · techniques: {tags_text}")
         else:
-            lines.append(f"- {ana} · task: {md_link(f'paperCollection/by_task/{sanitize_filename(p.category)}.md', p.category)}")
+            lines.append(f"- {ana} · task: {task_link} · techniques: {tags_text}")
     lines.append("")
     return "\n".join(lines)
 
@@ -569,4 +669,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

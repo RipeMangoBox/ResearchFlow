@@ -7,54 +7,55 @@ description: Generates structured comparison tables for N papers from paperAnaly
 
 ## Purpose
 
-从 `paperAnalysis/` 的结构化 frontmatter 中提取关键字段，生成论文对比表。适用于：
+Extract key fields from structured frontmatter and content in `paperAnalysis/` to generate paper comparison tables. Typical use cases:
 
-- 写 Related Work 时需要方法对比
-- 选 baseline 时需要横向比较
-- 向导师/合作者汇报时需要快速概览
+- method comparison for Related Work writing
+- horizontal comparison when selecting baselines
+- quick overviews for advisor/collaborator updates
 
 ## Input
 
-用户提供以下任一形式：
+The user may provide any of the following:
 
-1. **论文标题列表**：直接给出 N 篇论文标题
-2. **查询条件**：如"所有 Motion Generation 的 CVPR 2025 论文"（通过 `papers-query-knowledge-base` 先检索再生成表格）
-3. **paperAnalysis 路径列表**：直接指定 `.md` 文件路径
+1. **Paper title list**: directly provide N paper titles
+2. **Query condition**: e.g., "all Motion Generation papers from CVPR 2025" (retrieve with `papers-query-knowledge-base` first, then generate the table)
+3. **paperAnalysis path list**: directly provide `.md` file paths
 
-可选参数：
-- `--fields`：指定对比字段（默认见下方）
-- `--format`：输出格式，`markdown`（默认）或 `csv`
-- `--output`：输出文件路径（默认输出到对话中，不写文件）
+Optional parameters:
+- `--fields`: comparison fields to include (defaults below)
+- `--format`: output format, `markdown` (default) or `csv`
+- `--output`: output file path (default is in-chat output; no file write)
 
 ## Default comparison fields
 
-从每篇论文的 `paperAnalysis/*.md` frontmatter 和正文中提取：
+Extract from each `paperAnalysis/*.md` frontmatter and body:
 
-| 字段 | 来源 | 说明 |
+| Field | Source | Description |
 |------|------|------|
-| Title | frontmatter `title` | 论文标题 |
-| Venue | frontmatter `venue` + `year` | 如 CVPR 2025 |
-| Category | frontmatter `category` | 任务类别 |
-| Core Operator | frontmatter `core_operator` | 核心方法一句话 |
-| Primary Logic | frontmatter `primary_logic` | 输入→处理→输出流 |
-| Key Contribution | Part II 正文 | 1-2 句核心贡献 |
-| Dataset | Part III 或 frontmatter | 使用的数据集 |
-| Metrics | Part III 或 frontmatter | 评测指标 |
+| Title | frontmatter `title` | paper title |
+| Venue | frontmatter `venue` + `year` | e.g., CVPR 2025 |
+| Category | frontmatter `category` | task category |
+| Core Operator | frontmatter `core_operator` | one-line core method |
+| Primary Logic | frontmatter `primary_logic` | input→process→output flow |
+| Key Contribution | Part II body | 1-2 sentence core contribution |
+| Dataset | Part III or frontmatter | datasets used |
+| Metrics | Part III or frontmatter | evaluation metrics |
 
-用户可通过 `--fields` 选择子集或添加自定义字段。
+Users can select a subset with `--fields` or add custom fields.
 
 ## Workflow
 
-1. **定位论文**：根据用户输入，在 `paperAnalysis/` 中找到对应的 `.md` 文件。
-   - 如果用户给的是标题，先在 `paperCollection/_AllPapers.md` 中匹配，再定位到 analysis note。
-   - 如果用户给的是查询条件，先调用 `papers-query-knowledge-base` 获取候选列表。
-2. **提取字段**：读取每篇 `.md` 的 YAML frontmatter（`title`, `venue`, `year`, `core_operator`, `primary_logic`, `category`, `pdf_ref`）。
-3. **补充正文字段**：如需 Key Contribution / Dataset / Metrics，从 Part II / Part III 正文中提取。
-4. **生成表格**：按指定格式输出。
+1. **Locate papers**: find matching `.md` files under `paperAnalysis/`.
+   - If input is titles, match titles in `paperAnalysis/` first.
+   - If overview/navigation help is needed, reference `paperCollection/`.
+   - If input is query conditions, call `papers-query-knowledge-base` to get candidates first.
+2. **Extract fields**: read YAML frontmatter (`title`, `venue`, `year`, `core_operator`, `primary_logic`, `category`, `pdf_ref`).
+3. **Extract body fields**: if needed, read Key Contribution / Dataset / Metrics from Part II / Part III.
+4. **Generate table**: output in the requested format.
 
 ## Output contract
 
-### Markdown 表格（默认）
+### Markdown table (default)
 
 ```markdown
 | Paper | Venue | Core Operator | Primary Logic | Dataset | Metrics |
@@ -63,30 +64,30 @@ description: Generates structured comparison tables for N papers from paperAnaly
 | Paper B | ICLR 2026 | ... | ... | ... | ... |
 ```
 
-### CSV（可选）
+### CSV (optional)
 
-逗号分隔，首行为表头，适合导入 Excel / Google Sheets。
+Comma-separated with header row; suitable for Excel / Google Sheets import.
 
 ## Constraints
 
-- 最多一次对比 **20 篇**论文（超过时提示用户缩小范围）
-- 如果某篇论文的 analysis note 不存在，在表格中标注 `[未分析]` 并跳过
-- 不自动生成新的 analysis note（那是 `papers-analyze-pdf` 的职责）
+- Compare at most **20 papers** per run (if exceeded, ask the user to narrow scope)
+- If an analysis note is missing for a paper, mark `[Not analyzed]` in the table and skip it
+- Do not auto-generate new analysis notes (that is `papers-analyze-pdf` responsibility)
 
 ## Typical usage
 
-### 1) 对比特定论文
+### 1) Compare specific papers
 
-> "帮我对比 InterMoE、TIMotion、Interact2Ar 这三篇 interaction 论文"
+> "Compare InterMoE, TIMotion, and Interact2Ar for interaction"
 
-### 2) 按条件批量对比
+### 2) Batch comparison by condition
 
-> "把所有 Motion Generation 类别的 ICLR 2026 论文做个对比表"
+> "Build a comparison table for all ICLR 2026 papers in Motion Generation"
 
-### 3) 自定义字段
+### 3) Custom fields
 
-> "对比这五篇论文，只要 title、core_operator 和 dataset"
+> "Compare these five papers with only title, core_operator, and dataset"
 
-### 4) 输出到文件
+### 4) Save to file
 
-> "生成对比表并保存到 paperAnalysis/compare_motion_gen_2026.md"
+> "Generate the comparison table and save to paperAnalysis/compare_motion_gen_2026.md"

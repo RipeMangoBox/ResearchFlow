@@ -12,7 +12,7 @@ def parse_wrong_log(path: Path) -> list[tuple[str, Path, str]]:
     Parse wrong_download.txt lines into (title, local_pdf_path, pdf_url).
 
     Each non-comment, non-empty line is expected to have the format:
-      论文名 | 本地PDF路径 | 原始pdf链接 | 问题说明
+      paper_title | local_pdf_path | original_pdf_url | issue_note
     """
     results: list[tuple[str, Path, str]] = []
 
@@ -87,4 +87,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

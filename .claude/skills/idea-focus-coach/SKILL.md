@@ -63,4 +63,4 @@ Return structured sections:
 
 ## Independence
 
-本 skill 可独立使用，不依赖 `research-brainstorm-from-kb` 或 `reviewer-stress-test` 的输出。用户可以直接带着模糊想法进入 focus 流程。同样，focus 的输出可以（但不必须）传递给 `reviewer-stress-test` 做进一步质询。
+This skill can be used independently and does not depend on outputs from `research-brainstorm-from-kb` or `reviewer-stress-test`. Users can directly bring fuzzy ideas into the focus flow. Likewise, focus output can (but does not have to) be passed to `reviewer-stress-test` for further challenge.

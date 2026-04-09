@@ -57,82 +57,86 @@ def discover_logs() -> List[Path]:
     return sorted(logs, key=lambda x: x.name.lower())
 
 
+def has_analysis_notes() -> bool:
+    if not PAPER_ANALYSIS.exists():
+        return False
+    return any(PAPER_ANALYSIS.rglob("*.md"))
+
+
 def detect_stage(preferred_log: Path | None) -> str:
     logs = discover_logs()
     target_logs = [preferred_log] if preferred_log else logs
     target_logs = [p for p in target_logs if p and p.exists()]
 
     if not target_logs:
+        if has_analysis_notes():
+            return "query"
         return "collect"
 
     total_wait = sum(count_wait_entries(p) for p in target_logs)
     if total_wait > 0:
         return "download"
 
-    # no wait entries; if collection index missing, build next
-    if not (PAPER_COLLECTION / "README.md").exists() or not (PAPER_COLLECTION / "_AllPapers.md").exists():
-        return "build"
-
-    # index exists; query is the natural default
+    # query can run directly from paperAnalysis; build is optional
     return "query"
 
 
 def stage_spec(stage: str, mode: str, log_hint: str) -> Dict[str, object]:
     if stage == "collect":
         return {
-            "inputs": "URLs 或 GitHub repo URL + venue/year + include/exclude",
-            "outputs": "paperAnalysis/*.txt 或 paperAnalysis/github_awesome_*.xlsx",
+            "inputs": "URLs or GitHub repo URL + venue/year + include/exclude",
+            "outputs": "paperAnalysis/*.txt or paperAnalysis/github_awesome_*.xlsx",
             "commands": [
-                "使用 /papers-collect-from-web 或 /papers-collect-from-github-awesome",
+                "Use /papers-collect-from-web or /papers-collect-from-github-awesome",
             ],
             "next": "download",
         }
     if stage == "download":
         log = log_hint or "paperAnalysis/ICLR_2026.txt"
         return {
-            "inputs": "triage/log 文件（含 Wait 条目）",
-            "outputs": "paperPDFs/** + log 状态更新",
+            "inputs": "triage/log file (contains Wait entries)",
+            "outputs": "paperPDFs/** + log state updates",
             "commands": [
-                "使用 /papers-download-from-list",
-                f'或执行: python3 ".claude/skills/papers-download-from-list/scripts/paper_download_tools/download_wait_papers.py" --log "{log}" --out-root "paperPDFs"',
+                "Use /papers-download-from-list",
+                f'Or run: python3 ".claude/skills/papers-download-from-list/scripts/paper_download_tools/download_wait_papers.py" --log "{log}" --out-root "paperPDFs"',
             ],
             "next": "analyze",
         }
     if stage == "analyze":
         return {
-            "inputs": "PDF 路径或 Wait 队列",
+            "inputs": "PDF path or Wait queue",
             "outputs": "paperAnalysis/**/*.md",
             "commands": [
-                "使用 /papers-analyze-pdf",
-                "注意: analyze 结束后仅提示下一步 build，不自动 build",
+                "Use /papers-analyze-pdf",
+                "Note: after analyze you can go directly to query; run build only if statistics/navigation pages are needed",
             ],
-            "next": "build",
+            "next": "query (or optional build)",
         }
     if stage == "build":
         return {
-            "inputs": "paperAnalysis 已有结构化 md",
-            "outputs": "paperCollection/README.md, _AllPapers.md, by_task/, by_technique/, by_venue/",
+            "inputs": "paperAnalysis already has structured markdown notes",
+            "outputs": "paperCollection/README.md, _AllPapers.md, by_task/, by_technique/, by_venue/ (statistics/navigation pages)",
             "commands": [
-                "使用 /papers-build-collection-index",
-                '或执行: python3 "scripts/build_paper_collection.py"',
+                "Use /papers-build-collection-index",
+                'Or run: python3 ".claude/skills/papers-build-collection-index/scripts/build_paper_collection.py"',
             ],
             "next": "query",
         }
     if stage == "query":
         return {
-            "inputs": "任务描述/关键词（可选 changed files）",
-            "outputs": f"检索结果（{mode}）+ 论文路径/analysis 路径/PDF 建议",
+            "inputs": "task description/keywords (optional changed files)",
+            "outputs": f"retrieval results ({mode}) + paper paths/analysis paths/PDF suggestions",
             "commands": [
-                "使用 /papers-query-knowledge-base",
-                f"或使用 /code-context-paper-retrieval（mode={mode}）",
+                "Use /papers-query-knowledge-base",
+                f"Or use /code-context-paper-retrieval (mode={mode})",
             ],
             "next": "ideate",
         }
     return {
-        "inputs": "研究问题",
+        "inputs": "research question",
         "outputs": "paperIDEAs/YYYY-MM-DD_<topic>.md",
         "commands": [
-            "使用 /research-brainstorm-from-kb",
+            "Use /research-brainstorm-from-kb",
         ],
         "next": "(end)",
     }
@@ -143,16 +147,16 @@ def render(stage: str, mode: str, log_hint: str) -> str:
     lines: List[str] = []
     lines.append("## Research Workflow Entry")
     lines.append("")
-    lines.append(f"- 当前阶段: {stage}")
-    lines.append(f"- 输入要求: {spec['inputs']}")
-    lines.append(f"- 产出路径: {spec['outputs']}")
+    lines.append(f"- Current stage: {stage}")
+    lines.append(f"- Input requirements: {spec['inputs']}")
+    lines.append(f"- Output paths: {spec['outputs']}")
     lines.append("")
-    lines.append("### 推荐执行")
+    lines.append("### Recommended actions")
     for i, cmd in enumerate(spec["commands"], start=1):
         lines.append(f"{i}. {cmd}")
     lines.append("")
-    lines.append(f"- 下一阶段建议: {spec['next']}")
-    lines.append("- 状态集合: collect / download / analyze / build / query / ideate")
+    lines.append(f"- Suggested next stage: {spec['next']}")
+    lines.append("- Stage set: collect / download / analyze / build / query / ideate")
     return "\n".join(lines)
 
 

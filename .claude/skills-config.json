@@ -1,7 +1,7 @@
 {
  "skills": {
   "code-context-paper-retrieval": {
-   "description": "Retrieves code-context-relevant papers from local knowledge base in two modes (brief/deep), with fixed order paperCollection -> paperAnalysis -> optional paperPDFs. Trigger timing: BEFORE code modification — when agent receives a coding task involving model/method changes, it should ask the user whether to retrieve relevant papers first. Environment detection prioritizes codebase environment files; asks user if none found.",
+   "description": "Retrieves code-context-relevant papers from local knowledge base in two modes (brief/deep), using paperAnalysis as the primary retrieval source and paperPDFs for optional deeper reading. paperCollection is optional and mainly serves statistics, Obsidian navigation, and backlink exploration. Trigger timing: BEFORE code modification — when agent receives a coding task involving model/method changes, it should ask the user whether to retrieve relevant papers first. Environment detection prioritizes codebase environment files; asks user if none found.",
    "path": ".claude/skills/code-context-paper-retrieval/SKILL.md"
   },
   "idea-focus-coach": {
@@ -41,7 +41,7 @@
    "path": ".claude/skills/papers-download-from-list/SKILL.md"
   },
   "papers-query-knowledge-base": {
-   "description": "Queries the local paper collection and analysis notes for research. Finds papers by task, technique, or venue; summarizes or compares methods; cites core_operator and primary_logic from analysis frontmatter. Use when the user asks to find papers, list papers by topic/technique/venue, compare motion or interaction methods, cite from their paper analyses, or when the workspace contains the local vault (paperCollection, paperAnalysis). Index layer paperCollection (254 papers, 7 tasks, 587 technique tags, 17 venues) links to paperAnalysis notes and PDFs.",
+   "description": "Queries the local paperAnalysis notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes or compares methods; cites core_operator and primary_logic from analysis frontmatter. paperCollection is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.",
    "path": ".claude/skills/papers-query-knowledge-base/SKILL.md"
   },
   "pdfs-compress-large-files": {
@@ -49,7 +49,7 @@
    "path": ".claude/skills/pdfs-compress-large-files/SKILL.md"
   },
   "research-brainstorm-from-kb": {
-   "description": "Structures and refines research ideas into `paperIDEAs/` notes using the paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based on `paperCollection` + `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.",
+   "description": "Structures and refines research ideas into `paperIDEAs/` notes using the paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based primarily on paperAnalysis, with paperCollection used only as optional statistics / navigation support, plus cross-domain support from image/video generation, MLLM, Agent, or RL.",
    "path": ".claude/skills/research-brainstorm-from-kb/SKILL.md"
   },
   "research-question-bank": {

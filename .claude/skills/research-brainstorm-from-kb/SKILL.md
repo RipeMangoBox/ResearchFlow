@@ -1,144 +1,144 @@
 ---
 name: research-brainstorm-from-kb
-description: Structures and refines research ideas into `paperIDEAs/` notes using the local paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based on `paperCollection` + `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.
+description: Structures and refines research ideas into `paperIDEAs/` notes using the local paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based primarily on `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.
 ---
 
 # Research Idea Brainstorming
 
-## 1. 使用场景（When to use）
+## 1. Use cases (When to use)
 
-在以下场景使用本 skill：
+Use this skill in the following scenarios:
 
-- **科研问题 / idea 输入**：用户用自然语言描述科研问题、研究方向或零散想法，希望系统性脑暴与收敛。
-- **需要 本地论文库支撑**：需要基于 `paperCollection` + `paperAnalysis` 给出「相关工作支持 + 研究空间」。
-- **希望生成可复用的 idea 笔记**：希望结果自动写成结构化 Markdown，保存在 local 的 `paperIDEAs/` 目录中，以便后续写作、实验和项目管理。
+- **Research question / idea input**: the user describes a research question, direction, or fragmented ideas in natural language and wants systematic brainstorming plus convergence.
+- **Need local knowledge-base grounding**: rely primarily on retrieval from `paperAnalysis`, and optionally combine `paperCollection` statistics/navigation pages to produce "related-work support + research opportunity".
+- **Need reusable idea notes**: automatically write outputs as structured Markdown under local `paperIDEAs/` for later writing, experiments, and project management.
 
-## 2. 依赖与路径（Dependencies & paths）
+## 2. Dependencies and paths (Dependencies & paths)
 
-本 skill 依赖本地论文知识库和 `papers-query-knowledge-base` skill：
+This skill depends on the local paper knowledge base and the `papers-query-knowledge-base` skill:
 
-- **论文索引与分析**：见 `papers-query-knowledge-base` skill（`paperCollection/` + `paperAnalysis/`）
-- **Idea 笔记目录**：`paperIDEAs/`
+- **Paper index and analysis**: see `papers-query-knowledge-base` skill (`paperCollection/` + `paperAnalysis/`)
+- **Primary paper retrieval and analysis**: see `papers-query-knowledge-base` skill (`paperAnalysis/` first, `paperCollection/` as auxiliary)
+- **Idea note directory**: `paperIDEAs/`
 
-路径约定：
+Path convention:
 
-- 当当前 workspace 就是包含这些目录的仓库时，优先使用相对路径。
-- 当 workspace 不包含该知识库时，使用你本机对应的绝对路径。
+- If the current workspace is the repository containing these folders, prefer relative paths.
+- If the workspace does not include this KB, use the correct absolute path on your machine.
 
-## 3. 文件命名与存储规则
+## 3. File naming and storage rules
 
-生成脑暴结果时，**总是写入 / 更新 `paperIDEAs/` 目录下的 Markdown 文件**，命名规则：
+When generating brainstorming results, **always write/update Markdown files in `paperIDEAs/`** using this naming rule:
 
-- **文件名模式**：`YYYY-MM-DD_<核心缩写>.md`
-  - `YYYY-MM-DD`：使用用户本地日期（如 `2025-03-09`）
-  - `<核心缩写>`：用英文单词或拼音压缩的主题短语，使用小写和 `-` 连接（例如：`motion-llm-ideas`、`reactive-agent-motion`）
-- **示例**：`2025-03-09_motion-llm-ideas.md`
+- **Filename pattern**: `YYYY-MM-DD_<core-slug>.md`
+  - `YYYY-MM-DD`: user local date (for example `2025-03-09`)
+  - `<core-slug>`: topic phrase compressed into English words or pinyin, lowercase with `-` separators (for example `motion-llm-ideas`, `reactive-agent-motion`)
+- **Example**: `2025-03-09_motion-llm-ideas.md`
 
-行为约定：
+Behavior convention:
 
-- 如果当日同一核心缩写文件已存在，则在该文件中**追加新的脑暴小节**，而不是创建新文件。
-- 如果用户明确指定要写入的 `paperIDEAs` 文件，则遵从用户指定的文件名。
+- If a file with the same date and core slug already exists, **append a new brainstorming subsection** instead of creating a new file.
+- If the user explicitly specifies a target file in `paperIDEAs`, follow the user-specified filename.
 
-## 4. 脑暴流程与输出结构
+## 4. Brainstorming process and output structure
 
-整体目标：基于用户原始想法，结合 本地论文库与前沿技术，完成**从发散到收敛**的一次系统脑暴，并留下可直接用于写作/选题的笔记结构。
+Overall goal: starting from the user's raw idea, combine the local paper KB and frontier techniques to complete one end-to-end **divergence-to-convergence** brainstorming cycle and leave a note structure directly usable for writing/topic selection.
 
-### 4.1 想法拆解与联想
+### 4.1 Idea decomposition and association
 
-步骤：
+Steps:
 
-1. **提炼问题核心**：用 1–3 句话重述用户问题，标出「任务 / 场景 / 关键瓶颈」。
-2. **多维拆解**：从任务（task）、数据（modality / source）、模型（architecture）、约束（物理 / 语义 / 交互）、评估等维度拆分成若干子问题。
-3. **横向联想**：类比 本地知识库中已有的相关主题（如 motion generation、HSI、HOI、Agent 结合等），指出可能的迁移或变体。
+1. **Refine the problem core**: restate the user problem in 1-3 sentences and identify task/scenario/key bottleneck.
+2. **Multi-dimensional decomposition**: split into sub-problems by task, data (modality/source), model (architecture), constraints (physical/semantic/interaction), and evaluation.
+3. **Lateral association**: map to related themes in the local KB (for example motion generation, HSI, HOI, Agent integration), and identify possible transfer directions or variants.
 
-在生成笔记时，对应一个小节：
+In generated notes, use this section:
 
-- **章节标题**：`## 一、想法拆解与联想`
+- **Section title**: `## 1. Idea decomposition and association`
 
-### 4.2 真实场景与需求痛点
+### 4.2 Real scenarios and pain points
 
-步骤：
+Steps:
 
-1. **锁定真实场景**：假设或根据用户描述，明确典型应用场景（如 VR 交互、康复训练、动画制作、机器人操作等）。
-2. **枚举需求与痛点**：
-   - 当前实践 / 系统如何解决？
-   - 哪些环节仍依赖人工、效率低或体验差？
-   - 安全性、公平性、鲁棒性等隐性需求？
-3. **将痛点映射回 idea**：指出原始想法在哪些环节直接缓解或放大价值。
+1. **Lock real scenarios**: based on assumptions or user description, define representative application scenarios (for example VR interaction, rehabilitation training, animation production, robot manipulation).
+2. **Enumerate needs and pain points**:
+   - How current practice/systems solve this.
+   - Which steps still rely heavily on manual work, low efficiency, or poor UX.
+   - Hidden requirements such as safety, fairness, robustness.
+3. **Map pain points back to the idea**: show where the original idea directly alleviates pain or amplifies value.
 
-在笔记中生成：
+In generated notes:
 
-- **章节标题**：`## 二、真实场景与需求痛点`
+- **Section title**: `## 2. Real scenarios and pain points`
 
-### 4.3 相关工作支持与研究空间（基于 papers-query-knowledge-base）
+### 4.3 Related-work support and research opportunities (via papers-query-knowledge-base)
 
-始终通过 `papers-query-knowledge-base` skill 使用 本地论文库：
+Always use the local KB through `papers-query-knowledge-base`:
 
-1. **定位相关任务 / 技术**：
-   - 根据 idea 的任务属性，在 `paperCollection/by_task/<Task>.md` 中查找。
-   - 根据关键技术词，在 `paperCollection/by_technique/_Index.md` 与对应 `<tag>.md` 中查找。
-   - 必要时按 venue 在 `paperCollection/by_venue/` 中补充。
-2. **选取代表性论文**：
-   - 选 3–8 篇与想法高度相关的论文。
-   - 对每篇：读取其 `paperAnalysis` 笔记的 frontmatter 中的 `core_operator`、`primary_logic` 以及 TL;DR。
-   - 用 1–2 句总结「这篇工作做了什么」以及与当前想法的关系。
-3. **总结支持与不足**：
-   - **支持**：这些工作在哪些方面证明了 idea 的合理性或潜在价值？
-   - **不足 / 空缺**：在哪些维度（场景、数据、约束、评估、系统化程度等）仍然留下研究空间？
+1. **Locate related tasks/techniques**:
+   - Prioritize title, task path, tags, venue, year, `core_operator`, and `primary_logic` in `paperAnalysis/`.
+   - If overview pages/statistics/Obsidian navigation aid is needed, then reference `paperCollection/by_task/`, `by_technique/`, `by_venue/`.
+2. **Select representative papers**:
+   - Choose 3-8 papers highly related to the idea.
+   - For each paper, read `core_operator`, `primary_logic`, and TL;DR from the `paperAnalysis` note frontmatter.
+   - Summarize in 1-2 sentences what it does and how it relates to the current idea.
+3. **Summarize support and gaps**:
+   - **Support**: where these works validate the idea's feasibility or value.
+   - **Gap/opportunity**: where research space remains (scenario, data, constraints, evaluation, degree of systemization).
 
-在笔记中生成：
+In generated notes:
 
-- **章节标题**：`## 三、相关工作支持与研究空间`
-- 内容结构建议：
-  - 「相关工作概览」小节，按任务或技术聚类列出论文及一行摘要。
-  - 「支持点」小节，列出对当前想法有力的证据。
-  - 「研究空间」小节，列出可投稿 CCF-A / top-tier 的潜在创新切入点。
+- **Section title**: `## 3. Related-work support and research opportunities`
+- Suggested content layout:
+  - "Related-work overview" subsection listing papers by task/technique cluster with one-line summaries.
+  - "Support points" subsection listing strong evidence for the idea.
+  - "Research opportunities" subsection listing potentially top-tier innovation entry points.
 
-### 4.4 前沿交叉技术与验证（图像 / 视频 / MLLM / Agent / RL）
+### 4.4 Frontier cross-domain techniques and validation (Image / Video / MLLM / Agent / RL)
 
-目标：将当前 idea 接到更宽广的前沿技术生态，给出可行的交叉研究路径，并附上可进一步阅读的链接。
+Goal: connect the current idea to a broader frontier ecosystem, propose viable cross-domain research paths, and provide links for further reading.
 
-步骤：
+Steps:
 
-1. **识别适合的前沿方向**：
-   - 图像 / 视频生成（diffusion、video diffusion、3D / 4D 表达等）
-   - 多模态大模型（MLLM）、多模态 Agent
-   - 强化学习（RL）、基于奖励或偏好建模的生成
-   - 热门领域的技术或者技术本身可借鉴的核心思想
-   - 其它与当前 idea 高度契合的热门技术（如 3DGS、Neural ODE、Conformal prediction 等）
-2. **检索与筛选**：
-   - 优先利用 本地知识库中已有的相关分析笔记（如有）。
-   - 对尚未覆盖的最新方法或应用，使用 Web 搜索获取代表性论文、技术博客或官方文档。
-3. **给出交叉路径与验证思路**：
-   - 说明该技术如何接入当前 idea 的 pipeline（作为模型 backbone、模块、评估工具、Agent 的子 skill 等）。
-   - 给出简单的验证方案或原型实验设想。
+1. **Identify suitable frontier directions**:
+   - image/video generation (diffusion, video diffusion, 3D/4D representation)
+   - multimodal LLM (MLLM), multimodal Agent
+   - reinforcement learning (RL), reward/preference-guided generation
+   - popular technical domains or transferable core ideas
+   - other high-fit techniques (for example 3DGS, Neural ODE, Conformal prediction)
+2. **Retrieve and filter**:
+   - prioritize relevant existing local KB analysis notes if available.
+   - for newer uncovered methods/applications, use web search for representative papers, technical blogs, or official docs.
+3. **Provide integration and validation plans**:
+   - explain how each technique plugs into the current idea pipeline (as backbone, module, evaluation tool, or Agent sub-skill).
+   - provide simple validation plans or prototype experiment concepts.
 
-在笔记中生成：
+In generated notes:
 
-- **章节标题**：`## 四、前沿交叉技术与验证思路`
-- 内容中应包含一个小表格或列表，格式示例：
-  - 技术名称 / 方向
-  - 简要说明（1–2 句）
-  - 相关链接（论文 / 项目 / 博客）：使用 Markdown 链接，例如 `[Paper Title](https://...)`，避免裸露 URL。
+- **Section title**: `## 4. Frontier cross-domain techniques and validation ideas`
+- Include a small table/list with this format:
+  - technique name / direction
+  - brief description (1-2 sentences)
+  - related links (paper/project/blog), using Markdown links such as `[Paper Title](https://...)` (no bare URLs)
 
-### 4.5 总结与下一步行动
+### 4.5 Summary and next actions
 
-最后，对本次脑暴进行收敛式总结：
+Finally provide a convergent summary:
 
-1. **总结核心 idea 及其研究位置**：用 3–5 句话概括「要解决什么、用什么关键思想、相对现有工作的新意在哪里」。
-2. **列出可执行的下一步**：
-   - 数据与场景：需要构建或整理什么样的数据 / 场景？
-   - baseline 与实验：可以基于哪些现有方法快速搭 baseline？
-   - 指标与评估：如何量化 idea 的优势？
-3. **可选：投稿 venue 预判**：如合适，可给出 1–2 个适合的会议 / 期刊及理由。
+1. **Summarize the core idea and its research position**: use 3-5 sentences to explain what problem is solved, key ideas used, and where novelty sits relative to existing work.
+2. **List executable next steps**:
+   - data/scenario: what data or scenarios need to be built/organized?
+   - baseline/experiments: which existing methods can bootstrap baselines quickly?
+   - metrics/evaluation: how to quantify the idea advantage?
+3. **Optional: venue recommendation**: if appropriate, suggest 1-2 suitable venues and rationale.
 
-在笔记中生成：
+In generated notes:
 
-- **章节标题**：`## 五、总结与下一步`
+- **Section title**: `## 5. Summary and next steps`
 
-## 5. 推荐的笔记模板
+## 5. Recommended note template
 
-生成 `paperIDEAs` 笔记时，可以按以下模板组织内容（可根据具体场景略微调整）：
+When generating `paperIDEAs` notes, you can use this template (slight adjustments allowed by context):
 
 ```markdown
 ---
@@ -146,46 +146,46 @@ created: {{ISO_DATETIME_NOW}}
 updated: {{ISO_DATETIME_NOW}}
 ---
 
-# {{YYYY-MM-DD}} {{问题核心简要描述}}
+# {{YYYY-MM-DD}} {{Brief core problem description}}
 
-> 基于 paperCollection + paperAnalysis 的系统检索与脑暴；结合前沿技术（图像 / 视频 / MLLM / Agent / RL）给出交叉支持与研究空间。
+> Systematic retrieval and brainstorming primarily grounded in `paperAnalysis`; optionally using `paperCollection` statistics/navigation pages, with frontier cross-domain support from image/video/MLLM/Agent/RL.
 
 ---
 
-## 一、想法拆解与联想
-- 问题重述：
-- 关键要素：
-- 多维拆解：
+## 1. Idea decomposition and association
+- Problem restatement:
+- Key elements:
+- Multi-dimensional decomposition:
 
-## 二、真实场景与需求痛点
-- 典型场景：
-- 核心需求：
-- 现有解决方案及痛点：
+## 2. Real scenarios and pain points
+- Typical scenarios:
+- Core needs:
+- Existing solutions and pain points:
 
-## 三、相关工作支持与研究空间
-### 3.1 相关工作概览
-- [Paper A]：一行摘要 + 与本想法的关系
-- [Paper B]：一行摘要 + 与本想法的关系
+## 3. Related-work support and research opportunities
+### 3.1 Related-work overview
+- [Paper A]: one-line summary + relation to this idea
+- [Paper B]: one-line summary + relation to this idea
 
-### 3.2 支持点
+### 3.2 Support points
 - ...
 
-### 3.3 研究空间
+### 3.3 Research opportunities
 - ...
 
-## 四、前沿交叉技术与验证思路
-- 技术方向 A：简要说明 + [链接](https://...)
-- 技术方向 B：简要说明 + [链接](https://...)
+## 4. Frontier cross-domain techniques and validation ideas
+- Technique direction A: brief description + [link](https://...)
+- Technique direction B: brief description + [link](https://...)
 
-## 五、总结与下一步
-- 核心 idea 概括：
-- 近期可执行步骤：
-- 潜在投稿 venue：
+## 5. Summary and next steps
+- Core idea summary:
+- Near-term executable steps:
+- Potential target venue:
 ```
 
-## 6. 实施要点
+## 6. Implementation notes
 
-- **始终优先使用 `papers-query-knowledge-base` skill** 来定位 本地知识库内已有分析，然后再补充 Web 搜索的前沿内容。
-- **保证输出是结构化 Markdown**，遵循上面的章节结构，方便后续检索与重构。
-- 在引用外部资料时，**总是使用 Markdown 链接**，不直接粘贴裸 URL。
-- 当用户已经打开某个 `paperIDEAs` 文件并明确要求在当前文件中脑暴时，应在该文件中追加对应结构的小节，而非创建新文件。
+- **Always prioritize `papers-query-knowledge-base`** to locate existing local analyses, then supplement with frontier web search.
+- **Ensure structured Markdown output** following the section structure above for later retrieval/recomposition.
+- When citing external resources, **always use Markdown links** and avoid bare URLs.
+- If the user already opened a specific `paperIDEAs` file and explicitly asks to brainstorm there, append the structured subsection in that file instead of creating a new one.

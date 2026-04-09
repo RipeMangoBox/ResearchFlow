@@ -7,7 +7,7 @@ description: Builds/refreshes `paperCollection/` index notes from `paperAnalysis
 
 ## What this skill does
 
-Regenerates the Obsidian index layer under `paperCollection/` by scanning `paperAnalysis/**/*.md`, extracting frontmatter, and emitting:
+Regenerates the Obsidian index layer under `paperCollection/` by scanning `paperAnalysis/**/*.md`, extracting frontmatter and body hashtags (`#tag`), and emitting:
 
 - `paperCollection/README.md` (home)
 - `paperCollection/_AllPapers.md` (grouped view)
@@ -43,13 +43,13 @@ python .claude/skills/papers-build-collection-index/scripts/build_paper_collecti
 ## How categories / tags are interpreted
 
 - **Task (category)**: prefers the folder name under `paperAnalysis/` (e.g. `paperAnalysis/Motion_Generation_Text_Speech_Music_Driven/...` → task = `Motion_Generation_Text_Speech_Music_Driven`).
-- **Technique tags**: uses frontmatter `tags`, excluding:
+- **Technique tags**: merges frontmatter `tags` with body hashtags (`#tag`), then excludes:
   - the task itself
   - any tag starting with `status/`
+  - heading / code-fence / inline-code noise
 
 ## Examples (triggers)
 
-- “更新一下 `paperCollection` / rebuild the index”
-- “我刚新增了几篇 `paperAnalysis`，把 `paperCollection` 重新生成”
-- “by_technique / by_venue 页面不全了，修复并重建”
-
+- "Refresh `paperCollection` / rebuild the index"
+- "I just added several `paperAnalysis` notes; regenerate `paperCollection`"
+- "The by_technique / by_venue pages are incomplete; fix and rebuild"

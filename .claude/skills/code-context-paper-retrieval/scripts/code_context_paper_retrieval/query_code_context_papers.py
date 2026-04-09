@@ -3,17 +3,13 @@ from __future__ import annotations
 
 import argparse
 import re
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
-PAPER_COLLECTION_DIR = REPO_ROOT / "paperCollection"
 PAPER_ANALYSIS_DIR = REPO_ROOT / "paperAnalysis"
 
-ANALYSIS_LINK_RE = re.compile(r"\[\[(paperAnalysis/[^\]|]+\.md)(?:\|([^\]]+))?\]\]")
-PDF_LINK_RE = re.compile(r"\[\[(paperPDFs/[^\]|]+\.pdf)(?:\|[^\]]+)?\]\]")
 KEY_LINE_RE = re.compile(r"^([A-Za-z0-9_\-]+):(?:\s*(.*))?$")
 BOUNDARY_RE = re.compile(r"^---\s*$")
 WORD_RE = re.compile(r"[A-Za-z0-9_]{3,}")
@@ -21,7 +17,7 @@ WORD_RE = re.compile(r"[A-Za-z0-9_]{3,}")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Retrieve code-context-related papers from local KB (paperCollection -> paperAnalysis -> optional paperPDFs)."
+        description="Retrieve code-context-related papers from local KB (paperAnalysis -> optional paperPDFs; paperCollection optional for navigation)."
     )
     p.add_argument("--mode", choices=["brief", "deep"], default="brief")
     p.add_argument("--query", default="", help="Natural-language coding task or context")
@@ -148,43 +144,62 @@ def extract_summary_line(md_text: str) -> str:
     return ""
 
 
-def score_collection(keywords: List[str]) -> Tuple[Dict[str, int], Dict[str, str], Dict[str, str]]:
-    score: Dict[str, int] = defaultdict(int)
+def as_text(value: object) -> str:
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value)
+    return str(value or "")
+
+
+def score_analysis_notes(keywords: List[str]) -> Tuple[Dict[str, int], Dict[str, str], Dict[str, str]]:
+    score: Dict[str, int] = {}
     title_hint: Dict[str, str] = {}
     pdf_hint: Dict[str, str] = {}
 
-    if not PAPER_COLLECTION_DIR.exists():
+    if not PAPER_ANALYSIS_DIR.exists():
         return score, title_hint, pdf_hint
 
-    collection_files = list(PAPER_COLLECTION_DIR.glob("_AllPapers.md"))
-    collection_files += sorted((PAPER_COLLECTION_DIR / "by_task").glob("*.md"))
-    collection_files += sorted((PAPER_COLLECTION_DIR / "by_technique").glob("*.md"))
-
-    for fp in collection_files:
-        text = read_text(fp)
-        if not text:
+    for ap in sorted(PAPER_ANALYSIS_DIR.rglob("*.md")):
+        rel = ap.relative_to(REPO_ROOT).as_posix()
+        txt = read_text(ap)
+        if not txt:
             continue
-        for line in text.splitlines():
-            links = ANALYSIS_LINK_RE.findall(line)
-            if not links:
-                continue
 
-            low = line.lower()
-            kw_hits = sum(1 for kw in keywords if kw in low)
-            for rel, alias in links:
-                base = 1
-                if kw_hits:
-                    base += kw_hits * 2
-                if "by_task" in fp.as_posix():
-                    base += 1
-                if "by_technique" in fp.as_posix():
-                    base += 1
-                score[rel] += base
-                if alias and rel not in title_hint:
-                    title_hint[rel] = alias.strip()
-                pdf_match = PDF_LINK_RE.search(line)
-                if pdf_match and rel not in pdf_hint:
-                    pdf_hint[rel] = pdf_match.group(1)
+        fm = parse_frontmatter(txt)
+        title = as_text(fm.get("title")) or ap.stem
+        venue = as_text(fm.get("venue"))
+        year = as_text(fm.get("year"))
+        tags = as_text(fm.get("tags"))
+        core_operator = as_text(fm.get("core_operator")).replace("\n", " ").strip()
+        primary_logic = as_text(fm.get("primary_logic")).replace("\n", " ").strip()
+        summary = extract_summary_line(txt)
+        pdf_ref = as_text(fm.get("pdf_ref"))
+
+        title_hint[rel] = title
+        if pdf_ref:
+            pdf_hint[rel] = pdf_ref
+
+        if not keywords:
+            score[rel] = 0
+            continue
+
+        rel_blob = rel.replace("/", " ").lower()
+        title_blob = title.lower()
+        method_blob = " ".join([tags, core_operator, primary_logic]).lower()
+        meta_blob = " ".join([venue, year, summary]).lower()
+
+        total = 0
+        for kw in keywords:
+            if kw in title_blob:
+                total += 4
+            if kw in method_blob:
+                total += 3
+            if kw in meta_blob:
+                total += 2
+            if kw in rel_blob:
+                total += 1
+
+        if total > 0:
+            score[rel] = total
 
     return score, title_hint, pdf_hint
 
@@ -211,9 +226,9 @@ def enrich_from_analysis(
         a_score = sum(1 for kw in keywords if kw in blob)
         need_pdf = "Yes" if (a_score <= 1 and (core_operator or primary_logic)) else "No"
         reason = (
-            "analysis 信息已足够支撑实现判断"
+            "analysis information is sufficient for implementation decisions"
             if need_pdf == "No"
-            else "analysis 证据偏弱，建议快速核对 PDF 方法细节"
+            else "analysis evidence is weak; quick PDF check is recommended"
         )
 
         out.append(
@@ -241,14 +256,14 @@ def render_brief(items: List[Dict[str, str]], keywords: List[str], query: str, c
     lines: List[str] = []
     lines.append("## Code Context Paper Retrieval (brief)")
     lines.append("")
-    lines.append("- 检索顺序: paperCollection -> paperAnalysis -> paperPDFs(按需)")
-    lines.append(f"- 关键词: {', '.join(keywords) if keywords else 'N/A'}")
+    lines.append("- Retrieval order: paperAnalysis -> paperPDFs (as needed); paperCollection is for statistics/navigation support only")
+    lines.append(f"- Keywords: {', '.join(keywords) if keywords else 'N/A'}")
     if query:
         lines.append(f"- Query: {query}")
     if changed_files:
         lines.append(f"- Changed files: {', '.join(changed_files)}")
     lines.append("")
-    lines.append("### 必看论文 (3-5)")
+    lines.append("### Must-read papers (3-5)")
 
     for i, it in enumerate(chosen, start=1):
         method = it["core_operator"] or it["primary_logic"] or it["summary"]
@@ -258,12 +273,12 @@ def render_brief(items: List[Dict[str, str]], keywords: List[str], query: str, c
         lines.append(f"   - analysis: `{it['analysis_rel']}`")
         lines.append(f"   - method cue: {method if method else 'N/A'}")
         lines.append(
-            f"   - 建议读 PDF: {it['recommend_pdf']}（{it['recommend_reason']}）"
+            f"   - Suggested PDF reading: {it['recommend_pdf']} ({it['recommend_reason']})"
             + (f"，`{it['pdf_ref']}`" if it["pdf_ref"] else "")
         )
 
     if not chosen:
-        lines.append("- 未检索到足够匹配条目，请补充 query 或 changed-file。")
+        lines.append("- Not enough matching items found. Please provide additional query or changed-file context.")
 
     return "\n".join(lines)
 
@@ -273,14 +288,14 @@ def render_deep(items: List[Dict[str, str]], keywords: List[str], query: str, ch
     lines: List[str] = []
     lines.append("## Code Context Paper Retrieval (deep)")
     lines.append("")
-    lines.append("- 检索顺序: paperCollection -> paperAnalysis -> paperPDFs(按需)")
-    lines.append(f"- 关键词: {', '.join(keywords) if keywords else 'N/A'}")
+    lines.append("- Retrieval order: paperAnalysis -> paperPDFs (as needed); paperCollection is for statistics/navigation support only")
+    lines.append(f"- Keywords: {', '.join(keywords) if keywords else 'N/A'}")
     if query:
         lines.append(f"- Query: {query}")
     if changed_files:
         lines.append(f"- Changed files: {', '.join(changed_files)}")
     lines.append("")
-    lines.append("### 候选论文与理由")
+    lines.append("### Candidate papers and rationale")
 
     for i, it in enumerate(chosen, start=1):
         method = it["core_operator"] or it["primary_logic"] or "N/A"
@@ -300,13 +315,13 @@ def render_deep(items: List[Dict[str, str]], keywords: List[str], query: str, ch
         )
 
     lines.append("")
-    lines.append("### 对比与落地建议")
-    lines.append("- 先看前 3 篇，抽取可复用 operator（训练目标/控制信号/约束方式）。")
-    lines.append("- 若当前代码改动涉及训练范式切换或评测协议变化，优先阅读标记 Yes 的 PDF。")
-    lines.append("- 若只做工程实现细化，analysis 信息通常足够，可先不读 PDF。")
+    lines.append("### Comparison and implementation suggestions")
+    lines.append("- Start with the top 3 papers and extract reusable operators (training objectives/control signals/constraint forms).")
+    lines.append("- If code changes involve training paradigm shifts or evaluation protocol changes, prioritize PDFs marked Yes.")
+    lines.append("- For engineering-level implementation refinements only, analysis notes are often sufficient and PDF reading can be skipped initially.")
 
     if not chosen:
-        lines.append("- 未检索到足够匹配条目，请补充 query 或 changed-file。")
+        lines.append("- Not enough matching items found. Please provide additional query or changed-file context.")
 
     return "\n".join(lines)
 
@@ -315,7 +330,7 @@ def main() -> None:
     args = parse_args()
     keywords = keywords_from_context(args.query, args.changed_file)
 
-    score_map, title_hint, pdf_hint = score_collection(keywords)
+    score_map, title_hint, pdf_hint = score_analysis_notes(keywords)
     ranked_rel = [k for k, _ in sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)]
 
     enriched = enrich_from_analysis(ranked_rel, keywords, title_hint, pdf_hint)

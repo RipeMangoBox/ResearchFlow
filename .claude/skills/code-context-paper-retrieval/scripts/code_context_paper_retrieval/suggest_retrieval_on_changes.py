@@ -75,8 +75,8 @@ def main() -> None:
 
     preview = ", ".join(hits[:3])
     suffix = " ..." if len(hits) > 3 else ""
-    print("检测到高相关代码改动，是否运行 /code-context-paper-retrieval（brief）？")
-    print(f"命中文件: {preview}{suffix}")
+    print("Detected highly relevant code changes. Run /code-context-paper-retrieval (brief)?")
+    print(f"Matched files: {preview}{suffix}")
 
 
 if __name__ == "__main__":
