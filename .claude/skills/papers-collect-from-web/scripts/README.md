@@ -2,25 +2,25 @@
 
 ## Quick start
 
-Generate a triage list like `paperAnalysis/ICLR_2026.txt`:
+Append paper candidates to `paperAnalysis/analysis_log.csv`:
 
 ```bash
-python3 ".claude/skills/papers-collect-from-web/scripts/collect_from_urls.py" \
+python3 ".claude/skills/papers-collect-from-web/scripts/paper_collector_online/collect_from_urls.py" \
   --venue-time "ICLR 2026" \
-  --out "paperAnalysis/ICLR_2026.txt" \
   --urls "https://example.com/papers.html" "https://another.example.org/list" \
   --include "motion;diffusion" \
   --exclude "workshop;dataset" \
   --append
 ```
 
-## Output columns (pipe-delimited)
+## Output columns (CSV, same as analysis_log.csv)
 
-`state | title | venue&time | paper link | project link/github link | category`
+`state,importance,paper_title,venue,project_link_or_github_link,paper_link,sort,pdf_path`
 
 Notes:
 - `state` defaults to `Wait`. Use `--status checked` if needed.
-- `category` is intentionally left blank for per-item manual fill.
+- `importance`, `sort`, `pdf_path` are left blank for later manual fill.
+- Output is now unified with `papers-collect-from-github-awesome`.
 
 ## Where HTML is stored
 

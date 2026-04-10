@@ -1,6 +1,6 @@
 ---
 name: papers-query-knowledge-base
-description: Queries the local `paperAnalysis/` notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes or compares methods; cites core_operator and primary_logic from analysis frontmatter. `paperCollection/` is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.
+description: Queries the local `paperAnalysis/` notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes methods and evidence across papers; cites core_operator and primary_logic from analysis frontmatter. `paperCollection/` is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.
 ---
 
 # Paper Knowledge Base (paperAnalysis-first)
@@ -60,53 +60,16 @@ python .claude/skills/papers-build-collection-index/scripts/build_paper_collecti
 
 Only notes with valid `pdf_ref` (path under `paperPDFs/` ending in `.pdf`) are indexed.
 
-## Research Idea Evaluation (via knowledge base)
+## Output style
 
-When the user asks to evaluate a research idea using the knowledge base, analyze along three dimensions:
+- KB-grounded answers to research questions
+- evidence-backed cross-paper summaries in prose
+- direct pointers to relevant `paperAnalysis/...` notes and local PDFs when useful
 
-### 1. Capability Ceiling
+## Boundaries
 
-Estimate the idea's theoretical upper bound based on current performance bottlenecks in related methods from the knowledge base:
-
-- extract core mechanisms from `core_operator` and `primary_logic`;
-- identify current SOTA bottlenecks (data quality, model architecture, evaluation protocol);
-- assess whether the idea addresses those bottlenecks directly or bypasses them;
-- output: "What upper bound this idea can plausibly reach, and what factors constrain it."
-
-### 2. CCF-A Reviewer Acceptance
-
-Based on writing and evaluation patterns in top-venue papers from the KB, estimate acceptance readiness at CCF-A venues (NeurIPS / CVPR / ICCV / ECCV / ICLR / AAAI):
-
-- compare how similar ideas were published (task framing, experiment design, ablation depth);
-- assess novelty sufficiency: whether differentiated contribution is clear versus most related KB papers;
-- identify likely reviewer concerns (robustness, generalization, baseline comparisons);
-- output: "Estimated acceptance potential at CCF-A venues, and key areas needing reinforcement."
-
-### 3. Literature Support Strength
-
-Retrieve papers most related to the idea and evaluate support from prior work:
-
-- positive support: which published works validate the idea's assumptions or submodules;
-- gap confirmation: whether direct competitors already exist in the KB; if not, state the gap;
-- transferable techniques: which `core_operator` patterns can be reused or adapted;
-- output: "Top 3-5 most relevant papers + each paper's relation to this idea (support / competitor / reusable)."
-
-### Output format
-
-```markdown
-## Idea Evaluation: <idea name>
-
-### Capability Ceiling
-- Upper-bound estimate: ...
-- Main limiting factors: ...
-
-### CCF-A Reviewer Acceptance
-- Acceptance assessment: high / medium / low
-- Main risk points: ...
-- Key experiments to strengthen: ...
-
-### Literature Support Strength
-- Positive support: [[paper1]], [[paper2]]
-- Direct competitors: [[paper3]] (difference: ...)
-- Reusable techniques: [[paper4]] (reuse point: ...)
-```
+- This skill can provide text summaries across papers, but it does not generate structured side-by-side tables. Use `papers-compare-table` for table output.
+- This skill can point out evidence-backed research gaps, but it does not generate systematic idea candidates, scope cuts, or experimental roadmaps. Use `research-brainstorm-from-kb` or `idea-focus-coach` for that.
+- This skill does not build direction-level question maps. Use `research-question-bank`.
+- This skill does not issue reviewer-style acceptance or rejection risk verdicts. Use `reviewer-stress-test`.
+- If the retrieval goal is to support an upcoming code change, prefer `code-context-paper-retrieval`.

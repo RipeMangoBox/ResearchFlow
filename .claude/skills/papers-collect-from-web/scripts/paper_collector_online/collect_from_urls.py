@@ -250,15 +250,23 @@ def _load_existing_paper_links(out_path: Path) -> set[str]:
     text = _read_text(out_path)
     links: set[str] = set()
     for line in text.splitlines():
-        if "|" not in line:
+        if "," not in line:
             continue
-        parts = [p.strip() for p in line.split("|")]
+        parts = [p.strip() for p in line.split(",")]
         if len(parts) < 6:
             continue
-        paper_link = normalize_paper_link(parts[3])
+        paper_link = normalize_paper_link(parts[5])  # paper_link is column 6
         if paper_link:
             links.add(paper_link)
     return links
+
+
+def _csv_escape(s: str) -> str:
+    """Escape a field for CSV: quote if it contains comma, quote, or newline."""
+    s = s.strip()
+    if "," in s or '"' in s or "\n" in s:
+        return '"' + s.replace('"', '""') + '"'
+    return s
 
 
 def _format_line(
@@ -269,14 +277,17 @@ def _format_line(
     project_link: str,
     category: str,
 ) -> str:
-    return " | ".join(
+    # CSV columns: state,importance,paper_title,venue,project_link_or_github_link,paper_link,sort,pdf_path
+    return ",".join(
         [
-            status.strip(),
-            title.strip(),
-            venue_time.strip(),
-            paper_link.strip(),
-            project_link.strip(),
-            category.strip(),
+            _csv_escape(status.strip()),
+            "",  # importance (empty)
+            _csv_escape(title.strip()),
+            _csv_escape(venue_time.strip()),
+            _csv_escape(project_link.strip()),
+            _csv_escape(paper_link.strip()),
+            _csv_escape(category.strip()),  # sort
+            "",  # pdf_path (empty)
         ]
     )
 
@@ -289,7 +300,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--include", default="", help="Include keywords (all must match). Separator: ';' or ','.")
     ap.add_argument("--exclude", default="", help="Exclude keywords (any match filters out). Separator: ';' or ','.")
     ap.add_argument("--venue-time", required=True, help='Venue/time label, e.g. "ICLR 2026".')
-    ap.add_argument("--out", required=True, help='Output list path, e.g. "paperAnalysis/ICLR_2026.txt".')
+    ap.add_argument("--out", default="paperAnalysis/analysis_log.csv", help='Output CSV path (default: "paperAnalysis/analysis_log.csv").')
     ap.add_argument("--append", action="store_true", help="Append to existing output file instead of overwriting.")
     ap.add_argument("--status", default="Wait", help='Default status value for new entries (default: "Wait").')
     ap.add_argument(

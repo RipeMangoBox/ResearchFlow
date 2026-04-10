@@ -1,6 +1,6 @@
 ---
 name: research-brainstorm-from-kb
-description: Structures and refines research ideas into `paperIDEAs/` notes using the local paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based primarily on `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.
+description: Explores and structures research ideas into `paperIDEAs/` notes using the local paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed candidate directions, related-work analysis based primarily on `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.
 ---
 
 # Research Idea Brainstorming
@@ -9,7 +9,7 @@ description: Structures and refines research ideas into `paperIDEAs/` notes usin
 
 Use this skill in the following scenarios:
 
-- **Research question / idea input**: the user describes a research question, direction, or fragmented ideas in natural language and wants systematic brainstorming plus convergence.
+- **Research question / idea input**: the user describes a research question, direction, or fragmented ideas in natural language and wants systematic brainstorming plus lightweight synthesis.
 - **Need local knowledge-base grounding**: rely primarily on retrieval from `paperAnalysis`, and optionally combine `paperCollection` statistics/navigation pages to produce "related-work support + research opportunity".
 - **Need reusable idea notes**: automatically write outputs as structured Markdown under local `paperIDEAs/` for later writing, experiments, and project management.
 
@@ -42,7 +42,7 @@ Behavior convention:
 
 ## 4. Brainstorming process and output structure
 
-Overall goal: starting from the user's raw idea, combine the local paper KB and frontier techniques to complete one end-to-end **divergence-to-convergence** brainstorming cycle and leave a note structure directly usable for writing/topic selection.
+Overall goal: starting from the user's raw idea, combine the local paper KB and frontier techniques to complete one end-to-end **brainstorming-and-synthesis** cycle and leave a note structure directly usable for writing/topic selection.
 
 ### 4.1 Idea decomposition and association
 
@@ -189,3 +189,8 @@ updated: {{ISO_DATETIME_NOW}}
 - **Ensure structured Markdown output** following the section structure above for later retrieval/recomposition.
 - When citing external resources, **always use Markdown links** and avoid bare URLs.
 - If the user already opened a specific `paperIDEAs` file and explicitly asks to brainstorm there, append the structured subsection in that file instead of creating a new one.
+
+## 7. Boundaries
+
+- This skill can refine framing and next actions, but detailed scope cuts, prioritized hypotheses, and MVP planning belong to `idea-focus-coach`.
+- This skill is for candidate-direction generation, not reviewer-style verdicts or acceptance-risk scoring. Use `reviewer-stress-test` for that.

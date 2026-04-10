@@ -8,3 +8,4 @@ __pycache__/
 linkedCodebases/*
 !linkedCodebases/README.md
 .agents/skills
+assets/LOGO.original.png

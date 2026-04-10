@@ -1,6 +1,6 @@
 ---
 name: research-workflow
-description: Unified entry for the research pipeline. Maps current work to one stage (collect/download/analyze/build/query/compare/ideate/focus/review/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.
+description: Unified entry for the research pipeline. Maps current work to one stage (collect/download/analyze/build/query/compare/ideate/focus/review/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities. Note: question-bank and pdfs-compress have been retired; their functions are covered by brainstorm and the download/analyze pipeline respectively.
 ---
 
 # Research Workflow Entry
@@ -15,7 +15,7 @@ KB build chain:
 - collect → download → analyze → (optional build)
 
 KB usage chain:
-- query / compare → question-bank → ideate → focus → review
+- query / compare → ideate → focus → review
 
 Support chain:
 - audit / export / code-context
@@ -46,8 +46,6 @@ Support chain:
   - `code-context-paper-retrieval`
 - compare
   - `papers-compare-table`
-- question-bank
-  - `research-question-bank`
 - ideate
   - `research-brainstorm-from-kb`
 - focus
@@ -67,7 +65,6 @@ Support chain:
 - build: no extra input (defaults to current repository)
 - query: task description/keywords (optional changed files, mode=brief/deep)
 - compare: paper list (title, path, or query filter)
-- question-bank: research direction + rough task description (optional target venue)
 - ideate: research problem statement
 - focus: initial idea + goal preferences (can come from ideate or be independent input)
 - review: idea / roadmap / full paper (can come from focus or be independent input)

@@ -1,17 +1,25 @@
 ---
 name: papers-compare-table
-description: Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user asks to compare methods, generate a related-work table, or needs a side-by-side summary of multiple papers.
+description: "Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user needs a side-by-side table to decide between design alternatives, write a Related Work section, select baselines, or present a method overview to collaborators. Not for free-text summaries (use papers-query-knowledge-base instead)."
 ---
 
 # Papers Compare Table
 
 ## Purpose
 
-Extract key fields from structured frontmatter and content in `paperAnalysis/` to generate paper comparison tables. Typical use cases:
+Extract key fields from structured frontmatter and content in `paperAnalysis/` to generate paper comparison tables.
 
-- method comparison for Related Work writing
-- horizontal comparison when selecting baselines
-- quick overviews for advisor/collaborator updates
+### When to use (concrete scenarios)
+
+1. **Design decision**: you are choosing between two or more operators/representations/losses and need a structured side-by-side view of their core_operator, primary_logic, and applicable scenarios.
+2. **Related Work table**: you are writing a paper and need a formatted comparison table ready to paste into LaTeX or Markdown.
+3. **Baseline selection**: you need to compare datasets, metrics, and reported numbers across candidate baselines before running experiments.
+4. **Advisor / collaborator update**: you want a quick, scannable overview of N papers without reading full analysis notes.
+
+### When NOT to use
+
+- You only need a text summary or evidence synthesis → use `papers-query-knowledge-base`.
+- You want to generate new ideas from the comparison → use `research-brainstorm-from-kb` after getting the table.
 
 ## Input
 

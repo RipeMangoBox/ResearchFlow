@@ -1,19 +1,9 @@
----
-created: 1970-01-01T08:00
-updated: 2026-04-07T15:16
----
-# ResearchFlow scripts
+# ResearchWY scripts
 
-This folder centralizes all executable maintenance/collection scripts for the ResearchFlow vault.
+This folder centralizes all executable maintenance/collection scripts for the ResearchWY vault.
 
 ## Structure
 
-- `setup_shared_skills.py`
-  - creates shared `.agents/skills` and `.codex/skills` compatibility aliases from `.claude/skills`
-  - uses symlinks on macOS/Linux and junction + hard link on Windows
-- `link_codebase.py`
-  - creates a local link under `linkedCodebases/` for an external code repository
-  - uses a symlink on macOS/Linux and a directory junction on Windows
 - `paper_collector_online/`
   - `collect_from_urls.py`: fetch URLs → save HTML to `paperSources/` → generate triage list in `paperAnalysis/*.txt`
 - `paper_analysis_maintenance/`
@@ -40,7 +30,9 @@ This folder centralizes all executable maintenance/collection scripts for the Re
 ## Notes
 
 - Prefer running scripts from the repository root, e.g.:
-  - `python3 scripts/setup_shared_skills.py`
-  - `python3 scripts/link_codebase.py /path/to/your-codebase`
   - `python3 scripts/paper_collector_online/collect_from_urls.py --help`
+- Shared skill aliases are managed by `scripts/setup_shared_skills.py`.
+  - Maintained source of truth: `.claude/skills` and `.claude/skills-config.json`
+  - Codex compatibility aliases: `.codex/skills`, `.codex/skills-config.json`
+  - Example: `python3 scripts/setup_shared_skills.py --check`
 - Some scripts depend on optional packages (e.g. `requests`, `pypdf`).

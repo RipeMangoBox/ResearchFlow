@@ -6,8 +6,6 @@ The single source of truth stays in `.claude/skills` and
 
 This script creates compatibility aliases under:
 
-- `.agents/skills`
-- `.agents/skills-config.json`
 - `.codex/skills`
 - `.codex/skills-config.json`
 
@@ -107,17 +105,47 @@ def create_file_alias(source: Path, target: Path) -> None:
     target.symlink_to(relative_source)
 
 
+def remove_path_if_present(path: Path) -> None:
+    if not path_exists(path):
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if path.is_dir():
+        if is_windows() and is_reparse_point(path):
+            path.rmdir()
+            return
+        if any(path.iterdir()):
+            raise RuntimeError(
+                f"{path} already exists as a real non-empty directory. "
+                "Please move it away before running this script."
+            )
+        path.rmdir()
+        return
+    raise RuntimeError(f"Unsupported existing path type: {path}")
+
+
+def cleanup_legacy_agents_aliases(root: Path) -> None:
+    legacy_paths = [
+        root / ".agents" / "skills",
+        root / ".agents" / "skills-config.json",
+    ]
+    for path in legacy_paths:
+        remove_path_if_present(path)
+    remove_path_if_present(root / ".agents")
+
+
 def alias_pairs() -> list[tuple[Path, Path]]:
     root = repo_root()
     return [
-        (root / ".agents" / "skills", root / ".claude" / "skills"),
-        (root / ".agents" / "skills-config.json", root / ".claude" / "skills-config.json"),
         (root / ".codex" / "skills", root / ".claude" / "skills"),
         (root / ".codex" / "skills-config.json", root / ".claude" / "skills-config.json"),
     ]
 
 
 def install_aliases() -> list[tuple[Path, Path]]:
+    root = repo_root()
+    cleanup_legacy_agents_aliases(root)
     pairs = alias_pairs()
     for target, source in pairs:
         if target.name == "skills":

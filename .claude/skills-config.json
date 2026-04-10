@@ -29,11 +29,11 @@
    "path": ".claude/skills/papers-collect-from-github-awesome/SKILL.md"
   },
   "papers-collect-from-web": {
-   "description": "Collects paper candidates from web URLs by fetching and storing pages locally, then generating a pipe-delimited triage list (status | title | venue&time | paper link | project/github link | category) under `paperAnalysis/`. Use when the user provides URLs + keyword constraints + venue/year and wants a processing list like ICLR_2026.txt.",
+   "description": "Collects paper candidates from web URLs by fetching and storing pages locally, then appending rows to `paperAnalysis/analysis_log.csv`. Use when the user provides URLs + keyword constraints + venue/year and wants candidates added to the unified log.",
    "path": ".claude/skills/papers-collect-from-web/SKILL.md"
   },
   "papers-compare-table": {
-   "description": "Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user asks to compare methods, generate a related-work table, or needs a side-by-side summary of multiple papers.",
+   "description": "Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user needs a side-by-side table to decide between design alternatives, write a Related Work section, select baselines, or present a method overview to collaborators. Not for free-text summaries (use papers-query-knowledge-base instead).",
    "path": ".claude/skills/papers-compare-table/SKILL.md"
   },
   "papers-download-from-list": {
@@ -41,23 +41,15 @@
    "path": ".claude/skills/papers-download-from-list/SKILL.md"
   },
   "papers-query-knowledge-base": {
-   "description": "Queries the local paperAnalysis notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes or compares methods; cites core_operator and primary_logic from analysis frontmatter. paperCollection is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.",
+   "description": "Queries the local paperAnalysis notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes methods and evidence across papers; cites core_operator and primary_logic from analysis frontmatter. paperCollection is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.",
    "path": ".claude/skills/papers-query-knowledge-base/SKILL.md"
   },
-  "pdfs-compress-large-files": {
-   "description": "Checks and compresses all PDFs larger than 20 MB under paperPDFs/ using Ghostscript, preserving high quality. Use when the user asks to compress PDFs, reduce PDF sizes, or prepare paperPDFs for analysis. Runs scripts/compress_large_pdfs.py which scans paperPDFs/, compresses in-place with /ebook settings (fallback to /screen), and prints a summary report.",
-   "path": ".claude/skills/pdfs-compress-large-files/SKILL.md"
-  },
   "research-brainstorm-from-kb": {
-   "description": "Structures and refines research ideas into `paperIDEAs/` notes using the paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed, scenario-driven optimization, related-work analysis based primarily on paperAnalysis, with paperCollection used only as optional statistics / navigation support, plus cross-domain support from image/video generation, MLLM, Agent, or RL.",
+   "description": "Explores and structures research ideas into `paperIDEAs/` notes using the paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed candidate directions, related-work analysis based primarily on paperAnalysis, with paperCollection used only as optional statistics / navigation support, plus cross-domain support from image/video generation, MLLM, Agent, or RL.",
    "path": ".claude/skills/research-brainstorm-from-kb/SKILL.md"
   },
-  "research-question-bank": {
-   "description": "Given a research direction and rough task description, generates a structured question/challenge list grounded in local KB and web search, covering domain open problems, top-venue reviewer concerns, and actionable research cuts. Saves output to QuestionBank/. Use when the user wants to map out the question landscape for a research area before committing to a specific idea.",
-   "path": ".claude/skills/research-question-bank/SKILL.md"
-  },
   "research-workflow": {
-   "description": "Unified entry for the research pipeline. Maps current work to one stage (collect/download/analyze/build/query/ideate/compare/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.",
+   "description": "Unified entry for the research pipeline. Maps current work to one stage (collect/download/analyze/build/query/compare/ideate/focus/review/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.",
    "path": ".claude/skills/research-workflow/SKILL.md"
   },
   "reviewer-stress-test": {

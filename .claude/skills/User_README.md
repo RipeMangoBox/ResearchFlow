@@ -13,10 +13,9 @@ It is navigation-only and does not participate in execution.
 - Analyze PDFs into the KB: `papers-analyze-pdf`
 - Rebuild statistics / navigation pages or search the KB: `papers-build-collection-index` / `papers-query-knowledge-base`
 - Build a paper comparison table: `papers-compare-table`
-- Explore research ideas: `research-brainstorm-from-kb`
-- Generate a question bank for a direction: `research-question-bank`
-- Narrow an idea into an executable plan: `idea-focus-coach`
-- Run strict reviewer-style pressure testing: `reviewer-stress-test`
+- Explore research ideas when the direction is still open-ended: `research-brainstorm-from-kb`
+- Narrow an existing direction into an executable plan: `idea-focus-coach`
+- Run strict reviewer-style pressure testing when you want challenge rather than co-creation: `reviewer-stress-test`
 - Diagnose repeated skill mismatch: `skill-fit-guard`
 - Fork ResearchFlow into another domain: `domain-fork`
 
@@ -39,11 +38,6 @@ It is navigation-only and does not participate in execution.
   - Input: candidate lists such as `paperAnalysis/*.txt`.
   - Output: downloaded or repaired local PDFs plus status results.
 
-- `pdfs-compress-large-files`
-  - When to use: PDFs are too large for storage or transfer.
-  - Input: `paperPDFs/` (auto-scanned).
-  - Output: a compression report and updated PDFs.
-
 - `papers-analyze-pdf`
   - When to use: you want structured analysis for one PDF or a batch of PDFs.
   - Input: local PDF paths.
@@ -62,14 +56,16 @@ It is navigation-only and does not participate in execution.
 ### 2.2 KB query and code-context retrieval
 
 - `papers-query-knowledge-base`
-  - When to use: you need papers, evidence, or a comparison summary from the local KB.
+  - When to use: you need papers, evidence, or a text synthesis across papers from the local KB.
   - Input: a research question, optionally with direction and constraints.
   - Output: KB-grounded answers with local evidence.
+  - Routing note: if you need a structured table, use `papers-compare-table`; if this is for an upcoming code change, prefer `code-context-paper-retrieval`.
 
 - `papers-compare-table`
-  - When to use: you need a structured multi-paper comparison table.
+  - When to use: you need to choose between design alternatives (operators, representations, losses), write a Related Work table, select baselines, or present a method overview to collaborators.
   - Input: paper titles, query conditions, or analysis paths.
   - Output: a Markdown or CSV comparison table.
+  - Routing note: if you only need a text summary, use `papers-query-knowledge-base`.
 
 - `code-context-paper-retrieval`
   - When to use: you are changing code and want paper support first.
@@ -83,23 +79,21 @@ It is navigation-only and does not participate in execution.
   - When to use: you need divergent candidate ideas.
   - Input: a question or direction draft.
   - Output: structured idea candidates plus related work support.
-
-- `research-question-bank`
-  - When to use: you want to map the full question landscape of a direction before choosing what to build.
-  - Input: a research direction and rough task description, optionally with a target venue.
-  - Output: structured challenge notes under `QuestionBank/`.
+  - Routing note: use this when the idea is still open-ended and you want candidate directions rather than scope cuts.
 
 - `idea-focus-coach`
   - When to use: the idea is too broad and needs gradual narrowing.
   - Input: an initial idea and goal preferences.
   - Output: focused goals, non-goals, prioritized hypotheses, and MVP experiments.
   - Independent use: it does not require prior brainstorm or reviewer output.
+  - Routing note: use this when you already have a real direction and need scope cuts, hypothesis ranking, or MVP planning.
 
 - `reviewer-stress-test`
   - When to use: you want to pressure test an idea in ICLR/CVPR/SIGGRAPH style.
   - Input: an idea, roadmap, or full paper.
   - Output: major and minor risks plus concrete repair actions.
   - Independent use: it does not require prior focus output.
+  - Routing note: use this when you want challenge and rejection-risk exposure rather than co-creation.
 
 ### 2.4 Pipeline orchestration and safeguards
 
@@ -135,17 +129,15 @@ All skills are triggered either by description matching or explicit invocation. 
 | `papers-collect-from-web` | explicit | When the user provides URLs plus topic constraints |
 | `papers-collect-from-github-awesome` | explicit | When the user provides a GitHub repository URL |
 | `papers-download-from-list` | explicit / suggestive | Suggest after collection is complete |
-| `pdfs-compress-large-files` | suggestive | Suggest when downloaded PDFs exceed 20 MB |
 | `papers-analyze-pdf` | explicit / suggestive | Suggest after download is complete |
 | `papers-audit-metadata-consistency` | suggestive | Suggest after a batch analysis pass |
 | `papers-build-collection-index` | suggestive | Suggest after analysis is complete if refreshed statistics / navigation pages are needed |
 | `papers-query-knowledge-base` | explicit / silent | Explicit for user queries; silent as an internal dependency |
 | `papers-compare-table` | explicit | When the user asks for a comparison |
 | `code-context-paper-retrieval` | explicit / suggestive | Suggest before model- or method-related code edits |
-| `research-brainstorm-from-kb` | explicit | When the user asks for research ideas |
-| `research-question-bank` | explicit | When the user asks for a challenge map |
-| `idea-focus-coach` | explicit | When the user has a vague idea and wants to narrow it |
-| `reviewer-stress-test` | explicit | When the user has a formed idea and wants pressure testing |
+| `research-brainstorm-from-kb` | explicit | When the user asks for open-ended candidate directions |
+| `idea-focus-coach` | explicit | When the user has a real direction and wants to narrow it into scope cuts or MVPs |
+| `reviewer-stress-test` | explicit | When the user has a formed idea and wants challenge rather than co-creation |
 | `research-workflow` | explicit / suggestive | When the user is unsure of the next step |
 | `notes-export-share-version` | explicit | When the user wants to share notes externally |
 | `skill-fit-guard` | suggestive | When the agent detects strong repeated mismatch |
@@ -166,6 +158,6 @@ Trigger mode notes:
 ## 5. Safety note
 
 - Actual routing depends only on `.claude/skills-config.json` and each skill's `SKILL.md`.
-- `.claude/skills` is the maintained source of truth. Run `python3 scripts/setup_shared_skills.py` or `py -3 scripts\setup_shared_skills.py` if you also need `.agents/skills` / `.codex/skills` compatibility aliases.
+- `.claude/skills` is the maintained source of truth. Run `python3 scripts/setup_shared_skills.py` or `py -3 scripts\setup_shared_skills.py` if you also need `.codex/skills` compatibility aliases.
 - This `User_README.md` is not part of the registry and does not affect execution.
 - `User_README_ZN.md` is also navigation-only and does not affect execution.

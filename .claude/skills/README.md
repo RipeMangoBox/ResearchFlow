@@ -1,7 +1,7 @@
 ## ResearchFlow Skills Overview
 
 Single source of truth: keep the maintained skill library in `.claude/skills`.
-If you also want Codex-compatible paths, run `python3 scripts/setup_shared_skills.py` on macOS/Linux or `py -3 scripts\setup_shared_skills.py` on Windows to generate `.agents/skills` and `.codex/skills` aliases without copying.
+If you also want Codex-compatible paths, run `python3 scripts/setup_shared_skills.py` on macOS/Linux or `py -3 scripts\setup_shared_skills.py` on Windows to generate `.codex/skills` aliases without copying.
 
 This skills directory supports the local paper workflow covering **collect -> download -> analyze -> build -> query -> compare -> ideate -> focus -> review**.
 
@@ -19,8 +19,6 @@ This skills directory supports the local paper workflow covering **collect -> do
   - Parse GitHub curated lists into an `analysis_log.csv`-aligned candidate list.
 - **papers-download-from-list**
   - Download, verify, repair, and deduplicate PDFs into `paperPDFs/`.
-- **pdfs-compress-large-files**
-  - Compress oversized PDFs in `paperPDFs/`.
 - **papers-analyze-pdf**
   - Convert local PDFs into structured `paperAnalysis/*.md` notes.
 - **papers-audit-metadata-consistency**
@@ -33,7 +31,7 @@ This skills directory supports the local paper workflow covering **collect -> do
 - **papers-query-knowledge-base**
   - Query the knowledge base primarily from `paperAnalysis/`, with `paperCollection/` as optional navigation support.
 - **papers-compare-table**
-  - Generate structured comparison tables for multiple papers.
+  - Generate structured comparison tables for design decisions, Related Work writing, baseline selection, or method overviews.
 - **code-context-paper-retrieval**
   - Retrieve paper evidence relevant to a coding task. Triggers before code modification.
 
@@ -41,8 +39,6 @@ This skills directory supports the local paper workflow covering **collect -> do
 
 - **research-brainstorm-from-kb**
   - Turn a research question into structured idea notes using the local knowledge base.
-- **research-question-bank**
-  - Generate a structured question and challenge list for a research direction, grounded in the KB and web search. Saves to `QuestionBank/`.
 - **idea-focus-coach** (independent)
   - Co-create and narrow broad ideas into focused goals, scope cuts, and next experiments.
 - **reviewer-stress-test** (independent)
@@ -69,12 +65,11 @@ This skills directory supports the local paper workflow covering **collect -> do
 - Already have PDFs and need analysis notes -> `papers-analyze-pdf`
 - Changed or added notes and want refreshed statistics / navigation pages -> `papers-build-collection-index`
 - Need a metadata quality pass -> `papers-audit-metadata-consistency`
-- Need to search, compare, or cite papers -> `papers-query-knowledge-base`
+- Need to search, summarize, or cite papers -> `papers-query-knowledge-base`
 - Need a side-by-side comparison table -> `papers-compare-table`
 - Need paper suggestions before coding -> `code-context-paper-retrieval`
-- Need idea generation backed by the knowledge base -> `research-brainstorm-from-kb`
-- Need to map out questions and challenges for a research direction -> `research-question-bank`
-- Need collaborative narrowing from a broad idea to an executable plan -> `idea-focus-coach`
+- Need idea generation backed by the knowledge base while the direction is still open-ended -> `research-brainstorm-from-kb`
+- Need collaborative narrowing from a broad-but-real idea to an executable plan -> `idea-focus-coach`
 - Need strict reviewer-mode challenge with repair paths -> `reviewer-stress-test`
 - A recently used skill seems repeatedly unfit -> `skill-fit-guard`
 - Want to create a domain-adapted version of ResearchFlow -> `domain-fork`
