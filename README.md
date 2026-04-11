@@ -74,6 +74,8 @@ Please propose 3 directions grounded in the local knowledge base.
 
 > Already have PDFs? Jump straight to analyze. Already have an idea? Jump to focus or reviewer stress testing. Not sure which skill to use? Start with `research-workflow`.
 
+> Analysis language: the default note language is **Chinese** (`analysis_language: zh`). To switch new analysis notes to English, change `analysis_language` to `en` in `AGENTS.md`, or explicitly ask for English output in the current prompt.
+
 ---
 
 ## ✨ Core Capabilities
@@ -555,7 +557,7 @@ If you want to keep the methodology but use a more neutral framing, you can also
 
 ## 📝 Notes
 
-- The main state flow in `analysis_log.csv` is `Wait → Downloaded → checked`, with `Missing` and `Skip` as side states.
+- The main state flow in `analysis_log.csv` is `Wait → Downloaded → checked`. Abnormal states: `analysis_mismatch` (incomplete analysis template) and `too_large` (PDF exceeds size limit). Side states: `Missing` and `Skip`. See `.claude/skills/STATE_CONVENTION.md` for full definitions.
 - If analysis notes are added or modified and you want refreshed `paperCollection/` pages, rebuild the index.
 - Obsidian is optional; the repository still works as a normal local folder for agents.
 - `.claude/skills` is the only maintained source.
