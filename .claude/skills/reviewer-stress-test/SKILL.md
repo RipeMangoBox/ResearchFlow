@@ -1,5 +1,6 @@
 ---
 name: reviewer-stress-test
+follows: rf-obsidian-markdown
 description: Runs a strict-but-fair ICLR/CVPR/SIGGRAPH reviewer challenge on idea, roadmap, or full paper, with major-risk diagnostics and actionable repair paths. Use when the user wants high-pressure review questioning instead of brainstorming.
 ---
 

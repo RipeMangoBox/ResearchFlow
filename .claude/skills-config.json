@@ -63,6 +63,10 @@
   "domain-fork": {
    "description": "Migrates ResearchFlow's architecture to a new professional domain (e.g. frontend dev, accounting, journalism). Interactive session: confirms domain, generates concept mapping, adapts all skills and folder structure. Explicit trigger only — must be directly invoked by the user.",
    "path": ".claude/skills/domain-fork/SKILL.md"
+  },
+  "rf-obsidian-markdown": {
+   "description": "Obsidian Flavored Markdown conventions for ResearchFlow. Defines wikilink, embed, callout, frontmatter, and tag rules that all .md-generating skills must follow. Ensures output renders correctly in Obsidian reading view, graph view, and backlink panels. Adapted from kepano/obsidian-skills.",
+   "path": ".claude/skills/rf-obsidian-markdown/SKILL.md"
   }
  }
 }

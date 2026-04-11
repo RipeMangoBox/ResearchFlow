@@ -8,3 +8,5 @@ linkedCodebases/*
 !linkedCodebases/README.md
 .agents/skills
 assets/LOGO.original.png
+_private/
+paperPDFs/

@@ -1,5 +1,6 @@
 ---
 name: research-brainstorm-from-kb
+follows: rf-obsidian-markdown
 description: Explores and structures research ideas into `paperIDEAs/` notes using the local paper knowledge base and frontier techniques. Use when the user provides research questions or ideas and wants decomposed candidate directions, related-work analysis based primarily on `paperAnalysis`, and cross-domain support from image/video generation, MLLM, Agent, or RL, automatically saved as dated idea notes under `paperIDEAs/`.
 ---
 

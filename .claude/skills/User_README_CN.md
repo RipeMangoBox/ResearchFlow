@@ -42,6 +42,7 @@
   - 何时使用：你想对单篇或批量 PDF 做结构化分析。
   - 输入：本地 PDF 路径。
   - 输出：`paperAnalysis/` 下的结构化 Markdown。
+  - 语言说明：默认输出语言跟随 `AGENTS.md` 里的 `analysis_language`（默认 `zh`，改成 `en` 可输出英文笔记）；当前请求中如果用户显式指定语言，会覆盖这一次默认值。
 
 - `papers-audit-metadata-consistency`
   - 何时使用：你怀疑日志和分析笔记存在不一致。

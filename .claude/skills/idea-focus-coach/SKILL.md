@@ -1,5 +1,6 @@
 ---
 name: idea-focus-coach
+follows: rf-obsidian-markdown
 description: Guides research ideation from broad thoughts to a focused, testable plan with explicit scope cuts, prioritized hypotheses, and immediate next experiments. Use when the user wants co-creation and step-by-step narrowing, not review verdicts.
 ---
 

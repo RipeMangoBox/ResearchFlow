@@ -1,5 +1,6 @@
 ---
 name: papers-build-collection-index
+follows: rf-obsidian-markdown
 description: Builds/refreshes `paperCollection/` index notes from `paperAnalysis/` frontmatter. Use when the user asks to update/rebuild `paperCollection`, regenerate indexes (by task/technique/venue), or after adding/editing analysis notes and PDF refs.
 ---
 

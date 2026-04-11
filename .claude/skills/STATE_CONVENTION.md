@@ -30,7 +30,7 @@ Wait → Downloaded → checked
 | `too_large` | PDF exceeds 20 MB after compression (`/ebook` then `/screen`); skipped | analyze (`papers-analyze-pdf`) | Manually compress or split the PDF, then set state back to `Downloaded` |
 
 ## Out-of-band states
-
+![1775910552974](image/STATE_CONVENTION/1775910552974.png)![1775910556384](image/STATE_CONVENTION/1775910556384.png)
 | state | Meaning | Written by | Recovery |
 |-------|---------|------------|----------|
 | `Skip` | Manually filtered out, not processed | User (manual edit) | Set back to `Wait` if reconsidered |

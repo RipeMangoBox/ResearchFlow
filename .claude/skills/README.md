@@ -21,6 +21,7 @@ This skills directory supports the local paper workflow covering **collect -> do
   - Download, verify, repair, and deduplicate PDFs into `paperPDFs/`.
 - **papers-analyze-pdf**
   - Convert local PDFs into structured `paperAnalysis/*.md` notes.
+  - Default output language is Chinese. Change `analysis_language` in `AGENTS.md` to `en`, or explicitly request English output in the current prompt if needed.
 - **papers-audit-metadata-consistency**
   - Audit consistency between logs and analysis notes.
 - **papers-build-collection-index**

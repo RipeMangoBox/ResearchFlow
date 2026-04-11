@@ -1,103 +1,110 @@
 ---
-title: "DART: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control"
+title: "DartControl: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control"
 venue: ICLR
 year: 2025
 tags:
   - Motion_Generation_Text_Speech_Music_Driven
-  - autoregressive
+  - task/text-to-motion
   - diffusion
-  - motion-primitives
-  - real-time
-  - spatial-control
-  - latent-optimization
+  - autoregressive
   - reinforcement-learning
-  - status/analyzed
-core_operator: 运动原语（overlapping短片段）+ latent diffusion VAE（压缩原语为紧凑潜空间）+ 自回归rollout，支持实时在线生成任意长度动作及latent空间空间控制
+  - dataset/BABEL
+  - dataset/HumanML3D
+  - dataset/AMASS
+  - repr/SMPL-X
+  - opensource/full
+core_operator: 潜在运动基元扩散模型（Latent Motion Primitive Diffusion）：将长序列分解为重叠短基元，在VAE压缩的潜空间中用条件扩散自回归生成，实现实时文本驱动+空间控制
 primary_logic: |
-  动作序列分解为overlapping运动原语（H=2历史帧+F=8未来帧）→ VAE压缩原语为紧凑潜变量z →
-  latent denoiser（条件：文本CLIP嵌入+历史帧+噪声latent）→ 自回归rollout生成无限长动作序列
-  空间控制：(1) 潜噪声优化 (2) RL-MDP学习控制策略
+  文本提示 + 历史运动种子
+  → VAE编码器压缩运动基元为紧凑潜变量z
+  → 潜扩散去噪器（Transformer，10步DDPM）：条件=历史H + CLIP文本嵌入 + 噪声步t → 预测干净z₀
+  → VAE解码器重建未来帧 → 自回归滚动拼接 → 任意长度实时生成（>300fps）
+  → 空间控制：潜噪声优化（梯度下降）或RL策略（PPO，潜噪声作为动作空间）
+claims:
+  - "DART在BABEL时序运动组合任务上以FID 3.79超越离线SOTA FlowMDM(5.81)，同时实现334fps实时在线生成"
+  - "潜噪声空间RL策略在目标到达任务上实现100%成功率和0.59cm Goal Error，优于DNO(4.24cm)和OmniControl(7.79cm)"
+  - "Scheduled training策略将长序列自回归生成的FID从8.08降至3.79，有效抑制分布漂移"
 pdf_ref: paperPDFs/Motion_Generation_Text_Speech_Music_Driven/ICLR_2025/2025_DART_A_Diffusion_Based_Autoregressive_Motion_Model_for_Real_Time_Text_Driven_Motion_Control.pdf
 category: Motion_Generation_Text_Speech_Music_Driven
-created: 2026-03-14T03:39
-updated: 2026-04-06T23:55
 ---
 
-# DART: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control
+# DartControl: A Diffusion-Based Autoregressive Motion Model for Real-Time Text-Driven Motion Control
 
 > [!abstract] **Quick Links & TL;DR**
-> - **Links**: [Project](https://zkf1997.github.io/DART/) | [arXiv](https://arxiv.org/pdf/2410.05260.pdf) | 本地 PDF 见文末 Local Reading
-> - **Summary**: 将扩散模型与自回归动作原语结合，实现实时在线文本驱动的任意长动作序列生成（比 FlowMDM 快10倍），同时通过潜空间优化或 RL 策略支持精确空间控制（轨迹跟随、场景感知、目标到达）。
+>
+> - **Links**: [Project Page](https://zkf1997.github.io/DART/) · [ICLR 2025](https://openreview.net/forum?id=DART)
+> - **Summary**: DART通过在VAE压缩的运动基元潜空间上训练条件扩散模型，首次实现实时（>300fps）、在线文本驱动的长序列运动生成，并通过潜噪声优化或RL策略统一支持精确空间控制。
 > - **Key Performance**:
->   - 实时生成速度：比 SOTA 离线方法 FlowMDM **快 10 倍**，支持真正在线流式生成
->   - 在动作过渡（in-between）、场景感知、目标到达等多任务上均优于或匹配各专家基线
+>   - 时序运动组合FID **3.79** vs. FlowMDM(5.81)，生成速度334fps vs. FlowMDM(31fps)，延迟0.02s vs. 161s
+>   - 运动中间帧生成Goal error **0.59cm** vs. DNO(4.24cm) vs. OmniControl(7.79cm)
 
 ---
 
-## Part I — 问题与挑战 / The "Skill" Signature
+## Part I：问题与挑战
 
-**真正的卡点：长程动作的在线实时生成与精确空间控制的同步满足**
+### 真正的卡点
 
-- **核心能力**：给定文本流（多个连续动作描述）+ 空间约束，实时（在线，无需预先知晓完整时间线）生成连续、无缝衔接的任意长度 3D 动作序列。
-- **挑战来源**：
-  1. *离线 vs 在线*：FlowMDM 等 SOTA 方法是离线的（需要提前知道完整动作时间线），无法响应实时输入流；
-  2. *语义控制与空间控制冲突*：文本语义定义动作类型，空间约束（到达某点/跟随轨迹/与场景适配）是额外几何信息——两者在潜空间中难以同时满足；现有方法（DNO 等）在整个序列上操作，难以实现精细局部控制；
-  3. *长程连贯性*：直接对整个长序列建模导致数据分布复杂、训练困难、推理耗时。
-- **输入/输出接口**：H帧种子动作 + N个文本提示流 + 空间目标（可选：关键帧姿态/关节轨迹/场景点云） → 任意长度 SMPL-X 动作序列（连续、实时流式输出）。
-- **边界条件**：运动原语长度固定（H=2, F=8），对极长步幅动作的精确空间控制有累积误差；CLIP 语义嵌入对细粒度动作区分有上限；RL 控制方案训练成本较高。
+文本驱动运动生成面临**在线实时性**与**空间精确控制**的双重挑战：
+
+- **在线实时性**：现有方法（FlowMDM等）为离线全序列生成，需要预知完整动作时间线，无法响应实时文本流；生成速度慢（31fps），延迟高（>160s），不适用于交互场景
+- **空间精确控制**：纯文本条件无法指定精确空间目标（到达特定位置、跟随轨迹、与场景交互）；现有空间控制方法（OmniControl、DNO）在平衡空间约束与文本语义对齐时表现不佳，且仅支持离线短序列
+- **长序列稳定性**：自回归生成面临分布漂移和误差累积，导致长序列质量退化
+
+### 输入/输出接口
+
+- **输入**：历史运动种子H（2帧）+ 实时文本提示序列C + 可选空间目标g
+- **输出**：连续运动序列M（任意长度），SMPL-X 276维表示（含关节旋转、位置、速度）
+- **基元规格**：H=2帧历史 + F=8帧未来，重叠自回归滚动
+
+### 边界条件
+
+- 训练数据：BABEL（帧级文本标注）或HML3D（序列级标注）；AMASS运动捕捉
+- 帧级标注时文本-动作对齐精确；序列级标注时多动作描述会导致语义歧义
+- 空间控制的优化方法计算开销较大（60帧序列+100步优化≈74s）；RL策略高效但需额外训练
 
 ---
 
-## Part II — 方法与洞察 / High-Dimensional Insight
+## Part II：方法与洞察
 
-**设计哲学：将连续长动作"原子化"为短原语，在潜空间实现高效自回归，再用潜空间控制框架统一空间约束**
+### 设计哲学
 
-### The "Aha!" Moment
+**"将复杂长序列问题分解为简单短基元问题"**：不直接建模全序列分布，而是将运动分解为重叠的短基元（10帧），在VAE压缩的低维潜空间中用少步扩散（10步DDPM）生成每个基元，通过自回归滚动组合为任意长序列。空间控制则统一为潜空间中的优化问题。
 
-**作者改变了什么**：将人体运动建模单元从"完整序列"降维为**运动原语（motion primitive）**——每个原语由 H 帧历史（与上一原语末端重叠）和 F 帧未来组成，然后用 **latent diffusion VAE** 将每个原语压缩为紧凑潜变量 z。
+### 核心直觉
 
-**为什么有效**：
-- *数据分布简化*：短原语（10帧）的数据分布远比完整序列（100+帧）更简单、更紧凑，diffusion 模型学习效率更高，所需扩散步数更少（推理快）；
-- *自回归天然实时*：每个原语的生成仅依赖上一原语末端（history frames），无需全局时间线信息，支持流式在线推理；
-- *历史帧重叠保证连贯*：history frames 作为条件注入 denoiser，确保生成的下一段运动在动力学上与上一段平滑衔接；
-- *潜空间控制的优越性*：在压缩的原语潜空间内进行优化，比在全动作序列的显式空间（DNO 方式）效果更好——潜空间过滤了数据中的噪声和伪影（VAE 天然去噪），使优化更稳健；RL-MDP 方案则将潜空间视为行动空间，策略网络学习在此空间中探索，比 DNO 更具可复用性。
+**运动基元潜空间的核心直觉**：原始运动数据包含各种噪声和抖动伪影，直接在原始空间训练扩散模型会继承这些伪影。VAE压缩将运动基元映射到紧凑、平滑的潜流形上——**压缩本身就是去噪**，使得扩散模型只需极少步数（10步）即可生成高质量样本。
+
+**自回归基元 vs. 全序列生成**：短基元（8帧未来）的数据分布远比完整长序列简单，扩散模型更容易学习；同时基元天然对应原子动作语义，文本-运动对齐更精确。Scheduled training（渐进引入rollout历史）解决了训练-推理分布不一致导致的长序列漂移。
+
+**潜噪声作为统一控制接口**：DDIM采样将标准高斯噪声确定性映射到合理运动，因此潜噪声空间天然是"合理运动的参数化"——对噪声做梯度优化或RL策略学习，等价于在合理运动流形上搜索满足空间约束的解。
 
 **战略权衡**：
-- 优势：实时、任意长度、统一框架支持语义+空间控制；架构简单，无任务专属模块；
-- 局限：原语长度（H+F=10帧）为超参，需根据动作特性调整；CLIP 文本编码器细粒度不足；RL 控制训练需额外成本；H=2的历史过短，对于需要长历史依赖的动作（如太极拳缓慢转换）可能不足。
+
+| 优势 | 局限 |
+|------|------|
+| 实时生成（>300fps），延迟0.02s | 帧级文本标注数据稀缺，限制开放词汇泛化 |
+| 统一框架支持文本+空间控制 | 优化方法仍需数十秒；RL需额外训练 |
+| 10步扩散即可高质量生成 | 序列级标注时多动作文本会导致语义歧义 |
+| Scheduled training保证长序列稳定 | 运动学方法，物理合理性需后处理（如PHC） |
 
 ---
 
-## Part III — 实验与证据 / Technical Deep Dive
+## Part III：证据与局限
 
-**核心 Pipeline**：
+### 关键实验信号
 
-```
-历史帧 H + 未来帧 X（原语 Pi）→
-  VAE Encoder（Transformer）→ latent z（通过 distribution tokens Tμ/Tσ 参数化）
-  VAE Decoder（Transformer）→ 重建 X̂（条件：H + z）
-      ↓（VAE训练完后固定权重）
-Latent Denoiser（Transformer）
-  条件：时间步t + CLIP文本嵌入 + 历史帧H + 噪声latent zt
-  → 预测干净 latent ẑ0
-      ↓
-自回归 rollout：
-  X1 ~ denoiser(text_1, H_seed) → X2 ~ denoiser(text_2, X1的末尾H帧) → ...
+- **时序运动组合**（BABEL）：FID 3.79（最优）vs. FlowMDM 5.81，转场FID 1.86 vs. FlowMDM 2.39——在线生成质量超越离线SOTA；人类偏好研究中DART在真实性和语义对齐上均优于所有基线（vs. FlowMDM: 53.3% vs. 46.7%）
+- **运动中间帧生成**（HML3D）：Goal error 0.59cm vs. DNO 4.24cm vs. OmniControl 7.79cm；Skate 2.98 vs. DNO 5.38——潜基元空间在协调空间控制与文本语义方面显著优于直接在运动空间优化的DNO
+- **RL目标到达**：100%成功率 vs. GAMMA 95%；Skate 2.67cm/s vs. GAMMA 5.14cm/s——RL策略在潜空间中高效学习，生成速度240fps
+- **消融**：移除VAE导致PJ从0.06→0.20（抖动显著增加）；移除scheduled training导致FID从3.79→8.08（长序列崩溃）；10步扩散与100步性能相当
 
-空间控制（可选）：
-  (1) 潜噪声优化：对生成的 zt 求梯度，使解码动作满足空间约束
-  (2) RL-MDP：策略网络以 z 为行动空间学习满足空间约束的潜变量探索策略
-```
+### 局限与可复用组件
 
-**运动表示**：SMPL-X，每帧 D=276 维（root translation + orientation + 局部关节旋转 + 关节位置 + 时序差分特征）；每个原语在第一帧骨盆为中心的局部坐标系中规范化。
-
-**关键实验信号**：
-- 速度优势最直接：FlowMDM 生成相同时长动作需分钟级，DART 实现实时（100ms级），这不是微小改进而是范式级差异；
-- 动作过渡（in-between）与目标到达：DART 在空间精度指标上与专门设计的 CLoSD 相当，同时兼顾文本语义；
-- 无 VAE 的消融（直接在原始动作空间去噪）显示输出中出现明显抖动和伪影，证明 VAE 压缩在动作生成中的关键去噪作用。
-
-**实现约束**：AMASS 数据集预训练；HumanML3D 文本标注；H=2, F=8；SMPL-X；CLIP-L 文本编码；ICLR 2025。
+- **局限**：依赖帧级文本标注（BABEL）实现精确控制；运动学生成可能有滑步/穿透等物理伪影
+- **可复用**：运动基元VAE + 少步潜扩散的架构范式；潜噪声优化/RL控制框架可迁移到其他基于扩散的生成任务；Scheduled training策略适用于任何自回归生成模型
 
 ---
+
+## 本地 PDF 引用
 
 ![[paperPDFs/Motion_Generation_Text_Speech_Music_Driven/ICLR_2025/2025_DART_A_Diffusion_Based_Autoregressive_Motion_Model_for_Real_Time_Text_Driven_Motion_Control.pdf]]

@@ -43,9 +43,10 @@ Tags: list of strings. Filter out `status/*` and category-name tag when building
 ## paperAnalysis note body structure
 
 - Quick Links & TL;DR (Summary, Key Performance)
-- Part I: problem / skill signature
-- Part II: method / "Aha!" moment
-- Part III: technical deep dive
+- Part I / Part II / Part III headings follow `analysis_language` in `AGENTS.md`
+  - `zh`: `## Part I：问题与挑战`, `## Part II：方法与洞察`, `## Part III：证据与局限`, `### 核心直觉`
+  - `en`: `## Part I: Problem & Challenge`, `## Part II: Method & Insight`, `## Part III: Evidence & Limits`, `### The "Aha!" Moment`
+- Legacy notes may still use older mixed headings such as `The "Skill" Signature` or `Technical Deep Dive`
 - Local Reading (link/embed to PDF)
 
 ## Relationship

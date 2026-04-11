@@ -1,5 +1,6 @@
 ---
 name: papers-audit-metadata-consistency
+follows: rf-obsidian-markdown
 description: Runs a unified metadata consistency audit across paperAnalysis logs and analysis notes, checking title/venue/year/category consistency, link/pdf_ref completeness, duplicates, and structure anomalies; writes quality_report_*.md under paperAnalysis.
 ---
 

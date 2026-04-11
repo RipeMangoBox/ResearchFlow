@@ -42,6 +42,7 @@ It is navigation-only and does not participate in execution.
   - When to use: you want structured analysis for one PDF or a batch of PDFs.
   - Input: local PDF paths.
   - Output: structured Markdown under `paperAnalysis/`.
+  - Language note: output language follows `analysis_language` in `AGENTS.md` (`zh` by default, switch to `en` for English notes). An explicit user request can override the default for one run.
 
 - `papers-audit-metadata-consistency`
   - When to use: you suspect the log and analysis notes are inconsistent.

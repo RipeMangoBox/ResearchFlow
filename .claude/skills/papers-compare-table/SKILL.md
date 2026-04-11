@@ -1,5 +1,6 @@
 ---
 name: papers-compare-table
+follows: rf-obsidian-markdown
 description: "Generates structured comparison tables for N papers from paperAnalysis frontmatter (core_operator, primary_logic, dataset, metrics, venue). Use when the user needs a side-by-side table to decide between design alternatives, write a Related Work section, select baselines, or present a method overview to collaborators. Not for free-text summaries (use papers-query-knowledge-base instead)."
 ---
 

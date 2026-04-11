@@ -1,5 +1,6 @@
 ---
 name: papers-query-knowledge-base
+follows: rf-obsidian-markdown
 description: Queries the local `paperAnalysis/` notes for research. Finds papers by title, task path, technique tags, venue, or year; summarizes methods and evidence across papers; cites core_operator and primary_logic from analysis frontmatter. `paperCollection/` is optional and mainly serves statistics, Obsidian navigation, and backlink exploration.
 ---
 
@@ -38,7 +39,7 @@ All paths use forward slashes.
 
 1. **Find papers** — Search `paperAnalysis/` directly by title, task folder, tags, venue, year, `core_operator`, or `primary_logic`. Prefer frontmatter/body evidence over generated index pages.
 
-2. **Read an analysis** — Open the matched analysis note directly. Each note has: **Frontmatter** (title, venue, year, category, tags, pdf_ref, core_operator, primary_logic); **TL;DR** (Summary, Key Performance); **Part I** (problem); **Part II** (method, "Aha!"); **Part III** (technical); **Local Reading** (PDF).
+2. **Read an analysis** — Open the matched analysis note directly. Each note has: **Frontmatter** (title, venue, year, category, tags, pdf_ref, core_operator, primary_logic); **TL;DR** (Summary, Key Performance); **Part I / II / III** sections whose exact headings follow `analysis_language` in `AGENTS.md`; and **Local Reading** (PDF). Older notes may still use legacy mixed headings, so match semantically rather than by one exact title string.
 
 3. **Use `paperCollection/` only when helpful** — For task / technique / venue overview pages, statistics, Obsidian jumps, or backlink exploration.
 
