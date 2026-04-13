@@ -260,59 +260,14 @@ Prompt 4: rebuild indexes
 <details>
 <summary>2. Import papers from Zotero</summary>
 
-If you already manage papers in Zotero, sync them into ResearchFlow instead of collecting from scratch.
-
-> **Security note:** Passing your Zotero API key directly to an agent is risky — the key may end up in logs, transcripts, or shell history, and a read-write key grants full access to your library (including deletion). The recommended approach is to run the API call yourself and let the agent handle the local files only.
-
-**Recommended: manual export + agent import (no API key exposure)**
-
-Step 1 — Export from Zotero yourself (run in your own terminal):
-
-```bash
-# 1. Verify your API key works (one-time check, run manually)
-curl -sS \
-  -H "Zotero-API-Key: YOUR_API_KEY" \
-  https://api.zotero.org/keys/current
-
-# 2. Export a collection as BibTeX via Zotero desktop:
-#    Right-click collection → Export Collection → BibTeX → Save as refs.bib
-#
-# 3. Copy the PDFs from Zotero storage to a staging folder:
-cp -r ~/Zotero/storage/TARGET_COLLECTION ~/staging_pdfs/
-```
-
-Step 2 — Let the agent import the local files (no key needed):
+If you already manage papers in Zotero (or just have a folder of PDFs), one prompt is all you need — the agent will walk you through setup, security choices, and import options:
 
 ```text
 /papers-sync-from-zotero
-Import PDFs from ~/staging_pdfs/ into ResearchFlow.
-Use ~/refs.bib for metadata. Category is Motion_Generation.
+Please guide me through connecting Zotero to ResearchFlow.
 ```
 
-**Alternative: agent-driven API sync (if you accept the risk)**
-
-If your Zotero API key is read-only and you are comfortable with the agent seeing it:
-
-```text
-/papers-sync-from-zotero
-Sync my Zotero library into ResearchFlow. My library ID is 12345 and API key is xxx.
-```
-
-To sync only a specific collection:
-
-```text
-/papers-sync-from-zotero
-Sync only the 'Video Generation' collection from Zotero.
-```
-
-If you have a local folder of PDFs without Zotero:
-
-```text
-/papers-sync-from-zotero
-Import PDFs from ~/Downloads/papers/ into ResearchFlow. They are all CVPR 2025 papers.
-```
-
-After sync, run `papers-analyze-pdf` on the newly imported entries, then `papers-build-collection-index` to update indexes. Synced papers enter the pipeline at `Downloaded` state since PDFs are already local.
+The agent will ask about your setup (API vs local folder, collection scope, category mapping) and handle the rest. After sync, run `papers-analyze-pdf` on the newly imported entries.
 
 </details>
 

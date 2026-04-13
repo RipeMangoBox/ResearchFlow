@@ -257,59 +257,14 @@ Prompt 4：重建索引
 <details>
 <summary>2. 从 Zotero 导入论文</summary>
 
-如果你已经在 Zotero 中管理论文，可以直接同步到 ResearchFlow，无需从头收集。
-
-> **安全提示：** 将 Zotero API key 直接交给 agent 有风险——key 可能出现在日志、transcript 或 shell history 中，且读写权限的 key 可以删除你的文库条目。推荐做法是自己完成导出，只让 agent 处理本地文件。
-
-**推荐：手动导出 + agent 导入（不暴露 API key）**
-
-第 1 步——自己在终端完成 Zotero 导出：
-
-```bash
-# 1. 验证 API key 可用（一次性检查，手动执行）
-curl -sS \
-  -H "Zotero-API-Key: YOUR_API_KEY" \
-  https://api.zotero.org/keys/current
-
-# 2. 通过 Zotero 桌面端导出 BibTeX：
-#    右键 collection → Export Collection → BibTeX → 保存为 refs.bib
-#
-# 3. 把 PDF 从 Zotero storage 复制到暂存目录：
-cp -r ~/Zotero/storage/TARGET_COLLECTION ~/staging_pdfs/
-```
-
-第 2 步——让 agent 导入本地文件（无需 key）：
+如果你已经在 Zotero 中管理论文（或者只是有一个 PDF 文件夹），一句话就够了——agent 会引导你完成设置、安全选项和导入：
 
 ```text
 /papers-sync-from-zotero
-从 ~/staging_pdfs/ 导入 PDF 到 ResearchFlow。
-用 ~/refs.bib 作为 metadata 来源。Category 是 Motion_Generation。
+请指导我将 Zotero 接入 ResearchFlow。
 ```
 
-**备选：agent 直接调用 API（如果你接受风险）**
-
-如果你的 Zotero API key 是只读的，且你接受 agent 看到它：
-
-```text
-/papers-sync-from-zotero
-把我的 Zotero 文库同步到 ResearchFlow。Library ID 是 12345，API key 是 xxx。
-```
-
-只同步某个 collection：
-
-```text
-/papers-sync-from-zotero
-只同步 Zotero 中 'Video Generation' 这个 collection。
-```
-
-如果只有本地 PDF 文件夹、没有 Zotero：
-
-```text
-/papers-sync-from-zotero
-从 ~/Downloads/papers/ 导入 PDF 到 ResearchFlow，它们都是 CVPR 2025 的论文。
-```
-
-同步完成后，运行 `papers-analyze-pdf` 处理新导入的条目，再运行 `papers-build-collection-index` 更新索引。同步的论文直接进入 `Downloaded` 状态（PDF 已在本地）。
+Agent 会询问你的环境（API 还是本地文件夹、collection 范围、category 映射），然后自动处理。同步完成后，运行 `papers-analyze-pdf` 处理新导入的条目。
 
 </details>
 
