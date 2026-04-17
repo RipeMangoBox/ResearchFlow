@@ -1,14 +1,14 @@
 # ResearchFlow Agent Guide
 
-ResearchFlow is an agent-ready research knowledge base, not just a paper folder.
+ResearchFlow is an agent-ready research knowledge base with a **single-core multi-projection architecture (v3.1)**.
 
 Core loop:
 
 ```text
-Zotero sync / collect paper list -> paper analysis -> build index -> research assist
+Zotero sync / collect paper list → paper analysis → DeltaCard build → assertion graph → research assist
 ```
 
-`Download` sits inside the intake path between collection and analysis.
+**Key v3.1 concepts**: DeltaCard is the intermediate truth layer (extracted once, projected many times). IdeaDelta is the reusable knowledge atom. GraphAssertions have lifecycle management (candidate → published). Backend has 31 DB tables, 63 API endpoints, 15 MCP tools.
 
 ## What This Repository Is For
 

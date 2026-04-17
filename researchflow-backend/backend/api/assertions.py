@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,108 +47,7 @@ class AliasRequest(BaseModel):
     confidence: float | None = None
 
 
-# ── Assertion endpoints ───────────────────────────────────────────
-
-@router.post("")
-async def propose_assertion(
-    req: ProposeAssertionRequest,
-    session: AsyncSession = Depends(get_session),
-):
-    """Propose a new graph assertion."""
-    assertion = await assertion_service.propose_assertion(
-        session,
-        from_node_id=req.from_node_id,
-        to_node_id=req.to_node_id,
-        edge_type=req.edge_type,
-        assertion_source=req.assertion_source,
-        confidence=req.confidence,
-        metadata=req.metadata,
-        evidence_unit_ids=req.evidence_unit_ids,
-    )
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status, "edge_type": assertion.edge_type}
-
-
-@router.get("/{assertion_id}")
-async def get_assertion(
-    assertion_id: UUID,
-    session: AsyncSession = Depends(get_session),
-):
-    """Get assertion detail with evidence and node info."""
-    result = await assertion_service.get_assertion_with_evidence(session, assertion_id)
-    if not result:
-        from fastapi import HTTPException
-        raise HTTPException(404, "Assertion not found")
-    return result
-
-
-@router.get("/{assertion_id}/audit")
-async def audit_assertion(
-    assertion_id: UUID,
-    session: AsyncSession = Depends(get_session),
-):
-    """Audit an assertion's evidence backing."""
-    return await assertion_service.audit_assertion(session, assertion_id)
-
-
-@router.post("/{assertion_id}/publish")
-async def publish_assertion(
-    assertion_id: UUID,
-    reviewed_by: str | None = None,
-    session: AsyncSession = Depends(get_session),
-):
-    """Publish an assertion."""
-    assertion = await assertion_service.publish_assertion(session, assertion_id, reviewed_by)
-    if not assertion:
-        from fastapi import HTTPException
-        raise HTTPException(404, "Assertion not found")
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status}
-
-
-@router.post("/{assertion_id}/reject")
-async def reject_assertion(
-    assertion_id: UUID,
-    req: ReviewDecisionRequest,
-    session: AsyncSession = Depends(get_session),
-):
-    """Reject an assertion."""
-    assertion = await assertion_service.reject_assertion(
-        session, assertion_id, req.reviewer, req.reason,
-    )
-    if not assertion:
-        from fastapi import HTTPException
-        raise HTTPException(404, "Assertion not found")
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status}
-
-
-@router.get("/node/{node_id}")
-async def get_assertions_for_node(
-    node_id: UUID,
-    direction: str = Query(default="both", pattern="^(outgoing|incoming|both)$"),
-    status: str | None = None,
-    session: AsyncSession = Depends(get_session),
-):
-    """Get assertions connected to a graph node."""
-    assertions = await assertion_service.get_assertions_for_node(
-        session, node_id, direction, status,
-    )
-    return [
-        {
-            "id": str(a.id),
-            "from_node_id": str(a.from_node_id),
-            "to_node_id": str(a.to_node_id),
-            "edge_type": a.edge_type,
-            "assertion_source": a.assertion_source,
-            "confidence": a.confidence,
-            "status": a.status,
-        }
-        for a in assertions
-    ]
-
-
-# ── Review endpoints ──────────────────────────────────────────────
+# ── Review endpoints (BEFORE /{assertion_id} to avoid conflict) ───
 
 @router.get("/reviews/queue")
 async def list_review_queue(
@@ -177,7 +76,6 @@ async def assign_review(
     """Assign a review task."""
     task = await review_service.assign_review(session, task_id, assigned_to)
     if not task:
-        from fastapi import HTTPException
         raise HTTPException(404, "Review task not found")
     await session.commit()
     return {"id": str(task.id), "status": task.status, "assigned_to": task.assigned_to}
@@ -207,7 +105,7 @@ async def reject_review(
     return result
 
 
-# ── Override endpoints ────────────────────────────────────────────
+# ── Override endpoints (BEFORE /{assertion_id}) ───────────────────
 
 @router.post("/overrides")
 async def create_override(
@@ -240,7 +138,7 @@ async def list_overrides(
     return await review_service.list_overrides(session, target_type, target_id, limit)
 
 
-# ── Alias endpoints ───────────────────────────────────────────────
+# ── Alias endpoints (BEFORE /{assertion_id}) ──────────────────────
 
 @router.post("/aliases")
 async def register_alias(
@@ -263,3 +161,103 @@ async def list_aliases(
 ):
     """List entity aliases."""
     return await entity_resolution_service.list_aliases(session, entity_type, entity_id)
+
+
+# ── Node query (BEFORE /{assertion_id}) ───────────────────────────
+
+@router.get("/node/{node_id}")
+async def get_assertions_for_node(
+    node_id: UUID,
+    direction: str = Query(default="both", pattern="^(outgoing|incoming|both)$"),
+    status: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get assertions connected to a graph node."""
+    assertions = await assertion_service.get_assertions_for_node(
+        session, node_id, direction, status,
+    )
+    return [
+        {
+            "id": str(a.id),
+            "from_node_id": str(a.from_node_id),
+            "to_node_id": str(a.to_node_id),
+            "edge_type": a.edge_type,
+            "assertion_source": a.assertion_source,
+            "confidence": a.confidence,
+            "status": a.status,
+        }
+        for a in assertions
+    ]
+
+
+# ── Assertion CRUD (path params LAST) ────────────────────────────
+
+@router.post("")
+async def propose_assertion(
+    req: ProposeAssertionRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Propose a new graph assertion."""
+    assertion = await assertion_service.propose_assertion(
+        session,
+        from_node_id=req.from_node_id,
+        to_node_id=req.to_node_id,
+        edge_type=req.edge_type,
+        assertion_source=req.assertion_source,
+        confidence=req.confidence,
+        metadata=req.metadata,
+        evidence_unit_ids=req.evidence_unit_ids,
+    )
+    await session.commit()
+    return {"id": str(assertion.id), "status": assertion.status, "edge_type": assertion.edge_type}
+
+
+@router.get("/{assertion_id}")
+async def get_assertion(
+    assertion_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get assertion detail with evidence and node info."""
+    result = await assertion_service.get_assertion_with_evidence(session, assertion_id)
+    if not result:
+        raise HTTPException(404, "Assertion not found")
+    return result
+
+
+@router.get("/{assertion_id}/audit")
+async def audit_assertion(
+    assertion_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Audit an assertion's evidence backing."""
+    return await assertion_service.audit_assertion(session, assertion_id)
+
+
+@router.post("/{assertion_id}/publish")
+async def publish_assertion(
+    assertion_id: UUID,
+    reviewed_by: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Publish an assertion."""
+    assertion = await assertion_service.publish_assertion(session, assertion_id, reviewed_by)
+    if not assertion:
+        raise HTTPException(404, "Assertion not found")
+    await session.commit()
+    return {"id": str(assertion.id), "status": assertion.status}
+
+
+@router.post("/{assertion_id}/reject")
+async def reject_assertion(
+    assertion_id: UUID,
+    req: ReviewDecisionRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Reject an assertion."""
+    assertion = await assertion_service.reject_assertion(
+        session, assertion_id, req.reviewer, req.reason,
+    )
+    if not assertion:
+        raise HTTPException(404, "Assertion not found")
+    await session.commit()
+    return {"id": str(assertion.id), "status": assertion.status}
