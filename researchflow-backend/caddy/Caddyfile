@@ -1,16 +1,15 @@
 {$DOMAIN:localhost} {
-    # API
+    # API + MCP
     handle /api/* {
         reverse_proxy api:8000
     }
-
-    # MCP endpoint (for Claude Code / Codex)
     handle /mcp/* {
         reverse_proxy api:8000
     }
-
-    # Health
-    handle /health {
+    handle /docs {
+        reverse_proxy api:8000
+    }
+    handle /openapi.json {
         reverse_proxy api:8000
     }
 

@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: researchflow
+      POSTGRES_USER: rf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rf -d researchflow"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru --appendonly yes
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      DATABASE_URL_SYNC: postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-local}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-researchflow}
+      OBJECT_STORAGE_SECRET_ID: ${OBJECT_STORAGE_SECRET_ID:-}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-ap-shanghai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - storage:/app/storage
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      DATABASE_URL_SYNC: postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-local}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-researchflow}
+      OBJECT_STORAGE_SECRET_ID: ${OBJECT_STORAGE_SECRET_ID:-}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-ap-shanghai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - storage:/app/storage
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    command: arq backend.workers.arq_app.WorkerSettings
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOSTNAME: "0.0.0.0"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - api
+      - frontend
+
+volumes:
+  pgdata:
+  redisdata:
+  storage:
+  caddydata:
+  caddyconfig:
