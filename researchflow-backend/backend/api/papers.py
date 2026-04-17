@@ -19,7 +19,7 @@ from backend.schemas.paper import (
     PaperResponse,
     PaperUpdate,
 )
-from backend.services import paper_service
+from backend.services import paper_service, triage_service
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -98,6 +98,24 @@ async def delete_paper(session: Session, paper_id: UUID):
     if not deleted:
         raise HTTPException(status_code=404, detail="Paper not found")
     await session.commit()
+
+
+@router.post("/{paper_id}/triage", response_model=PaperResponse)
+async def triage_paper(session: Session, paper_id: UUID):
+    """Compute 4-dimension scores for a single paper."""
+    paper = await triage_service.triage_paper(session, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    await session.commit()
+    return PaperResponse.model_validate(paper)
+
+
+@router.post("/triage-all")
+async def triage_all(session: Session):
+    """Score all unscored papers in the database."""
+    count = await triage_service.triage_all_unscored(session)
+    await session.commit()
+    return {"scored": count}
 
 
 @router.post("/search", response_model=list[PaperBrief])
