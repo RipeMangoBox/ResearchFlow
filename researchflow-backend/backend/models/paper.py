@@ -110,6 +110,12 @@ class Paper(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_ref: Mapped[str | None] = mapped_column(Text)
 
+    # Graph / scholarly backbone links
+    openalex_id: Mapped[str | None] = mapped_column(String(50))
+    cited_by_count: Mapped[int | None] = mapped_column(SmallInteger)
+    role_in_kb: Mapped[str | None] = mapped_column(String(30))
+    # foundational / baseline / extension / negative / patch
+
     # Ephemeral / library-external input support
     is_ephemeral: Mapped[bool] = mapped_column(Boolean, default=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

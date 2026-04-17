@@ -21,6 +21,10 @@ class EvidenceUnit(Base):
     paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
+    # Graph FK links (Layer 3→4 connection)
+    idea_delta_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    slot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
     atom_type: Mapped[str] = mapped_column(String(30), nullable=False)
     claim: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_type: Mapped[str | None] = mapped_column(String(30))
