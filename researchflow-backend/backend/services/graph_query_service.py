@@ -379,6 +379,101 @@ async def query_for_synthesis(
     }
 
 
+# ── Paper → IdeaDelta lookup ──────────────────────────────────────
+
+async def get_idea_deltas_for_paper(session: AsyncSession, paper_id: UUID) -> list[IdeaDelta]:
+    """Get all IdeaDeltas extracted from a paper (migrated from graph_service)."""
+    result = await session.execute(
+        select(IdeaDelta).where(IdeaDelta.paper_id == paper_id).order_by(desc(IdeaDelta.created_at))
+    )
+    return list(result.scalars().all())
+
+
+# ── Compatibility edge query (assertions + legacy) ──────────────
+
+async def get_edges_for_node_compat(
+    session: AsyncSession,
+    node_type: str,
+    node_id: UUID,
+    direction: str = "both",
+) -> list[dict]:
+    """Get edges connected to a node, combining assertion-based and legacy edges.
+
+    Returns a unified list of dicts so callers don't need to know the backend.
+    Assertion-based edges are preferred; legacy graph_edges fill any gaps.
+    """
+    from backend.services import assertion_service
+
+    results: list[dict] = []
+    seen_keys: set[tuple] = set()  # (edge_type, source, target) dedup
+
+    # ── 1. Assertion-based edges (v3) ──
+    # Map node_type to ref_table for graph_nodes lookup
+    _type_to_table = {
+        "paper": "papers",
+        "idea_delta": "idea_deltas",
+        "evidence_unit": "evidence_units",
+        "slot": "slots",
+        "mechanism_family": "mechanism_families",
+        "bottleneck": "project_bottlenecks",
+        "delta_card": "delta_cards",
+    }
+    ref_table = _type_to_table.get(node_type)
+    if ref_table:
+        graph_node = await _find_node(session, ref_table, node_id)
+        if graph_node:
+            assertions = await assertion_service.get_assertions_for_node(
+                session, graph_node.id, direction,
+            )
+            for a in assertions:
+                from_node = await session.get(GraphNode, a.from_node_id)
+                to_node = await session.get(GraphNode, a.to_node_id)
+                key = (a.edge_type, str(a.from_node_id), str(a.to_node_id))
+                seen_keys.add(key)
+                results.append({
+                    "id": str(a.id),
+                    "source": "assertion",
+                    "source_type": from_node.node_type if from_node else None,
+                    "source_id": str(from_node.ref_id) if from_node else None,
+                    "target_type": to_node.node_type if to_node else None,
+                    "target_id": str(to_node.ref_id) if to_node else None,
+                    "edge_type": a.edge_type,
+                    "assertion_source": a.assertion_source,
+                    "confidence": a.confidence,
+                    "status": a.status,
+                })
+
+    # ── 2. Legacy graph_edges fallback ──
+    conditions = []
+    if direction in ("outgoing", "both"):
+        conditions.append(
+            and_(GraphEdge.source_type == node_type, GraphEdge.source_id == node_id)
+        )
+    if direction in ("incoming", "both"):
+        conditions.append(
+            and_(GraphEdge.target_type == node_type, GraphEdge.target_id == node_id)
+        )
+    if conditions:
+        legacy_result = await session.execute(
+            select(GraphEdge).where(or_(*conditions)).order_by(desc(GraphEdge.created_at))
+        )
+        for e in legacy_result.scalars():
+            results.append({
+                "id": str(e.id),
+                "source": "legacy_edge",
+                "source_type": e.source_type,
+                "source_id": str(e.source_id),
+                "target_type": e.target_type,
+                "target_id": str(e.target_id),
+                "edge_type": e.edge_type,
+                "assertion_source": e.assertion_source,
+                "confidence": e.confidence,
+                "status": None,
+            })
+
+    return results
+
+
 # ── Graph stats ─────────────────────────────────────────────────
 
 async def graph_stats(session: AsyncSession) -> dict:

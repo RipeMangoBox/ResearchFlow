@@ -5,6 +5,9 @@ Combines:
 2. pgvector cosine similarity (semantic)
 3. Structured column filters (category, venue, year, tags, scores)
 4. Idea-centric search via DeltaCard/IdeaDelta (v3)
+5. Bottleneck search (Route 5) — keyword → bottlenecks + linked ideas
+6. Mechanism search (Route 6) — entity resolution → linked ideas
+7. Transfer search (Route 7) — transferable_to assertions across domains
 
 Results are ranked by a weighted combination of text and vector scores.
 """
@@ -278,3 +281,58 @@ async def idea_search(
         })
 
     return results[:limit]
+
+
+# ── Bottleneck search (Route 5) ──────────────────────────────────
+
+async def bottleneck_search(
+    session: AsyncSession,
+    keyword: str,
+    limit: int = 20,
+) -> dict:
+    """Search ProjectBottleneck by keyword, return bottlenecks with linked IdeaDeltas.
+
+    Wraps graph_query_service.query_by_bottleneck as a search-service entry point.
+    """
+    from backend.services import graph_query_service
+
+    return await graph_query_service.query_by_bottleneck(
+        session, bottleneck_id=None, keyword=keyword, limit=limit,
+    )
+
+
+# ── Mechanism search (Route 6) ───────────────────────────────────
+
+async def mechanism_search(
+    session: AsyncSession,
+    name: str,
+    limit: int = 20,
+) -> dict:
+    """Resolve a mechanism via entity_resolution and return linked ideas.
+
+    Wraps graph_query_service.query_by_mechanism as a search-service entry point.
+    """
+    from backend.services import graph_query_service
+
+    return await graph_query_service.query_by_mechanism(
+        session, mechanism_name=name, mechanism_id=None, limit=limit,
+    )
+
+
+# ── Transfer search (Route 7) ───────────────────────────────────
+
+async def transfer_search(
+    session: AsyncSession,
+    source_domain: str | None = None,
+    target_domain: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Find transferable_to assertions, optionally filtered by domain.
+
+    Wraps graph_query_service.query_transfers as a search-service entry point.
+    """
+    from backend.services import graph_query_service
+
+    return await graph_query_service.query_transfers(
+        session, source_domain=source_domain, target_domain=target_domain, limit=limit,
+    )

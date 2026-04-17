@@ -1,5 +1,10 @@
 """Graph service — create IdeaDeltas, persist EvidenceUnits, manage edges.
 
+DEPRECATED: The query functions ``get_idea_deltas_for_paper`` and
+``get_edges_for_node`` at the bottom of this file are kept for backward
+compatibility only.  New code should use ``graph_query_service`` (for idea
+queries) and ``assertion_service`` (for edge/assertion queries) instead.
+
 Core workflow after L4 analysis:
   1. frame_assign → match paradigm
   2. idea_extract → create IdeaDelta from LLM output

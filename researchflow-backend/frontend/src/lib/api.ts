@@ -101,6 +101,73 @@ export interface DigestInfo {
   content: string;
 }
 
+export interface DeltaCard {
+  id: string;
+  paper_id: string;
+  analysis_id: string | null;
+  frame_id: string | null;
+  baseline_paradigm: string | null;
+  primary_bottleneck_id: string | null;
+  changed_slot_ids: string[] | null;
+  unchanged_slot_ids: string[] | null;
+  mechanism_family_ids: string[] | null;
+  delta_statement: string;
+  key_ideas_ranked: Record<string, unknown>[] | null;
+  structurality_score: number | null;
+  extensionability_score: number | null;
+  transferability_score: number | null;
+  assumptions: string[] | null;
+  failure_modes: string[] | null;
+  evaluation_context: string | null;
+  evidence_refs: string[] | null;
+  extraction_confidence: number | null;
+  linkage_confidence: number | null;
+  evidence_confidence: number | null;
+  status: string;
+  model_provider: string | null;
+  model_name: string | null;
+  prompt_version: string | null;
+  schema_version: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GraphAssertion {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  edge_type: string;
+  assertion_source: string;
+  confidence: number | null;
+  status: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+export interface ReviewTask {
+  id: string;
+  target_type: string;
+  target_id: string;
+  task_type: string;
+  status: string;
+  priority: number;
+  assigned_to: string | null;
+  notes: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface Alias {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  alias: string;
+  source: string;
+  confidence: number | null;
+}
+
 // ── API calls ──────────────────────────────────────────────────
 
 export const api = {
@@ -167,4 +234,42 @@ export const api = {
 
   // Health
   health: () => request<{ status: string }>("/health"),
+
+  // Ideas / Delta Cards
+  searchIdeas: (query: string, options?: { category?: string; limit?: number; min_score?: number }) =>
+    request<{ query: string; total: number; results: DeltaCard[] }>("/ideas/search", {
+      method: "POST",
+      body: JSON.stringify({ query, ...options }),
+    }),
+
+  // Graph
+  getGraphStats: () =>
+    request<{ node_count: number; assertion_count: number; edge_type_distribution: Record<string, number> }>(
+      "/graph/stats",
+    ),
+  getAssertionDetail: (assertionId: string) =>
+    request<GraphAssertion>(`/graph/assertions/${assertionId}`),
+
+  // Review queue
+  getReviewQueue: (status?: string, targetType?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (targetType) params.set("target_type", targetType);
+    const qs = params.toString();
+    return request<{ items: ReviewTask[]; total: number }>(`/review/tasks${qs ? `?${qs}` : ""}`);
+  },
+  submitReviewDecision: (taskId: string, decision: string, reviewer: string) =>
+    request<ReviewTask>(`/review/tasks/${taskId}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ decision, reviewer }),
+    }),
+
+  // Aliases
+  listAliases: (entityType?: string, entityId?: string) => {
+    const params = new URLSearchParams();
+    if (entityType) params.set("entity_type", entityType);
+    if (entityId) params.set("entity_id", entityId);
+    const qs = params.toString();
+    return request<{ items: Alias[]; total: number }>(`/aliases${qs ? `?${qs}` : ""}`);
+  },
 };

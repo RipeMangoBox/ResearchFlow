@@ -74,11 +74,17 @@ async def assign_review(
     session: AsyncSession = Depends(get_session),
 ):
     """Assign a review task."""
-    task = await review_service.assign_review(session, task_id, assigned_to)
-    if not task:
-        raise HTTPException(404, "Review task not found")
-    await session.commit()
-    return {"id": str(task.id), "status": task.status, "assigned_to": task.assigned_to}
+    try:
+        task = await review_service.assign_review(session, task_id, assigned_to)
+        if not task:
+            raise HTTPException(404, "Review task not found")
+        await session.commit()
+        return {"id": str(task.id), "status": task.status, "assigned_to": task.assigned_to}
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/reviews/{task_id}/approve")
@@ -88,9 +94,13 @@ async def approve_review(
     session: AsyncSession = Depends(get_session),
 ):
     """Approve a review task (cascades to target)."""
-    result = await review_service.approve_review(session, task_id, req.reviewer, req.notes)
-    await session.commit()
-    return result
+    try:
+        result = await review_service.approve_review(session, task_id, req.reviewer, req.notes)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/reviews/{task_id}/reject")
@@ -100,9 +110,13 @@ async def reject_review(
     session: AsyncSession = Depends(get_session),
 ):
     """Reject a review task (cascades to target)."""
-    result = await review_service.reject_review(session, task_id, req.reviewer, req.reason)
-    await session.commit()
-    return result
+    try:
+        result = await review_service.reject_review(session, task_id, req.reviewer, req.reason)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
 
 
 # ── Override endpoints (BEFORE /{assertion_id}) ───────────────────
@@ -113,18 +127,22 @@ async def create_override(
     session: AsyncSession = Depends(get_session),
 ):
     """Record a human override."""
-    override = await review_service.create_override(
-        session,
-        target_type=req.target_type,
-        target_id=req.target_id,
-        field_name=req.field_name,
-        old_value=req.old_value,
-        new_value=req.new_value,
-        reason=req.reason,
-        overridden_by=req.overridden_by,
-    )
-    await session.commit()
-    return {"id": str(override.id)}
+    try:
+        override = await review_service.create_override(
+            session,
+            target_type=req.target_type,
+            target_id=req.target_id,
+            field_name=req.field_name,
+            old_value=req.old_value,
+            new_value=req.new_value,
+            reason=req.reason,
+            overridden_by=req.overridden_by,
+        )
+        await session.commit()
+        return {"id": str(override.id)}
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.get("/overrides")
@@ -146,11 +164,15 @@ async def register_alias(
     session: AsyncSession = Depends(get_session),
 ):
     """Register a new entity alias."""
-    alias = await entity_resolution_service.register_alias(
-        session, req.entity_type, req.entity_id, req.alias, "manual", req.confidence,
-    )
-    await session.commit()
-    return {"id": str(alias.id)}
+    try:
+        alias = await entity_resolution_service.register_alias(
+            session, req.entity_type, req.entity_id, req.alias, "manual", req.confidence,
+        )
+        await session.commit()
+        return {"id": str(alias.id)}
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.get("/aliases")
@@ -198,18 +220,22 @@ async def propose_assertion(
     session: AsyncSession = Depends(get_session),
 ):
     """Propose a new graph assertion."""
-    assertion = await assertion_service.propose_assertion(
-        session,
-        from_node_id=req.from_node_id,
-        to_node_id=req.to_node_id,
-        edge_type=req.edge_type,
-        assertion_source=req.assertion_source,
-        confidence=req.confidence,
-        metadata=req.metadata,
-        evidence_unit_ids=req.evidence_unit_ids,
-    )
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status, "edge_type": assertion.edge_type}
+    try:
+        assertion = await assertion_service.propose_assertion(
+            session,
+            from_node_id=req.from_node_id,
+            to_node_id=req.to_node_id,
+            edge_type=req.edge_type,
+            assertion_source=req.assertion_source,
+            confidence=req.confidence,
+            metadata=req.metadata,
+            evidence_unit_ids=req.evidence_unit_ids,
+        )
+        await session.commit()
+        return {"id": str(assertion.id), "status": assertion.status, "edge_type": assertion.edge_type}
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.get("/{assertion_id}")
@@ -240,11 +266,17 @@ async def publish_assertion(
     session: AsyncSession = Depends(get_session),
 ):
     """Publish an assertion."""
-    assertion = await assertion_service.publish_assertion(session, assertion_id, reviewed_by)
-    if not assertion:
-        raise HTTPException(404, "Assertion not found")
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status}
+    try:
+        assertion = await assertion_service.publish_assertion(session, assertion_id, reviewed_by)
+        if not assertion:
+            raise HTTPException(404, "Assertion not found")
+        await session.commit()
+        return {"id": str(assertion.id), "status": assertion.status}
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/{assertion_id}/reject")
@@ -254,10 +286,16 @@ async def reject_assertion(
     session: AsyncSession = Depends(get_session),
 ):
     """Reject an assertion."""
-    assertion = await assertion_service.reject_assertion(
-        session, assertion_id, req.reviewer, req.reason,
-    )
-    if not assertion:
-        raise HTTPException(404, "Assertion not found")
-    await session.commit()
-    return {"id": str(assertion.id), "status": assertion.status}
+    try:
+        assertion = await assertion_service.reject_assertion(
+            session, assertion_id, req.reviewer, req.reason,
+        )
+        if not assertion:
+            raise HTTPException(404, "Assertion not found")
+        await session.commit()
+        return {"id": str(assertion.id), "status": assertion.status}
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise

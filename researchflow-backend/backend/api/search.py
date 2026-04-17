@@ -79,6 +79,71 @@ async def idea_search(
     return {"query": data.query, "total": len(results), "results": results}
 
 
+# ── Bottleneck search ─────────────────────────────────────────
+
+class BottleneckSearchRequest(BaseModel):
+    keyword: str = Field(..., min_length=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/search/bottlenecks")
+async def bottleneck_search(
+    data: BottleneckSearchRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Search bottlenecks by keyword and return linked IdeaDeltas."""
+    results = await search_service.bottleneck_search(
+        session,
+        keyword=data.keyword,
+        limit=data.limit,
+    )
+    return results
+
+
+# ── Mechanism search ──────────────────────────────────────────
+
+class MechanismSearchRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/search/mechanisms")
+async def mechanism_search(
+    data: MechanismSearchRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Resolve a mechanism name via entity resolution and return linked ideas."""
+    results = await search_service.mechanism_search(
+        session,
+        name=data.name,
+        limit=data.limit,
+    )
+    return results
+
+
+# ── Transfer search ───────────────────────────────────────────
+
+class TransferSearchRequest(BaseModel):
+    source_domain: str | None = None
+    target_domain: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/search/transfers")
+async def transfer_search(
+    data: TransferSearchRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Find transferable_to assertions across domains."""
+    results = await search_service.transfer_search(
+        session,
+        source_domain=data.source_domain,
+        target_domain=data.target_domain,
+        limit=data.limit,
+    )
+    return results
+
+
 # ── Embeddings ──────────────────────────────────────────────────
 
 @router.post("/embeddings/generate")

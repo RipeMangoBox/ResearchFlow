@@ -30,26 +30,30 @@ async def import_links(
     Each link is normalized, deduped, and ingested. Duplicates are
     reported but not created again.
     """
-    results = await ingestion_service.ingest_links(
-        session,
-        data.items,
-        default_category=data.default_category,
-        is_ephemeral=data.is_ephemeral,
-        retention_days=data.retention_days,
-    )
-    await session.commit()
+    try:
+        results = await ingestion_service.ingest_links(
+            session,
+            data.items,
+            default_category=data.default_category,
+            is_ephemeral=data.is_ephemeral,
+            retention_days=data.retention_days,
+        )
+        await session.commit()
 
-    created = sum(1 for r in results if r.status == "created")
-    duplicates = sum(1 for r in results if r.status == "duplicate")
-    errors = sum(1 for r in results if r.status == "error")
+        created = sum(1 for r in results if r.status == "created")
+        duplicates = sum(1 for r in results if r.status == "duplicate")
+        errors = sum(1 for r in results if r.status == "error")
 
-    return ImportResponse(
-        total=len(results),
-        created=created,
-        duplicates=duplicates,
-        errors=errors,
-        items=results,
-    )
+        return ImportResponse(
+            total=len(results),
+            created=created,
+            duplicates=duplicates,
+            errors=errors,
+            items=results,
+        )
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/{paper_id}/accept", response_model=PaperResponse)
@@ -58,11 +62,17 @@ async def accept_to_kb(
     session: AsyncSession = Depends(get_session),
 ):
     """Promote an ephemeral paper to the main knowledge base."""
-    paper = await ingestion_service.accept_to_kb(session, paper_id)
-    if not paper:
-        raise HTTPException(status_code=404, detail="Paper not found")
-    await session.commit()
-    return PaperResponse.model_validate(paper)
+    try:
+        paper = await ingestion_service.accept_to_kb(session, paper_id)
+        if not paper:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        await session.commit()
+        return PaperResponse.model_validate(paper)
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/pdf", response_model=PaperResponse)
@@ -89,41 +99,45 @@ async def upload_pdf(
     paper_title = title or file.filename.replace(".pdf", "").replace("_", " ")
     title_san = sanitize_filename(paper_title)
 
-    # Store in object storage
-    storage = get_storage()
-    object_key = f"papers/raw-pdf/{category}/{title_san}.pdf"
-    await storage.put(object_key, data)
-    checksum = compute_checksum(data)
+    try:
+        # Store in object storage
+        storage = get_storage()
+        object_key = f"papers/raw-pdf/{category}/{title_san}.pdf"
+        await storage.put(object_key, data)
+        checksum = compute_checksum(data)
 
-    # Create paper record
-    paper = Paper(
-        title=paper_title,
-        title_sanitized=title_san,
-        category=category,
-        state=PaperState.DOWNLOADED,
-        pdf_object_key=object_key,
-        is_ephemeral=is_ephemeral,
-        tags=[category],
-        source="pdf_upload",
-    )
-    session.add(paper)
-    await session.flush()
+        # Create paper record
+        paper = Paper(
+            title=paper_title,
+            title_sanitized=title_san,
+            category=category,
+            state=PaperState.DOWNLOADED,
+            pdf_object_key=object_key,
+            is_ephemeral=is_ephemeral,
+            tags=[category],
+            source="pdf_upload",
+        )
+        session.add(paper)
+        await session.flush()
 
-    # Create asset record
-    asset = PaperAsset(
-        paper_id=paper.id,
-        asset_type=AssetType.RAW_PDF,
-        object_key=object_key,
-        mime_type="application/pdf",
-        size_bytes=len(data),
-        checksum=checksum,
-    )
-    session.add(asset)
-    await session.flush()
-    await session.refresh(paper)
-    await session.commit()
+        # Create asset record
+        asset = PaperAsset(
+            paper_id=paper.id,
+            asset_type=AssetType.RAW_PDF,
+            object_key=object_key,
+            mime_type="application/pdf",
+            size_bytes=len(data),
+            checksum=checksum,
+        )
+        session.add(asset)
+        await session.flush()
+        await session.refresh(paper)
+        await session.commit()
 
-    return PaperResponse.model_validate(paper)
+        return PaperResponse.model_validate(paper)
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/parse", summary="L2 parse PDFs")
@@ -132,9 +146,13 @@ async def parse_pdfs(
     session: AsyncSession = Depends(get_session),
 ):
     """Run L2 parse (pymupdf section extraction) on unprocessed PDFs."""
-    results = await parse_service.parse_all_unprocessed(session, limit=limit)
-    await session.commit()
-    return {"processed": len(results), "results": results}
+    try:
+        results = await parse_service.parse_all_unprocessed(session, limit=limit)
+        await session.commit()
+        return {"processed": len(results), "results": results}
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/{paper_id}/parse")
@@ -143,21 +161,27 @@ async def parse_single_pdf(
     session: AsyncSession = Depends(get_session),
 ):
     """Run L2 parse on a single paper's PDF."""
-    analysis = await parse_service.parse_paper_pdf(session, paper_id)
-    if not analysis:
-        raise HTTPException(status_code=404, detail="Paper or PDF not found")
-    await session.commit()
+    try:
+        analysis = await parse_service.parse_paper_pdf(session, paper_id)
+        if not analysis:
+            raise HTTPException(status_code=404, detail="Paper or PDF not found")
+        await session.commit()
 
-    sections = list(analysis.extracted_sections.keys()) if analysis.extracted_sections else []
-    return {
-        "paper_id": str(paper_id),
-        "analysis_id": str(analysis.id),
-        "level": analysis.level.value,
-        "sections": sections,
-        "formulas": len(analysis.extracted_formulas or []),
-        "figures": len(analysis.figure_captions or []),
-        "tables": len(analysis.extracted_tables or []),
-    }
+        sections = list(analysis.extracted_sections.keys()) if analysis.extracted_sections else []
+        return {
+            "paper_id": str(paper_id),
+            "analysis_id": str(analysis.id),
+            "level": analysis.level.value,
+            "sections": sections,
+            "formulas": len(analysis.extracted_formulas or []),
+            "figures": len(analysis.figure_captions or []),
+            "tables": len(analysis.extracted_tables or []),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/cleanup-expired")
@@ -165,6 +189,10 @@ async def cleanup_expired(
     session: AsyncSession = Depends(get_session),
 ):
     """Archive expired ephemeral papers."""
-    count = await ingestion_service.cleanup_expired(session)
-    await session.commit()
-    return {"archived": count}
+    try:
+        count = await ingestion_service.cleanup_expired(session)
+        await session.commit()
+        return {"archived": count}
+    except Exception:
+        await session.rollback()
+        raise

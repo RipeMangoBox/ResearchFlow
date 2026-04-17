@@ -23,9 +23,19 @@ import json
 import logging
 from uuid import UUID
 
+from pydantic import AnyUrl
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import (
+    GetPromptResult,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    Resource,
+    TextContent,
+    Tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +426,240 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             return await review_service.reject_review(session, task_id, reviewer, args.get("notes"))
 
     return {"error": f"Unknown tool: {name}"}
+
+
+# ── Resource definitions ───────────────────────────────────────
+
+RESOURCES = [
+    Resource(
+        uri=AnyUrl("paper://example"),
+        name="paper",
+        description="Paper detail with DeltaCard. Use paper://{paper_id} to access.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri=AnyUrl("delta-card://example"),
+        name="delta-card",
+        description="DeltaCard for a paper. Use delta-card://{paper_id} to access.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri=AnyUrl("graph://stats"),
+        name="graph-stats",
+        description="Knowledge graph statistics: counts of ideas, cards, assertions, edges.",
+        mimeType="application/json",
+    ),
+]
+
+
+@server.list_resources()
+async def list_resources() -> list[Resource]:
+    return RESOURCES
+
+
+@server.read_resource()
+async def read_resource(uri: AnyUrl) -> str:
+    """Read an MCP resource by URI scheme."""
+    uri_str = str(uri)
+    session_maker = await _get_session()
+
+    async with session_maker() as session:
+        # ── graph://stats ──────────────────────────────────────
+        if uri_str.startswith("graph://stats"):
+            from backend.services import graph_query_service
+            stats = await graph_query_service.graph_stats(session)
+            return json.dumps(stats, ensure_ascii=False, default=str)
+
+        # ── paper://{paper_id} ─────────────────────────────────
+        if uri_str.startswith("paper://"):
+            paper_id_str = uri_str.replace("paper://", "")
+            paper_id = UUID(paper_id_str)
+            from backend.services import paper_service
+            paper, analysis = await paper_service.get_paper_with_analysis(session, paper_id)
+            if not paper:
+                return json.dumps({"error": "Paper not found"})
+            result = {
+                "id": str(paper.id),
+                "title": paper.title,
+                "venue": paper.venue,
+                "year": paper.year,
+                "category": paper.category,
+                "state": paper.state.value,
+                "tags": list(paper.tags) if paper.tags else [],
+                "core_operator": paper.core_operator,
+                "keep_score": paper.keep_score,
+                "structurality_score": paper.structurality_score,
+            }
+            if analysis:
+                result["analysis"] = {
+                    "level": analysis.level.value,
+                    "problem_summary": analysis.problem_summary,
+                    "method_summary": analysis.method_summary,
+                    "core_intuition": analysis.core_intuition,
+                }
+            # Attach DeltaCard if available
+            from backend.models.delta_card import DeltaCard
+            from sqlalchemy import select, desc
+            dc_result = await session.execute(
+                select(DeltaCard).where(
+                    DeltaCard.paper_id == paper_id,
+                    DeltaCard.status != "deprecated",
+                ).order_by(desc(DeltaCard.created_at)).limit(1)
+            )
+            dc = dc_result.scalar_one_or_none()
+            if dc:
+                result["delta_card"] = {
+                    "id": str(dc.id),
+                    "delta_statement": dc.delta_statement,
+                    "structurality_score": dc.structurality_score,
+                    "transferability_score": dc.transferability_score,
+                    "key_ideas_ranked": dc.key_ideas_ranked,
+                    "assumptions": dc.assumptions,
+                    "failure_modes": dc.failure_modes,
+                    "status": dc.status,
+                }
+            return json.dumps(result, ensure_ascii=False, default=str)
+
+        # ── delta-card://{paper_id} ────────────────────────────
+        if uri_str.startswith("delta-card://"):
+            paper_id_str = uri_str.replace("delta-card://", "")
+            paper_id = UUID(paper_id_str)
+            from backend.models.delta_card import DeltaCard
+            from sqlalchemy import select, desc
+            dc_result = await session.execute(
+                select(DeltaCard).where(
+                    DeltaCard.paper_id == paper_id,
+                    DeltaCard.status != "deprecated",
+                ).order_by(desc(DeltaCard.created_at)).limit(1)
+            )
+            dc = dc_result.scalar_one_or_none()
+            if not dc:
+                return json.dumps({"error": "DeltaCard not found for this paper"})
+            return json.dumps({
+                "id": str(dc.id),
+                "paper_id": str(dc.paper_id),
+                "delta_statement": dc.delta_statement,
+                "baseline_paradigm": dc.baseline_paradigm,
+                "structurality_score": dc.structurality_score,
+                "extensionability_score": dc.extensionability_score,
+                "transferability_score": dc.transferability_score,
+                "key_ideas_ranked": dc.key_ideas_ranked,
+                "assumptions": dc.assumptions,
+                "failure_modes": dc.failure_modes,
+                "evidence_refs": [str(r) for r in dc.evidence_refs] if dc.evidence_refs else [],
+                "status": dc.status,
+            }, ensure_ascii=False, default=str)
+
+    return json.dumps({"error": f"Unknown resource URI: {uri_str}"})
+
+
+# ── Prompt definitions ─────────────────────────────────────────
+
+PROMPTS = [
+    Prompt(
+        name="deep-paper-report",
+        description="Generate a deep analysis report for a paper, covering delta card, evidence strength, structural vs plugin classification, and cross-paper connections.",
+        arguments=[
+            PromptArgument(
+                name="paper_id",
+                description="UUID of the paper to analyze",
+                required=True,
+            ),
+            PromptArgument(
+                name="focus_area",
+                description="Optional focus area (e.g., 'methodology', 'evidence', 'novelty')",
+                required=False,
+            ),
+        ],
+    ),
+    Prompt(
+        name="weekly-research-review",
+        description="Generate a weekly research digest covering new papers, key deltas, emerging trends, and recommended reading priorities.",
+        arguments=[
+            PromptArgument(
+                name="category",
+                description="Optional category filter (e.g., 'diffusion', 'multimodal')",
+                required=False,
+            ),
+            PromptArgument(
+                name="top_n",
+                description="Number of top papers to highlight (default: 10)",
+                required=False,
+            ),
+        ],
+    ),
+]
+
+
+@server.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    return PROMPTS
+
+
+@server.get_prompt()
+async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+    """Return a filled prompt template."""
+    args = arguments or {}
+
+    if name == "deep-paper-report":
+        paper_id = args.get("paper_id", "<PAPER_ID>")
+        focus_area = args.get("focus_area", "all aspects")
+        return GetPromptResult(
+            description=f"Deep analysis report for paper {paper_id}",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            f"Generate a deep analysis report for paper {paper_id}.\n\n"
+                            f"Focus area: {focus_area}\n\n"
+                            "Please cover the following sections:\n"
+                            "1. **Delta Card Summary** - What did this paper change relative to the canonical paradigm?\n"
+                            "2. **Slot Analysis** - Which paradigm slots were modified (structural vs plugin vs tweak)?\n"
+                            "3. **Mechanism Family** - What mechanism family does this approach belong to?\n"
+                            "4. **Evidence Strength** - How well-grounded are the claims? List evidence units with confidence.\n"
+                            "5. **Transferability Assessment** - Can this idea transfer to other domains? Which ones?\n"
+                            "6. **Assumptions & Failure Modes** - What are the key assumptions and where might this break?\n"
+                            "7. **Cross-Paper Connections** - How does this relate to other ideas in the knowledge base?\n"
+                            "8. **Research Impact Score** - Rate structurality, transferability, and field keyness.\n\n"
+                            "Use the get_paper_detail, search_ideas, and get_graph_stats tools to gather data."
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    elif name == "weekly-research-review":
+        category = args.get("category", "all categories")
+        top_n = args.get("top_n", "10")
+        return GetPromptResult(
+            description=f"Weekly research review for {category}",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=(
+                            f"Generate a weekly research digest for: {category}\n\n"
+                            f"Highlight top {top_n} papers.\n\n"
+                            "Please structure the digest as:\n"
+                            "1. **Executive Summary** - 3-5 bullet points on the week's key developments\n"
+                            "2. **New Papers** - List newly ingested papers with their delta statements\n"
+                            "3. **Key Deltas This Week** - Most impactful IdeaDeltas ranked by structurality score\n"
+                            "4. **Emerging Trends** - Patterns across papers (common bottlenecks, mechanism families)\n"
+                            "5. **Evidence Highlights** - Strongest new evidence units and what they support\n"
+                            "6. **Cross-Domain Transfers** - Any transferable insights discovered\n"
+                            "7. **Reading Priorities** - Recommended reading order: canonical > structural > follow-up > patch\n"
+                            "8. **Knowledge Base Health** - Current graph stats and quality metrics\n\n"
+                            "Use search_research_kb, get_digest, get_graph_stats, and search_ideas tools to gather data."
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    raise ValueError(f"Unknown prompt: {name}")
 
 
 # ── Entry point ─────────────────────────────────────────────────

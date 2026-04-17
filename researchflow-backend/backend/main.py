@@ -1,7 +1,10 @@
+import logging
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.api.analyses import router as analyses_router
 from backend.api.import_ import router as import_router
@@ -14,6 +17,8 @@ from backend.api.graph import router as graph_router
 from backend.api.reports import router as reports_router
 from backend.api.search import router as search_router
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -47,6 +52,21 @@ app.include_router(directions_router, prefix=settings.api_prefix)
 app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(graph_router, prefix=settings.api_prefix)
 app.include_router(assertions_router, prefix=settings.api_prefix)
+
+
+# Global exception handler
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled exception on %s %s:\n%s",
+        request.method,
+        request.url.path,
+        traceback.format_exc(),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 @app.get(f"{settings.api_prefix}/health")

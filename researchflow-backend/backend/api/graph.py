@@ -1,4 +1,8 @@
-"""Graph API router — knowledge graph queries and management."""
+"""Graph API router — knowledge graph queries and management.
+
+Migrated: endpoints now use graph_query_service and assertion_service
+instead of the legacy graph_service (which is kept for backward compat only).
+"""
 
 from uuid import UUID
 
@@ -7,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
-from backend.services import graph_query_service, graph_service
+from backend.services import assertion_service, graph_query_service, quality_service
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -28,7 +32,7 @@ async def get_ideas_for_paper(
     session: AsyncSession = Depends(get_session),
 ):
     """Get all IdeaDeltas extracted from a paper."""
-    ideas = await graph_service.get_idea_deltas_for_paper(session, paper_id)
+    ideas = await graph_query_service.get_idea_deltas_for_paper(session, paper_id)
     return [graph_query_service._idea_to_dict(i) for i in ideas]
 
 
@@ -39,21 +43,15 @@ async def get_edges(
     direction: str = Query(default="both", pattern="^(outgoing|incoming|both)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get all edges connected to a node."""
-    edges = await graph_service.get_edges_for_node(session, node_type, node_id, direction)
-    return [
-        {
-            "id": str(e.id),
-            "source_type": e.source_type,
-            "source_id": str(e.source_id),
-            "target_type": e.target_type,
-            "target_id": str(e.target_id),
-            "edge_type": e.edge_type,
-            "assertion_source": e.assertion_source,
-            "confidence": e.confidence,
-        }
-        for e in edges
-    ]
+    """Get all edges connected to a node.
+
+    Returns a combined list of assertion-based edges (v3) and legacy
+    graph_edges for any data not yet migrated.
+    """
+    edges = await graph_query_service.get_edges_for_node_compat(
+        session, node_type, node_id, direction,
+    )
+    return edges
 
 
 # ── 5-Route Query Router ───────────────────────────────────────
@@ -155,3 +153,11 @@ async def list_mechanisms(
         {"id": str(m.id), "name": m.name, "domain": m.domain, "description": m.description}
         for m in result.scalars()
     ]
+
+
+# ── Quality ────────────────────────────────────────────────────────
+
+@router.get("/quality")
+async def get_kb_quality_report(session: AsyncSession = Depends(get_session)):
+    """Get aggregate quality report across all published IdeaDeltas and DeltaCards."""
+    return await quality_service.compute_kb_quality_report(session)

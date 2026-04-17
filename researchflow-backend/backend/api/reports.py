@@ -30,11 +30,15 @@ async def generate_report(
     - briefing: 5-minute structured report with delta card table
     - deep_compare: full cross-paper analysis with evidence
     """
-    result = await report_service.generate_report(
-        session,
-        paper_ids=data.paper_ids,
-        report_type=data.report_type,
-        topic=data.topic,
-    )
-    await session.commit()
-    return result
+    try:
+        result = await report_service.generate_report(
+            session,
+            paper_ids=data.paper_ids,
+            report_type=data.report_type,
+            topic=data.topic,
+        )
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
