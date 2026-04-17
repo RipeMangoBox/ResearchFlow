@@ -1,0 +1,37 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # Database
+    database_url: str = "postgresql+asyncpg://rf:changeme@localhost:5432/researchflow"
+    database_url_sync: str = "postgresql://rf:changeme@localhost:5432/researchflow"
+
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+
+    # Object Storage
+    object_storage_provider: str = "cos"  # "cos" or "oss"
+    object_storage_bucket: str = "researchflow"
+    object_storage_secret_id: str = ""
+    object_storage_secret_key: str = ""
+    object_storage_region: str = "ap-shanghai"
+
+    # LLM
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+
+    # App
+    debug: bool = False
+    api_prefix: str = "/api/v1"
+
+    # Paths (relative to project root)
+    paper_analysis_dir: str = "../paperAnalysis"
+    paper_pdfs_dir: str = "../paperPDFs"
+    paper_collection_dir: str = "../paperCollection"
+    paper_ideas_dir: str = "../paperIDEAs"
+    exports_dir: str = "./exports"
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()
