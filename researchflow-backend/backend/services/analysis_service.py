@@ -334,8 +334,11 @@ async def _build_idea_graph(
     from backend.services.delta_card_service import run_delta_card_pipeline
 
     try:
-        # 1. Frame assign
-        paradigm, slots = await assign_paradigm(session, paper.category, paper.tags)
+        # 1. Frame assign (with LLM fallback for unknown domains)
+        paradigm, slots = await assign_paradigm(
+            session, paper.category, paper.tags,
+            title=paper.title, abstract=paper.abstract,
+        )
 
         # 2. Extract changed_slots in graph format
         delta_card_data = analysis_data.get("delta_card", {})

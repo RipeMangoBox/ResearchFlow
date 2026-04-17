@@ -158,6 +158,46 @@ TOOLS = [
         },
     ),
 
+    # ── Pipeline & discovery tools ───────────────────────────
+    Tool(
+        name="run_full_pipeline",
+        description="Run complete pipeline on a paper: download PDF → enrich metadata → parse → L3 skim → L4 deep → build knowledge graph. One call does everything.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="discover_related_papers",
+        description="Find related papers via Semantic Scholar (references, citations, recommendations) and auto-ingest them. Build domain KB from a seed paper.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Seed paper UUID"},
+                "max_references": {"type": "integer", "default": 10},
+                "max_citations": {"type": "integer", "default": 10},
+                "auto_ingest": {"type": "boolean", "default": True},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="build_domain",
+        description="Build a domain knowledge graph from a single seed paper. Discovers related work, ingests papers, and optionally runs full analysis pipeline on all.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Seed paper UUID"},
+                "depth": {"type": "integer", "default": 1, "description": "How many hops to follow (1-3)"},
+                "run_pipeline": {"type": "boolean", "default": False, "description": "Run full analysis on discovered papers"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+
     # ── Analysis tools ────────────────────────────────────────
     Tool(
         name="enqueue_analysis",
@@ -275,6 +315,27 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             limit=args.get("limit", 10),
         )
         return {"results": results[:args.get("limit", 10)]}
+
+    elif name == "run_full_pipeline":
+        from backend.services import pipeline_service
+        return await pipeline_service.run_full_pipeline(session, UUID(args["paper_id"]))
+
+    elif name == "discover_related_papers":
+        from backend.services import discovery_service
+        return await discovery_service.discover_related_papers(
+            session, UUID(args["paper_id"]),
+            max_references=args.get("max_references", 10),
+            max_citations=args.get("max_citations", 10),
+            auto_ingest=args.get("auto_ingest", True),
+        )
+
+    elif name == "build_domain":
+        from backend.services import discovery_service
+        return await discovery_service.build_domain_from_seed(
+            session, UUID(args["paper_id"]),
+            depth=args.get("depth", 1),
+            run_pipeline=args.get("run_pipeline", False),
+        )
 
     elif name == "search_ideas":
         from backend.services import search_service
