@@ -293,12 +293,12 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     )
     session.add(analysis)
 
-    # Create method delta if provided
+    # Legacy: Create method delta if provided (backward compat)
     delta_data = analysis_data.get("delta_card")
     if delta_data and isinstance(delta_data, dict):
         delta = MethodDelta(
             paper_id=paper_id,
-            analysis_id=None,  # Will link after flush
+            analysis_id=None,
             paradigm_name=delta_data.get("paradigm", "unknown"),
             slots=delta_data.get("slots", {}),
             is_structural=delta_data.get("is_structural"),
@@ -312,7 +312,95 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
 
     await session.flush()
     await session.refresh(analysis)
+
+    # ── NEW: Graph pipeline (IdeaDelta + Evidence + Edges) ──────
+    await _build_idea_graph(session, paper, analysis, analysis_data)
+
     return analysis
+
+
+async def _build_idea_graph(
+    session: AsyncSession,
+    paper: Paper,
+    analysis: PaperAnalysis,
+    analysis_data: dict,
+) -> None:
+    """Post-L4 hook: create IdeaDelta, persist evidence, build edges.
+
+    This is the core graph construction pipeline:
+      frame_assign → idea_extract → evidence_persist → edge_create → publish_check
+    """
+    from backend.services.frame_assign_service import assign_paradigm
+    from backend.services.graph_service import (
+        create_idea_delta,
+        persist_evidence_units,
+        create_edges_for_idea,
+        check_publish,
+    )
+
+    try:
+        # 1. Frame assign
+        paradigm, slots = await assign_paradigm(session, paper.category, paper.tags)
+
+        # 2. Build delta statement
+        delta_card = analysis_data.get("delta_card", {})
+        core_intuition = analysis_data.get("core_intuition", "")
+        delta_statement = core_intuition or delta_card.get("primary_gain_source", paper.title)
+
+        # 3. Extract changed_slots in graph format
+        changed_slots_graph = []
+        raw_slots = analysis_data.get("changed_slots", [])
+        if isinstance(raw_slots, list):
+            for s in raw_slots:
+                if isinstance(s, str):
+                    changed_slots_graph.append({"slot_name": s, "change_type": "unknown"})
+                elif isinstance(s, dict):
+                    changed_slots_graph.append(s)
+        elif isinstance(delta_card, dict) and "slots" in delta_card:
+            for name, info in delta_card["slots"].items():
+                if isinstance(info, dict) and info.get("changed"):
+                    changed_slots_graph.append({
+                        "slot_name": name,
+                        "from": info.get("from"),
+                        "to": info.get("to"),
+                        "change_type": info.get("change_type", "unknown"),
+                    })
+
+        # 4. Create IdeaDelta
+        idea = await create_idea_delta(
+            session,
+            paper_id=paper.id,
+            analysis_id=analysis.id,
+            paradigm_id=paradigm.id if paradigm else None,
+            delta_statement=delta_statement[:1000],
+            changed_slots=changed_slots_graph if changed_slots_graph else None,
+            structurality_score=analysis_data.get("structurality_score") or paper.structurality_score,
+            confidence=analysis.confidence,
+            is_structural=analysis_data.get("is_plugin_patch") is False if analysis_data.get("is_plugin_patch") is not None else None,
+            primary_gain_source=delta_card.get("primary_gain_source") if isinstance(delta_card, dict) else None,
+        )
+
+        # 5. Persist evidence units
+        evidence_data = analysis_data.get("evidence_units", [])
+        if not isinstance(evidence_data, list):
+            evidence_data = []
+        evidence_units = await persist_evidence_units(
+            session, paper.id, analysis.id, idea.id, evidence_data,
+        )
+
+        # 6. Create edges
+        slots_dicts = [{"id": s["id"], "name": s["name"]} for s in slots] if slots else []
+        await create_edges_for_idea(session, idea, evidence_units, slots_dicts)
+
+        # 7. Check publish status
+        await check_publish(session, idea.id)
+
+        logger.info(f"Graph built for paper {paper.id}: IdeaDelta={idea.id}, "
+                    f"evidence={len(evidence_units)}, status={idea.publish_status}")
+
+    except Exception as e:
+        logger.error(f"Graph pipeline error for paper {paper.id}: {e}")
+        # Don't fail the analysis — graph is additive
 
 
 # ── Batch operations ────────────────────────────────────────────
