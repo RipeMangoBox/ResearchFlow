@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://rf:changeme@localhost:5432/researchflow"
-    database_url_sync: str = "postgresql://rf:changeme@localhost:5432/researchflow"
+    database_url_sync: str = "postgresql://hzh@localhost:5432/researchflow"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     paper_ideas_dir: str = "../paperIDEAs"
     exports_dir: str = "./exports"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

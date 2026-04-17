@@ -53,14 +53,8 @@ def upgrade() -> None:
         name="tier",
     )
 
-    paper_state.create(op.get_bind(), checkfirst=True)
-    importance.create(op.get_bind(), checkfirst=True)
-    analysis_level.create(op.get_bind(), checkfirst=True)
-    asset_type.create(op.get_bind(), checkfirst=True)
-    period_type.create(op.get_bind(), checkfirst=True)
-    job_status.create(op.get_bind(), checkfirst=True)
-    feedback_type.create(op.get_bind(), checkfirst=True)
-    tier.create(op.get_bind(), checkfirst=True)
+    # Enums are created automatically by create_table when first referenced.
+    # No need to create them explicitly.
 
     # ── papers ──────────────────────────────────────────────────
     op.create_table(
