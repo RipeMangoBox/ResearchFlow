@@ -29,7 +29,8 @@ class EvidenceUnit(Base):
     # Per-claim confidence & basis (GAP 2 fix)
     confidence: Mapped[float | None] = mapped_column()   # 0.0–1.0
     basis: Mapped[EvidenceBasis | None] = mapped_column(
-        Enum(EvidenceBasis, name="evidence_basis", create_type=True),
+        Enum(EvidenceBasis, name="evidence_basis", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
     )
 
     # Source anchoring — where in the paper this evidence comes from

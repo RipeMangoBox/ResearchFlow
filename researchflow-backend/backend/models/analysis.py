@@ -28,7 +28,9 @@ class PaperAnalysis(Base):
     )
     paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     level: Mapped[AnalysisLevel] = mapped_column(
-        Enum(AnalysisLevel, name="analysis_level", create_type=True), nullable=False
+        Enum(AnalysisLevel, name="analysis_level", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
     )
 
     # Versioning

@@ -18,7 +18,9 @@ class Digest(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     period_type: Mapped[PeriodType] = mapped_column(
-        Enum(PeriodType, name="period_type", create_type=True), nullable=False
+        Enum(PeriodType, name="period_type", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False
     )
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)

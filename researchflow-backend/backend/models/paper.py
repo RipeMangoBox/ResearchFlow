@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    ForeignKey,
     Index,
     SmallInteger,
     String,
@@ -34,16 +35,19 @@ class Paper(Base):
     year: Mapped[int | None] = mapped_column(SmallInteger)
     category: Mapped[str] = mapped_column(String(100), nullable=False)
     state: Mapped[PaperState] = mapped_column(
-        Enum(PaperState, name="paper_state", create_type=True),
+        Enum(PaperState, name="paper_state", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
         nullable=False,
         default=PaperState.WAIT,
     )
     importance: Mapped[Importance | None] = mapped_column(
-        Enum(Importance, name="importance", create_type=True),
+        Enum(Importance, name="importance", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
         default=Importance.C,
     )
     tier: Mapped[Tier | None] = mapped_column(
-        Enum(Tier, name="tier", create_type=True),
+        Enum(Tier, name="tier", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
     )
 
     # Links
@@ -130,10 +134,12 @@ class PaperAsset(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     paper_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
     )
     asset_type: Mapped[AssetType] = mapped_column(
-        Enum(AssetType, name="asset_type", create_type=True), nullable=False
+        Enum(AssetType, name="asset_type", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
     )
     object_key: Mapped[str] = mapped_column(Text, nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(100))
@@ -159,7 +165,7 @@ class PaperVersion(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     paper_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
     )
     version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     diff_summary: Mapped[str | None] = mapped_column(Text)

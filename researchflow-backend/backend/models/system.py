@@ -28,7 +28,8 @@ class Job(Base):
     )
     job_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[JobStatus] = mapped_column(
-        Enum(JobStatus, name="job_status", create_type=True),
+        Enum(JobStatus, name="job_status", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
         nullable=False,
         default=JobStatus.PENDING,
     )
@@ -93,7 +94,9 @@ class UserFeedback(Base):
     target_type: Mapped[str] = mapped_column(String(30), nullable=False)
     target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     feedback_type: Mapped[FeedbackType] = mapped_column(
-        Enum(FeedbackType, name="feedback_type", create_type=True), nullable=False
+        Enum(FeedbackType, name="feedback_type", create_type=False,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False
     )
     old_value: Mapped[dict | None] = mapped_column(JSONB)
     new_value: Mapped[dict | None] = mapped_column(JSONB)
