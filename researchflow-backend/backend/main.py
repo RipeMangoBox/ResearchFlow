@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.analyses import router as analyses_router
 from backend.api.import_ import router as import_router
@@ -21,6 +22,14 @@ app = FastAPI(
     description="Research operating system backend",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# CORS for frontend dev
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Routers
