@@ -19,7 +19,7 @@ from backend.schemas.paper import (
     PaperResponse,
     PaperUpdate,
 )
-from backend.services import paper_service, triage_service
+from backend.services import enrich_service, paper_service, triage_service
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -116,6 +116,17 @@ async def triage_all(session: Session):
     count = await triage_service.triage_all_unscored(session)
     await session.commit()
     return {"scored": count}
+
+
+@router.post("/enrich")
+async def enrich_papers(
+    session: Session,
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """Enrich papers missing metadata (abstract, authors, doi) from arXiv/Crossref."""
+    results = await enrich_service.enrich_batch(session, limit=limit)
+    await session.commit()
+    return {"processed": len(results), "results": results}
 
 
 @router.post("/search", response_model=list[PaperBrief])

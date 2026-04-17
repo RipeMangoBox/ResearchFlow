@@ -19,6 +19,17 @@ async def task_triage_all(ctx: dict):
     return {"scored": count}
 
 
+async def task_enrich_batch(ctx: dict, limit: int = 20):
+    """Enrich papers missing metadata from arXiv/Crossref."""
+    from backend.database import async_session
+    from backend.services import enrich_service
+
+    async with async_session() as session:
+        results = await enrich_service.enrich_batch(session, limit=limit)
+        await session.commit()
+    return {"processed": len(results)}
+
+
 async def task_cleanup_expired(ctx: dict):
     """Archive expired ephemeral papers."""
     from backend.database import async_session
@@ -56,6 +67,7 @@ def _parse_redis_url(url: str) -> RedisSettings:
 class WorkerSettings:
     functions = [
         task_triage_all,
+        task_enrich_batch,
         task_cleanup_expired,
     ]
 
