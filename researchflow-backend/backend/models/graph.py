@@ -102,6 +102,9 @@ class IdeaDelta(Base):
     paradigm_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("paradigm_templates.id")
     )
+    delta_card_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("delta_cards.id")
+    )
 
     # Core content
     delta_statement: Mapped[str] = mapped_column(Text, nullable=False)

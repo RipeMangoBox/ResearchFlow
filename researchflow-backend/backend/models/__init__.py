@@ -17,6 +17,9 @@ from backend.models.digest import Digest
 from backend.models.system import Job, ModelRun, ExecutionMemory, UserFeedback
 from backend.models.direction import DirectionCard, UserBookmark, UserEvent
 from backend.models.graph import IdeaDelta, Slot, MechanismFamily, GraphEdge, ImplementationUnit
+from backend.models.delta_card import DeltaCard
+from backend.models.assertion import GraphNode, GraphAssertion, GraphAssertionEvidence
+from backend.models.review import ReviewTask, HumanOverride, Alias
 
 __all__ = [
     "AnalysisLevel", "AssetType", "EvidenceBasis", "FeedbackType",
@@ -29,4 +32,7 @@ __all__ = [
     "Job", "ModelRun", "ExecutionMemory", "UserFeedback",
     "DirectionCard", "UserBookmark", "UserEvent",
     "IdeaDelta", "Slot", "MechanismFamily", "GraphEdge", "ImplementationUnit",
+    "DeltaCard",
+    "GraphNode", "GraphAssertion", "GraphAssertionEvidence",
+    "ReviewTask", "HumanOverride", "Alias",
 ]

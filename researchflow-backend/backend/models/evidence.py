@@ -23,6 +23,7 @@ class EvidenceUnit(Base):
 
     # Graph FK links (Layer 3→4 connection)
     idea_delta_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    delta_card_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     slot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     atom_type: Mapped[str] = mapped_column(String(30), nullable=False)
