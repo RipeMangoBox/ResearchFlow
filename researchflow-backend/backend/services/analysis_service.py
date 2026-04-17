@@ -65,6 +65,13 @@ L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON f
   "changed_slots": ["slot1", "slot2"],
   "is_plugin_patch": false,
   "worth_deep_read": true,
+  "method_category": "ONE of: structural_architecture | plugin_module | reward_design | training_recipe | data_augmentation | inference_optimization | loss_function | representation_change | evaluation_method | theoretical_analysis",
+  "improvement_type": "ONE of: fundamental_rethink | component_replacement | additive_plugin | hyperparameter_trick | data_scaling | combination_of_existing",
+  "bottleneck_addressed": {{
+    "title": "The core bottleneck/limitation this paper addresses (1 sentence)",
+    "description": "Why this bottleneck matters and what makes it hard (2-3 sentences)",
+    "is_fundamental": true/false
+  }},
   "delta_card": {{
     "paradigm": "inferred standard paradigm name",
     "slots": {{
@@ -310,13 +317,70 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     if paper.state != PaperState.CHECKED:
         paper.state = PaperState.L4_DEEP
 
+    # Save method_category and improvement_type as tags
+    method_cat = analysis_data.get("method_category")
+    improvement_type = analysis_data.get("improvement_type")
+    new_tags = list(paper.tags or [])
+    if method_cat and f"method/{method_cat}" not in new_tags:
+        new_tags.append(f"method/{method_cat}")
+    if improvement_type and f"improvement/{improvement_type}" not in new_tags:
+        new_tags.append(f"improvement/{improvement_type}")
+    if new_tags != list(paper.tags or []):
+        paper.tags = new_tags
+
     await session.flush()
     await session.refresh(analysis)
 
-    # ── NEW: Graph pipeline (IdeaDelta + Evidence + Edges) ──────
-    await _build_idea_graph(session, paper, analysis, analysis_data)
+    # ── Auto-create bottleneck from LLM output ────────────────
+    bottleneck_id = await _maybe_create_bottleneck(session, paper, analysis_data)
+
+    # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
+    await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
 
     return analysis
+
+
+async def _maybe_create_bottleneck(
+    session: AsyncSession,
+    paper: Paper,
+    analysis_data: dict,
+) -> UUID | None:
+    """Auto-create a ProjectBottleneck from L4 analysis output if provided."""
+    bn_data = analysis_data.get("bottleneck_addressed")
+    if not bn_data or not isinstance(bn_data, dict) or not bn_data.get("title"):
+        return None
+
+    from backend.models.research import ProjectBottleneck
+    from sqlalchemy import func
+
+    # Dedup: check if similar bottleneck already exists
+    existing = await session.execute(
+        select(ProjectBottleneck).where(
+            func.lower(ProjectBottleneck.title) == bn_data["title"].lower()
+        ).limit(1)
+    )
+    bn = existing.scalar_one_or_none()
+    if bn:
+        # Link this paper to existing bottleneck
+        if bn.related_paper_ids and paper.id not in bn.related_paper_ids:
+            bn.related_paper_ids = list(bn.related_paper_ids) + [paper.id]
+        elif not bn.related_paper_ids:
+            bn.related_paper_ids = [paper.id]
+        await session.flush()
+        return bn.id
+
+    # Create new bottleneck
+    bn = ProjectBottleneck(
+        title=bn_data["title"],
+        description=bn_data.get("description", ""),
+        domain=paper.category,
+        related_paper_ids=[paper.id],
+        status="active",
+    )
+    session.add(bn)
+    await session.flush()
+    logger.info(f"Auto-created bottleneck: {bn.title} (paper={paper.id})")
+    return bn.id
 
 
 async def _build_idea_graph(
@@ -324,6 +388,7 @@ async def _build_idea_graph(
     paper: Paper,
     analysis: PaperAnalysis,
     analysis_data: dict,
+    bottleneck_id: UUID | None = None,
 ) -> None:
     """Post-L4 hook: build DeltaCard → IdeaDelta → Assertions.
 
@@ -370,6 +435,7 @@ async def _build_idea_graph(
             paradigm_name=paradigm.name if paradigm else None,
             slots=[{"id": s["id"], "name": s["name"]} for s in slots] if slots else None,
             changed_slots_graph=changed_slots_graph if changed_slots_graph else None,
+            bottleneck_id=bottleneck_id,
             model_provider=analysis.model_provider,
             model_name=analysis.model_name,
         )

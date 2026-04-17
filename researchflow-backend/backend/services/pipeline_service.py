@@ -99,6 +99,17 @@ async def run_full_pipeline(
     if not paper:
         return {"error": "Paper not found"}
 
+    # Step 0: Triage scoring (always run first for prioritization)
+    from backend.services import triage_service
+    await triage_service.triage_paper(session, paper_id)
+    await session.commit()
+    await session.refresh(paper)
+    progress["steps"]["triage"] = {
+        "keep_score": paper.keep_score,
+        "analysis_priority": paper.analysis_priority,
+        "tier": paper.tier.value if paper.tier else None,
+    }
+
     # Step 1: Download PDF (if arxiv paper)
     if paper.arxiv_id and not paper.pdf_path_local:
         ok = await download_arxiv_pdf(session, paper_id)

@@ -13,6 +13,7 @@ from backend.api.digests import router as digests_router
 from backend.api.directions import router as directions_router
 from backend.api.feedback import router as feedback_router
 from backend.api.assertions import router as assertions_router
+from backend.api.exploration import router as exploration_router
 from backend.api.graph import router as graph_router
 from backend.api.pipeline import router as pipeline_router
 from backend.api.reports import router as reports_router
@@ -54,6 +55,7 @@ app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(graph_router, prefix=settings.api_prefix)
 app.include_router(assertions_router, prefix=settings.api_prefix)
 app.include_router(pipeline_router, prefix=settings.api_prefix)
+app.include_router(exploration_router, prefix=settings.api_prefix)
 
 
 # Global exception handler
