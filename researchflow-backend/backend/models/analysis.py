@@ -128,6 +128,14 @@ class ParadigmTemplate(Base):
     version: Mapped[str] = mapped_column(String(20), default="v1")
     domain: Mapped[str | None] = mapped_column(String(100))
     slots: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    # Evolution tracking — paradigms evolve as the field matures
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Representative paper that established this paradigm version
+    anchor_paper_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # How many papers use this paradigm as their frame
+    adoption_count: Mapped[int] = mapped_column(SmallInteger, default=0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

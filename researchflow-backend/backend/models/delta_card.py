@@ -10,7 +10,7 @@ Hierarchy: Paper → PaperAnalysis → DeltaCard → IdeaDelta → GraphAssertio
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,18 @@ class DeltaCard(Base):
     changed_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     unchanged_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     mechanism_family_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+
+    # Baseline evolution — DAG inheritance (core of method lineage tracking)
+    # Which existing methods/papers does this paper build on?
+    parent_delta_card_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    # Which specific papers are used as baselines? (may differ from parent_delta_cards)
+    baseline_paper_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    # Method lineage depth (0 = foundational paradigm, 1 = direct improvement, 2+ = chain)
+    lineage_depth: Mapped[int | None] = mapped_column(SmallInteger, default=0)
+    # Has this DeltaCard become a baseline for others? (auto-updated)
+    is_established_baseline: Mapped[bool | None] = mapped_column(default=False)
+    # How many downstream papers use this as baseline?
+    downstream_count: Mapped[int | None] = mapped_column(SmallInteger, default=0)
 
     # Core content
     delta_statement: Mapped[str] = mapped_column(Text, nullable=False)

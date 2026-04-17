@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
-from backend.services import pipeline_service, discovery_service
+from backend.services import pipeline_service, discovery_service, domain_init_service, evolution_service
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -116,6 +116,101 @@ async def download_pdf(
             raise HTTPException(400, "PDF download failed (no arxiv_id or download error)")
         await session.commit()
         return {"status": "downloaded"}
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+# ── Domain initialization ─────────────────────────────────────────
+
+class InitDomainRequest(BaseModel):
+    domain: str = Field(..., min_length=1)
+    repo_url: str | None = None
+    max_papers: int = Field(default=50, ge=1, le=200)
+    category: str | None = None
+
+
+@router.post("/init-domain")
+async def init_domain(
+    data: InitDomainRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Initialize a domain KB from awesome-list repos.
+
+    Finds the best awesome-list for the domain, extracts papers,
+    ingests them, and returns a priority queue for analysis.
+    """
+    try:
+        result = await domain_init_service.init_domain_from_awesome(
+            session, data.domain,
+            repo_url=data.repo_url,
+            max_papers=data.max_papers,
+            category=data.category,
+        )
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
+
+
+@router.get("/awesome-repos")
+async def search_awesome_repos(
+    domain: str = Query(..., min_length=1),
+    limit: int = Query(default=5, ge=1, le=20),
+):
+    """Search GitHub for awesome-list repos matching a domain."""
+    repos = await domain_init_service.find_awesome_repos(domain, limit)
+    return {"domain": domain, "repos": repos}
+
+
+# ── Lineage / evolution ───────────────────────────────────────────
+
+@router.get("/{paper_id}/lineage")
+async def get_lineage(
+    paper_id: UUID,
+    direction: str = Query(default="both", pattern="^(ancestors|descendants|both)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get the method lineage tree for a paper's DeltaCard."""
+    from sqlalchemy import desc, select
+    from backend.models.delta_card import DeltaCard
+    dc_result = await session.execute(
+        select(DeltaCard).where(
+            DeltaCard.paper_id == paper_id,
+            DeltaCard.status != "deprecated",
+        ).order_by(desc(DeltaCard.created_at)).limit(1)
+    )
+    dc = dc_result.scalar_one_or_none()
+    if not dc:
+        raise HTTPException(404, "No DeltaCard for this paper")
+    return await evolution_service.get_lineage_tree(session, dc.id, direction)
+
+
+@router.get("/evolution/candidates")
+async def evolution_candidates(
+    domain: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Find DeltaCards that might be ready to become new paradigm versions."""
+    return await evolution_service.check_paradigm_evolution(session, domain)
+
+
+@router.post("/evolution/promote/{delta_card_id}")
+async def promote_to_paradigm(
+    delta_card_id: UUID,
+    name: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Promote an established baseline DeltaCard to a new paradigm version."""
+    try:
+        paradigm = await evolution_service.promote_to_paradigm(session, delta_card_id, name)
+        if not paradigm:
+            raise HTTPException(404, "DeltaCard not found")
+        await session.commit()
+        return {"paradigm_id": str(paradigm.id), "name": paradigm.name, "version": paradigm.version}
     except HTTPException:
         raise
     except Exception:
