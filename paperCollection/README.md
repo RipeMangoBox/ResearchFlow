@@ -7,7 +7,9 @@ generated: 2026-04-16T23:40
 
 # paperCollection
 
-This directory is auto-generated from `paperAnalysis/` and is used for **agent-side fast filtering**, **statistical overview**, **Obsidian jumps**, and **backlink-friendly browsing**.
+This directory is a **read-only export** of the backend database. For programmatic queries, use the backend API (`/api/v1/search/*`).
+
+Used for **Obsidian navigation**, **statistical overview**, and **backlink-friendly browsing**.
 
 ## Start here
 
@@ -44,7 +46,7 @@ This directory is auto-generated from `paperAnalysis/` and is used for **agent-s
 
 ## Notes
 
-- `index.jsonl` is the fast filter layer for agents; the Markdown pages are for human navigation.
+- `index.jsonl` is a legacy export. Agents should use `/api/v1/search/*` for queries. Markdown pages are for human navigation.
 - This index links out by default and does not embed PDFs (to avoid heavy pages).
 - `paperAnalysis` remains the primary evidence layer; `paperCollection` adds generated index and navigation outputs.
 

@@ -9,7 +9,7 @@
 
 **产出**：
 - [x] Docker Compose (Postgres+pgvector, Redis, API, Worker)
-- [x] 14 张表 ORM 模型 + Alembic 001 迁移
+- [x] 14 → 31 张表 ORM 模型 + Alembic 001-006 迁移 (v3.1: DeltaCard, GraphAssertions, ReviewTasks 等)
 - [x] 迁移脚本 (CSV→DB, MD→DB, validate)
 - [x] 导出兼容脚本 (DB→Markdown, DB→CSV)
 - [x] FastAPI 入口 + config + database
