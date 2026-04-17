@@ -1,153 +1,106 @@
 <p align="center">
-  <img src="./assets/LOGO.png" alt="ResearchFlow logo" width="280"/>
+  <img src="./assets/LOGO.png" alt="ResearchFlow" width="260"/>
 </p>
-
 <h1 align="center">ResearchFlow</h1>
-
-<p align="center"><strong>给一篇论文 → 自动构建领域知识图谱 → 追踪方法演化 → 智能探索</strong></p>
-
-<p align="center">
-  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
-</p>
+<p align="center"><a href="README.md">English</a> · <a href="README_CN.md">中文</a></p>
 
 ---
 
-## 它做什么
+**给一篇论文 → 自动构建领域知识图谱，追踪方法之间的改进链。**
 
-```
-你: "这篇论文是关于 VLM 的 RLHF"
-         ↓
-Step 1:  找到领域的 awesome 仓库 → 导入 72 篇论文 → 评分排序
-Step 2:  下载 PDF → 分析 (L2解析 → L3速读 → L4深度) → 提取 DeltaCard
-Step 3:  构建方法演化 DAG: GRPO → GRPO+LP → GDPO → GDPO+image_thinking
-Step 4:  自动分类: 3 个结构性改进, 5 个插件型, 2 个 reward 改进
-Step 5:  你迭代探索，系统追踪你的 pivot 并建议下一步
-```
+ResearchFlow 是一个研究操作系统。导入论文 → LLM 分析 → 构建结构化知识图谱（记录方法之间如何层层改进）→ 支持迭代式研究探索。
 
-**核心理念**: 方法之间是 DAG (有向无环图)，不是扁平列表。系统追踪哪些改进变成了新 baseline，哪些只是插件，以及范式如何演化。
-
----
-
-## 快速开始
+## 完整示例：从零到知识图谱
 
 ```bash
-git clone https://github.com/RipeMangoBox/ResearchFlow.git
-cd ResearchFlow/researchflow-backend
-cp .env.example .env              # 设置 ANTHROPIC_API_KEY
+# 1. 启动系统
+cd researchflow-backend && cp .env.example .env  # 设置 ANTHROPIC_API_KEY
 make db && make migrate && make up
-```
 
-```bash
-# 从 awesome 仓库初始化领域
+# 2. 从 awesome 仓库初始化领域
 curl -X POST localhost:8000/api/v1/pipeline/init-domain \
-  -d '{"domain": "RLHF VLM"}'
+  -d '{"domain": "RLHF for VLM"}'
+# → 找到 awesome 仓库 → 导入 72 篇论文 → 评分排序
 
-# 或给一篇论文，自动发现相关论文
-curl -X POST localhost:8000/api/v1/import/links \
-  -d '{"items": [{"url": "https://arxiv.org/abs/2402.03300"}]}'
-curl -X POST localhost:8000/api/v1/pipeline/{paper_id}/discover
+# 3. 分析最高优先级的 10 篇
+curl -X POST localhost:8000/api/v1/pipeline/batch?limit=10
+# → 下载 PDF → L2 解析 → L3 速读 → L4 深度分析
+# → 构建 DeltaCard → IdeaDelta → 方法演化 DAG
+
+# 4. 迭代探索
+curl -X POST localhost:8000/api/v1/explore/start \
+  -d '{"query": "RL 优势消失问题"}'
+# → 分类结果: 3 结构性改进, 5 插件型, 2 reward 改进
+# → 建议: "都是插件型，试试相邻领域"
 ```
 
-Web 前端: `http://localhost:3000` | Claude Code: 自动发现 `.mcp.json`
+Web 前端: `localhost:3000` | Claude Code / Codex: 自动发现 `.mcp.json`
 
----
+## 核心设计
 
-## 知识图谱结构
+### 方法之间是 DAG，不是列表
 
-```
-Paper → DeltaCard (中间真相层) → IdeaDelta (知识原子) → GraphAssertions (图谱边)
-          │
-          ├── parent_delta_card_ids    (DAG 继承: 基于哪些方法)
-          ├── method_category          (structural / plugin / reward / ...)
-          ├── improvement_type         (fundamental_rethink / additive_plugin / ...)
-          └── bottleneck_addressed     (自动提取的研究瓶颈)
-```
-
-**自动升级**: 当一个改进被 ≥3 篇论文用作 baseline → 标记为 `established_baseline`。如果还是结构性改进 → 可升级为新版范式。
-
-### 论文过滤优先级
-
-| 层级 | 条件 | 权重 |
-|------|------|------|
-| 最高 | 开数据 (Tier A) | 0.40 |
-| 次高 | 开代码 (Tier B) | 0.30 |
-| 中 | 中稿无代码 (Tier C) | 0.20 |
-| 最低 | 预印本 (Tier D) | 0.10 |
-| 加分 | 顶会 + 重要度 + 时间衰减 | +0.05~0.25 |
-
-### 方法分类 (L4 自动提取)
+系统追踪 GRPO → GRPO+LP → GDPO 是一条改进链，GDPO 同时继承 GRPO 和 DPO。当 3+ 篇论文用某方法作 baseline → 自动标记为"已确立基线"，可升级为新版范式。
 
 ```
-method/structural_architecture    — 改了核心架构
-method/plugin_module             — 加了一个模块
-method/reward_design             — 改了奖励函数
-method/training_recipe           — 改了训练方法
-improvement/fundamental_rethink  — 根本性重新思考
-improvement/additive_plugin      — 加插件
+GRPO (基线, depth=0, 7篇下游)
+├── GRPO+LP (插件, depth=1)
+│   └── GRPO-LP+sampling (depth=2)
+├── GDPO (结构性, depth=1, parent=[GRPO, DPO])  ← 多继承
+│   └── GDPO+image_thinking (depth=2)
 ```
 
----
+### 论文按证据质量过滤
 
-## 完整流程
+| 优先级 | 条件 | 权重 |
+|--------|------|------|
+| 最高 | 开数据 | 0.40 |
+| 高 | 开代码 | 0.30 |
+| 中 | 中稿无代码 | 0.20 |
+| 低 | 预印本 | 0.10 |
+| 加分 | 顶会 + 新鲜度 + 团队 | +0.05–0.25 |
 
-### 16 步管线
+### L4 自动提取方法分类
 
-```
-ingest → triage → download_pdf → enrich → parse_L2
-→ skim_L3 → deep_L4 → delta_card_build → link_parent_baselines
-→ entity_resolution → assertion_propose → evidence_audit
-→ review → publish → index → export
-```
-
-### 研究探索会话
-
-```
-POST /explore/start   → "RL 优势消失问题"
-POST /explore/search  → 搜索 + 分类: structural=1, plugin=6
-POST /explore/step    → pivot: "都是插件型，要看根本性方案"
-POST /explore/search  → "think with image agentic GDPO"
-GET  /explore/{id}    → 完整探索路径 + 论文分类 + 下一步建议
-```
-
----
+- `method/structural_architecture` · `method/plugin_module` · `method/reward_design` ...
+- `improvement/fundamental_rethink` · `improvement/additive_plugin` ...
+- 自动创建 ProjectBottleneck (这篇论文在解决什么瓶颈)
 
 ## 系统规模
 
-| 组件 | 数量 |
-|------|------|
-| 数据库表 | 31 (7 次迁移) |
-| API 路由 | 81 (13 Router) |
+| | 数量 |
+|-|------|
+| 数据库表 | 31 |
+| API 路由 | 81 |
 | MCP 工具 | 18 |
-| Service 模块 | 25 |
+| Service | 25 |
 | 测试 | 29 |
-| 范式模板 | 4 内置 + LLM 动态发现 |
+| 内置范式 | 4 (RL/VLM/Agent/MotionGen) + LLM 动态发现 |
 
 ## 仓库结构
 
 ```
-ResearchFlow/
-├── researchflow-backend/        # 核心后端 (唯一写入目标)
-│   ├── backend/                 # FastAPI + ORM + Services + MCP
-│   ├── frontend/                # Next.js (7 页)
-│   ├── alembic/                 # 迁移 (001-007)
-│   ├── tests/                   # pytest (29 tests)
-│   └── ARCHITECTURE.md          # 完整架构文档
-├── paperAnalysis/               # 导出: 分析笔记
-├── paperCollection/             # 导出: 索引 + 导航
-├── paperIDEAs/                  # 导出: 研究产出
-├── .claude/skills/              # Claude Code 技能
-├── scripts/                     # 工具脚本
-└── AGENTS.md                    # Agent 接入指南
+researchflow-backend/          # 核心后端 (唯一写入目标)
+  backend/                     #   FastAPI + ORM + 25 Services + MCP
+  alembic/                     #   数据库迁移 (001-007)
+  tests/                       #   pytest 测试
+  ARCHITECTURE.md              #   ← 完整技术文档
+  DEPLOY_GUIDE.md              #   部署指南
+paperAnalysis/                 # 只读导出: 分析笔记
+paperCollection/               # 只读导出: 索引 + Obsidian 导航
+paperIDEAs/                    # 只读导出: 研究产出
+.claude/skills/                # Claude Code 技能 (19 个)
+scripts/                       # 本地工具脚本
+AGENTS.md                      # Agent 接入指南
 ```
 
 ## 文档
 
-| 文档 | 内容 |
-|------|------|
-| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | 完整架构: 知识图谱 + 方法演化 + 过滤 + 流程 |
-| [Backend README](researchflow-backend/README.md) | 后端开发: 安装 + 功能 + API |
-| [DEPLOY_GUIDE.md](researchflow-backend/DEPLOY_GUIDE.md) | 云端部署 |
-| [AGENTS.md](AGENTS.md) | MCP 工具 + 技能路由 |
+| 文档 | 读者 | 内容 |
+|------|------|------|
+| **[ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md)** | 开发者 | 知识图谱结构 · 方法 DAG · 管线 · API · DB Schema |
+| **[AGENTS.md](AGENTS.md)** | Agent 开发 | MCP 工具列表 · 技能路由 · 使用规则 |
+| **[DEPLOY_GUIDE.md](researchflow-backend/DEPLOY_GUIDE.md)** | 运维 | 云端部署 · Docker · 成本 |
 
 ## License
 

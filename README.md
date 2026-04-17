@@ -1,98 +1,104 @@
 <p align="center">
-  <img src="./assets/LOGO.png" alt="ResearchFlow logo" width="280"/>
+  <img src="./assets/LOGO.png" alt="ResearchFlow" width="260"/>
 </p>
-
 <h1 align="center">ResearchFlow</h1>
-
-<p align="center"><strong>Give one paper → auto-build domain knowledge graph → track method evolution → smart exploration.</strong></p>
-
-<p align="center">
-  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
-</p>
+<p align="center"><a href="README.md">English</a> · <a href="README_CN.md">中文</a></p>
 
 ---
 
-## What it does
+**Give one paper → auto-build a domain knowledge graph with method evolution tracking.**
 
-```
-You:  "Here's a paper about RLHF for VLM"
-         ↓
-Step 1:  Find the awesome-list for this domain → import 72 papers → score & prioritize
-Step 2:  Download PDFs → analyze (L2 parse → L3 skim → L4 deep) → extract DeltaCards
-Step 3:  Build method evolution DAG: GRPO → GRPO+LP → GDPO → GDPO+image_thinking
-Step 4:  Classify: 3 structural changes, 5 plugins, 2 reward designs
-Step 5:  You explore iteratively, system tracks pivots and suggests directions
-```
+ResearchFlow is a research operating system. It ingests papers, analyzes them with LLMs, builds a structured knowledge graph that captures how methods improve upon each other, and supports iterative research exploration.
 
-**Core idea**: Methods build on methods in a DAG, not a flat list. The system tracks which improvements became new baselines, which are just plugins, and how paradigms evolve.
-
----
-
-## Quick start
+## Complete example: from zero to knowledge graph
 
 ```bash
-git clone https://github.com/RipeMangoBox/ResearchFlow.git
-cd ResearchFlow/researchflow-backend
-cp .env.example .env              # Set ANTHROPIC_API_KEY
+# 1. Start the system
+cd researchflow-backend && cp .env.example .env  # set ANTHROPIC_API_KEY
 make db && make migrate && make up
-```
 
-Then:
-```bash
-# Initialize a domain from an awesome-list
+# 2. Bootstrap a domain from its awesome-list
 curl -X POST localhost:8000/api/v1/pipeline/init-domain \
   -H "Content-Type: application/json" \
-  -d '{"domain": "RLHF VLM"}'
+  -d '{"domain": "RLHF for VLM"}'
+# → Finds awesome repo → imports 72 papers → scores & prioritizes
 
-# Or give a single paper and build from there
-curl -X POST localhost:8000/api/v1/import/links \
-  -H "Content-Type: application/json" \
-  -d '{"items": [{"url": "https://arxiv.org/abs/2402.03300"}]}'
+# 3. Analyze the top 10 papers
+curl -X POST localhost:8000/api/v1/pipeline/batch?limit=10
+# → Downloads PDFs → L2 parse → L3 skim → L4 deep analysis
+# → Builds DeltaCards → IdeaDeltas → method evolution DAG
 
-# Run full pipeline (download → analyze → graph)
-curl -X POST localhost:8000/api/v1/pipeline/{paper_id}/run
-
-# Discover related papers via Semantic Scholar
-curl -X POST localhost:8000/api/v1/pipeline/{paper_id}/discover
+# 4. Explore iteratively
+curl -X POST localhost:8000/api/v1/explore/start \
+  -d '{"query": "RL advantage disappearance in VLM"}'
+# → System classifies results: 3 structural, 5 plugin, 2 reward
+# → Suggests: "dominated by plugins, try adjacent fields"
 ```
 
-Web UI: `http://localhost:3000` | Claude Code: auto-discovers `.mcp.json`
+Or use **Web UI** at `localhost:3000`, or connect **Claude Code / Codex** via MCP (auto-discovers `.mcp.json`).
 
----
+## What makes it different
 
-## How the knowledge graph works
+**Methods are a DAG, not a flat list.** The system tracks that GRPO → GRPO+LP → GDPO is a chain, and that GDPO inherits from both GRPO and DPO. When 3+ papers use a method as baseline, it's automatically marked as an established baseline and can be promoted to a new paradigm version.
 
 ```
-Paper → DeltaCard → IdeaDelta → GraphAssertions
-          │
-          ├── parent_delta_card_ids  (DAG: which methods this builds on)
-          ├── method_category        (structural / plugin / reward / ...)
-          ├── improvement_type       (fundamental_rethink / additive_plugin / ...)
-          └── bottleneck_addressed   (auto-extracted research bottleneck)
+GRPO (baseline, depth=0, 7 downstream papers)
+├── GRPO+LP (plugin, depth=1)
+│   └── GRPO-LP+sampling (depth=2)
+├── GDPO (structural, depth=1, parent=[GRPO, DPO])  ← multi-inheritance
+│   └── GDPO+image_thinking (depth=2)
 ```
 
-A DeltaCard becomes an **established baseline** when 3+ papers build on it. When it's also structural, it can be **promoted to a new paradigm version**.
+**Papers are filtered by evidence quality:**
 
----
+| Priority | Criteria | Score weight |
+|----------|----------|-------------|
+| Highest | Open data | 0.40 |
+| High | Open code | 0.30 |
+| Medium | Accepted, no code | 0.20 |
+| Low | Preprint | 0.10 |
+| Bonus | Top venue + recency + team quality | +0.05–0.25 |
 
-## System scale
+**L4 analysis auto-extracts method classification:**
+- `method/structural_architecture` vs `method/plugin_module` vs `method/reward_design` ...
+- `improvement/fundamental_rethink` vs `improvement/additive_plugin` ...
+- Research bottleneck addressed (auto-creates ProjectBottleneck)
 
-| Component | Count |
-|-----------|-------|
+## System at a glance
+
+| | Count |
+|-|-------|
 | DB tables | 31 |
 | API routes | 81 |
 | MCP tools | 18 |
 | Services | 25 |
 | Tests | 29 |
+| Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM dynamic discovery |
 
-## Documentation
+## Repository layout
 
-| Doc | What it covers |
-|-----|---------------|
-| [Architecture](researchflow-backend/ARCHITECTURE.md) | Knowledge graph structure, method evolution DAG, filtering, full pipeline |
-| [Backend README](researchflow-backend/README.md) | Setup, features, API overview |
-| [Deploy Guide](researchflow-backend/DEPLOY_GUIDE.md) | Cloud deployment |
-| [Agent Guide](AGENTS.md) | MCP tools, skills, routing |
+```
+researchflow-backend/          # Core backend (single source of truth)
+  backend/                     #   FastAPI + ORM + 25 services + MCP server
+  alembic/                     #   DB migrations (001–007)
+  tests/                       #   pytest suite
+  ARCHITECTURE.md              #   ← Full technical reference
+  DEPLOY_GUIDE.md              #   Cloud deployment guide
+paperAnalysis/                 # Read-only export: analysis Markdown
+paperCollection/               # Read-only export: index + Obsidian navigation
+paperIDEAs/                    # Read-only export: research outputs
+.claude/skills/                # Claude Code skill definitions (19 skills)
+scripts/                       # Local utility scripts
+AGENTS.md                      # Agent integration guide
+```
+
+## Docs
+
+| Document | For whom | Content |
+|----------|----------|---------|
+| **[ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md)** | Developers | Knowledge graph structure, method DAG, pipeline, API reference, DB schema |
+| **[AGENTS.md](AGENTS.md)** | Agent builders | MCP tools list, skill routing, working rules |
+| **[DEPLOY_GUIDE.md](researchflow-backend/DEPLOY_GUIDE.md)** | Ops | Cloud setup, Docker, costs |
 
 ## License
 
