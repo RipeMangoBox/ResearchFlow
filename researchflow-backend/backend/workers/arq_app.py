@@ -30,6 +30,28 @@ async def task_enrich_batch(ctx: dict, limit: int = 20):
     return {"processed": len(results)}
 
 
+async def task_daily_digest(ctx: dict):
+    """Generate daily research digest."""
+    from backend.database import async_session
+    from backend.services import digest_service
+
+    async with async_session() as session:
+        digest = await digest_service.generate_digest(session, "day")
+        await session.commit()
+    return {"digest_id": str(digest.id)}
+
+
+async def task_weekly_digest(ctx: dict):
+    """Generate weekly research digest."""
+    from backend.database import async_session
+    from backend.services import digest_service
+
+    async with async_session() as session:
+        digest = await digest_service.generate_digest(session, "week")
+        await session.commit()
+    return {"digest_id": str(digest.id)}
+
+
 async def task_cleanup_expired(ctx: dict):
     """Archive expired ephemeral papers."""
     from backend.database import async_session
@@ -68,10 +90,16 @@ class WorkerSettings:
     functions = [
         task_triage_all,
         task_enrich_batch,
+        task_daily_digest,
+        task_weekly_digest,
         task_cleanup_expired,
     ]
 
     cron_jobs = [
+        # Daily digest at 23:00
+        cron(task_daily_digest, hour=23, minute=0),
+        # Weekly digest on Sunday at 22:00
+        cron(task_weekly_digest, weekday=6, hour=22, minute=0),
         # Cleanup expired ephemeral papers daily at 03:00
         cron(task_cleanup_expired, hour=3, minute=0),
     ]

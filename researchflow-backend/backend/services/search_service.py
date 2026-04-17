@@ -113,31 +113,31 @@ async def hybrid_search(
         query_embedding = await embed_text(query)
 
         # Use raw SQL for pgvector cosine distance
+        # Note: cast via CAST() instead of :: to avoid asyncpg $ param conflict
         vector_sql = text("""
             SELECT id, title, venue, year, category, state, importance,
                    tags, core_operator, keep_score, structurality_score,
-                   1 - (embedding <=> :qvec::vector) AS cosine_sim
+                   1 - (embedding <=> CAST(:qvec AS vector)) AS cosine_sim
             FROM papers
             WHERE embedding IS NOT NULL
             AND state NOT IN ('archived_or_expired', 'skip')
-            ORDER BY embedding <=> :qvec::vector
+            ORDER BY embedding <=> CAST(:qvec AS vector)
             LIMIT :lim
         """)
 
         params = {"qvec": str(query_embedding), "lim": limit * 2}
 
-        # Add structured filters to vector query if needed
         if category:
             vector_sql = text("""
                 SELECT id, title, venue, year, category, state, importance,
                        tags, core_operator, keep_score, structurality_score,
-                       1 - (embedding <=> :qvec::vector) AS cosine_sim
+                       1 - (embedding <=> CAST(:qvec AS vector)) AS cosine_sim
                 FROM papers
                 WHERE embedding IS NOT NULL
                 AND state NOT IN ('archived_or_expired', 'skip')
                 AND (:cat IS NULL OR category = :cat)
                 AND (:ven IS NULL OR venue = :ven)
-                ORDER BY embedding <=> :qvec::vector
+                ORDER BY embedding <=> CAST(:qvec AS vector)
                 LIMIT :lim
             """)
             params["cat"] = category

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "researchflow": {
+      "command": "python",
+      "args": ["-m", "backend.mcp.server"],
+      "cwd": "researchflow-backend",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}
