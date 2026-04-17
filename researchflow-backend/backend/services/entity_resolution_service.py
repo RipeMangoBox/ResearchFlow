@@ -140,15 +140,16 @@ async def register_alias(
     confidence: float | None = None,
 ) -> Alias:
     """Register a new alias, skipping if duplicate."""
-    existing = await session.execute(
+    result = await session.execute(
         select(Alias).where(
             Alias.entity_type == entity_type,
             Alias.entity_id == entity_id,
             func.lower(Alias.alias) == alias_text.lower(),
         )
     )
-    if existing.scalar_one_or_none():
-        return existing.scalar_one_or_none()
+    existing = result.scalar_one_or_none()
+    if existing:
+        return existing
 
     alias = Alias(
         entity_type=entity_type,
@@ -173,14 +174,14 @@ async def bulk_register_aliases(
     """
     count = 0
     for a in aliases:
-        existing = await session.execute(
+        result = await session.execute(
             select(Alias).where(
                 Alias.entity_type == a["entity_type"],
                 Alias.entity_id == a["entity_id"],
                 func.lower(Alias.alias) == a["alias"].lower(),
             )
         )
-        if not existing.scalar_one_or_none():
+        if not result.scalar_one_or_none():
             alias = Alias(
                 entity_type=a["entity_type"],
                 entity_id=a["entity_id"],
