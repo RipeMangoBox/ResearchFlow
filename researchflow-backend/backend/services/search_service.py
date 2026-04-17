@@ -4,6 +4,7 @@ Combines:
 1. PostgreSQL tsvector full-text search (BM25-like ranking)
 2. pgvector cosine similarity (semantic)
 3. Structured column filters (category, venue, year, tags, scores)
+4. Idea-centric search via DeltaCard/IdeaDelta (v3)
 
 Results are ranked by a weighted combination of text and vector scores.
 """
@@ -11,10 +12,12 @@ Results are ranked by a weighted combination of text and vector scores.
 import logging
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, text
+from sqlalchemy import and_, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.delta_card import DeltaCard
 from backend.models.enums import PaperState
+from backend.models.graph import IdeaDelta
 from backend.models.paper import Paper
 from backend.services.embedding_service import embed_text
 
@@ -185,3 +188,93 @@ async def hybrid_search(
     # Sort by combined score, return top N
     sorted_results = sorted(results.values(), key=lambda x: x["combined_score"], reverse=True)
     return sorted_results[:limit]
+
+
+async def idea_search(
+    session: AsyncSession,
+    query: str,
+    category: str | None = None,
+    min_structurality: float | None = None,
+    min_evidence: int | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Idea-centric search — search across DeltaCards and IdeaDeltas.
+
+    Searches delta_statement, key_ideas, and assumptions for keyword matches.
+    Falls back to IdeaDelta.delta_statement if no DeltaCards exist.
+    """
+    # Search DeltaCards by keyword in delta_statement
+    dc_conditions = [DeltaCard.status != "deprecated"]
+    if min_structurality is not None:
+        dc_conditions.append(DeltaCard.structurality_score >= min_structurality)
+
+    dc_stmt = (
+        select(DeltaCard)
+        .where(
+            and_(*dc_conditions),
+            DeltaCard.delta_statement.ilike(f"%{query}%"),
+        )
+        .order_by(desc(DeltaCard.structurality_score))
+        .limit(limit)
+    )
+    dc_result = await session.execute(dc_stmt)
+    delta_cards = list(dc_result.scalars().all())
+
+    results = []
+    seen_paper_ids = set()
+
+    for dc in delta_cards:
+        paper = await session.get(Paper, dc.paper_id)
+        if category and paper and paper.category != category:
+            continue
+        seen_paper_ids.add(dc.paper_id)
+        results.append({
+            "source": "delta_card",
+            "delta_card_id": str(dc.id),
+            "paper_id": str(dc.paper_id),
+            "title": paper.title if paper else "Unknown",
+            "venue": paper.venue if paper else None,
+            "year": paper.year if paper else None,
+            "delta_statement": dc.delta_statement[:300],
+            "structurality_score": dc.structurality_score,
+            "transferability_score": dc.transferability_score,
+            "status": dc.status,
+            "key_ideas": dc.key_ideas_ranked[:3] if dc.key_ideas_ranked else None,
+        })
+
+    # Also search IdeaDeltas not covered by DeltaCards
+    idea_conditions = [IdeaDelta.delta_statement.ilike(f"%{query}%")]
+    if min_structurality is not None:
+        idea_conditions.append(IdeaDelta.structurality_score >= min_structurality)
+    if min_evidence is not None:
+        idea_conditions.append(IdeaDelta.evidence_count >= min_evidence)
+
+    idea_stmt = (
+        select(IdeaDelta)
+        .where(and_(*idea_conditions))
+        .order_by(desc(IdeaDelta.structurality_score))
+        .limit(limit)
+    )
+    idea_result = await session.execute(idea_stmt)
+
+    for idea in idea_result.scalars():
+        if idea.paper_id in seen_paper_ids:
+            continue
+        paper = await session.get(Paper, idea.paper_id)
+        if category and paper and paper.category != category:
+            continue
+        results.append({
+            "source": "idea_delta",
+            "idea_delta_id": str(idea.id),
+            "paper_id": str(idea.paper_id),
+            "title": paper.title if paper else "Unknown",
+            "venue": paper.venue if paper else None,
+            "year": paper.year if paper else None,
+            "delta_statement": idea.delta_statement[:300],
+            "structurality_score": idea.structurality_score,
+            "transferability_score": idea.transferability_score,
+            "publish_status": idea.publish_status,
+            "evidence_count": idea.evidence_count,
+        })
+
+    return results[:limit]

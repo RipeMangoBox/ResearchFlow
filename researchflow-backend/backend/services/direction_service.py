@@ -160,6 +160,9 @@ async def list_directions(session: AsyncSession, limit: int = 20) -> list[Direct
 
 
 async def _gather_papers_context(session: AsyncSession, category: str | None) -> str:
+    """Gather paper context enriched with DeltaCard data for direction proposals."""
+    from backend.models.delta_card import DeltaCard
+
     conditions = [Paper.keep_score.isnot(None)]
     if category:
         conditions.append(Paper.category == category)
@@ -168,14 +171,36 @@ async def _gather_papers_context(session: AsyncSession, category: str | None) ->
     result = await session.execute(
         select(Paper).where(and_(*conditions)).order_by(desc(Paper.keep_score)).limit(10)
     )
-    papers = result.scalars().all()
+    papers = list(result.scalars().all())
+
+    # Fetch DeltaCards for context enrichment
+    paper_ids = [p.id for p in papers]
+    dc_result = await session.execute(
+        select(DeltaCard).where(
+            DeltaCard.paper_id.in_(paper_ids),
+            DeltaCard.status != "deprecated",
+        )
+    ) if paper_ids else None
+    dc_map = {dc.paper_id: dc for dc in dc_result.scalars()} if dc_result else {}
 
     lines = []
     for p in papers:
+        dc = dc_map.get(p.id)
         line = f"- {p.title} ({p.venue} {p.year})"
-        if p.core_operator:
-            line += f"\n  Core: {p.core_operator[:150]}"
-        line += f"\n  Struct: {p.structurality_score}, Keep: {p.keep_score}"
+
+        if dc:
+            line += f"\n  Delta: {dc.delta_statement[:200]}"
+            if dc.structurality_score:
+                line += f"\n  Struct: {dc.structurality_score:.2f}, Transfer: {dc.transferability_score or 'N/A'}"
+            if dc.assumptions:
+                line += f"\n  Assumptions: {'; '.join(dc.assumptions[:2])}"
+            if dc.failure_modes:
+                line += f"\n  Failure modes: {'; '.join(dc.failure_modes[:2])}"
+        else:
+            if p.core_operator:
+                line += f"\n  Core: {p.core_operator[:150]}"
+            line += f"\n  Struct: {p.structurality_score}, Keep: {p.keep_score}"
+
         lines.append(line)
     return "\n".join(lines) if lines else "No papers in knowledge base yet."
 

@@ -249,9 +249,51 @@ async def _gather_activity(
             ast = f"{avg_struct:.2f}" if avg_struct else "N/A"
             parts.append(f"- {cat}: {cnt} papers (avg_keep={ak}, avg_struct={ast})")
 
+    # DeltaCards created in period
+    dc_result = await session.execute(
+        text("""
+            SELECT count(*) as total,
+                   count(CASE WHEN status = 'published' THEN 1 END) as published,
+                   avg(structurality_score) as avg_struct
+            FROM delta_cards
+            WHERE created_at BETWEEN :start AND :end
+        """),
+        {"start": start_dt, "end": end_dt},
+    )
+    dc_row = dc_result.fetchone()
+    if dc_row and dc_row[0] > 0:
+        parts.append(f"\n### DeltaCard 产出")
+        parts.append(f"- 新建: {dc_row[0]} 张 (已发布: {dc_row[1]})")
+        if dc_row[2]:
+            parts.append(f"- 平均结构性分数: {dc_row[2]:.2f}")
+
+    # Graph assertions
+    ga_result = await session.execute(
+        text("""
+            SELECT status, count(*) FROM graph_assertions
+            WHERE created_at BETWEEN :start AND :end
+            GROUP BY status
+        """),
+        {"start": start_dt, "end": end_dt},
+    )
+    ga_rows = ga_result.fetchall()
+    if ga_rows:
+        parts.append(f"\n### 图谱断言")
+        for status, cnt in ga_rows:
+            parts.append(f"- {status}: {cnt}")
+
+    # Review queue status
+    review_result = await session.execute(
+        text("SELECT count(*) FROM review_tasks WHERE status IN ('pending', 'in_progress')")
+    )
+    pending = review_result.scalar() or 0
+    if pending > 0:
+        parts.append(f"\n### 待审核: {pending} 项")
+
     # Total KB stats
     total = await session.execute(text("SELECT count(*), count(CASE WHEN state='checked' THEN 1 END) FROM papers"))
     total_row = total.fetchone()
-    parts.append(f"\n### 知识库总量: {total_row[0]} papers, {total_row[1]} analyzed")
+    dc_total = await session.execute(text("SELECT count(*) FROM delta_cards"))
+    parts.append(f"\n### 知识库总量: {total_row[0]} papers, {total_row[1]} analyzed, {dc_total.scalar()} delta cards")
 
     return "\n".join(parts) if parts else "No activity in this period."

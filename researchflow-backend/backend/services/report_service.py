@@ -21,7 +21,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.analysis import MethodDelta, PaperAnalysis
+from backend.models.analysis import PaperAnalysis
+from backend.models.delta_card import DeltaCard
 from backend.models.enums import AnalysisLevel
 from backend.models.paper import Paper
 from backend.services.llm_service import call_llm
@@ -117,16 +118,19 @@ async def generate_report(
         )
         analysis = result.scalar_one_or_none()
 
-        # Get delta card
-        delta_result = await session.execute(
-            select(MethodDelta).where(MethodDelta.paper_id == pid).limit(1)
+        # Get DeltaCard (v3) — falls back to None if not yet built
+        dc_result = await session.execute(
+            select(DeltaCard)
+            .where(DeltaCard.paper_id == pid, DeltaCard.status != "deprecated")
+            .order_by(DeltaCard.created_at.desc())
+            .limit(1)
         )
-        delta = delta_result.scalar_one_or_none()
+        delta_card = dc_result.scalar_one_or_none()
 
         papers_data.append({
             "paper": paper,
             "analysis": analysis,
-            "delta": delta,
+            "delta_card": delta_card,
         })
 
     if not papers_data:
@@ -186,12 +190,12 @@ def _build_quick_summaries(papers_data: list[dict]) -> str:
 
 
 def _build_briefing_summaries(papers_data: list[dict]) -> str:
-    """Build structured summaries for briefing report."""
+    """Build structured summaries for briefing report using DeltaCard data."""
     lines = []
     for pd in papers_data:
         p = pd["paper"]
         a = pd["analysis"]
-        d = pd["delta"]
+        dc = pd.get("delta_card")
 
         parts = [f"### {p.title}"]
         parts.append(f"Venue: {p.venue} {p.year} | Category: {p.category}")
@@ -201,7 +205,23 @@ def _build_briefing_summaries(papers_data: list[dict]) -> str:
         if p.core_operator:
             parts.append(f"Core operator: {p.core_operator[:300]}")
 
-        if a:
+        # DeltaCard provides richer structured info than raw analysis
+        if dc:
+            parts.append(f"Delta: {dc.delta_statement[:400]}")
+            if dc.baseline_paradigm:
+                parts.append(f"Baseline paradigm: {dc.baseline_paradigm}")
+            struct = f"{dc.structurality_score:.2f}" if dc.structurality_score else "N/A"
+            transfer = f"{dc.transferability_score:.2f}" if dc.transferability_score else "N/A"
+            parts.append(f"Structurality: {struct} | Transferability: {transfer}")
+            if dc.key_ideas_ranked:
+                ideas = [f"{ki['rank']}. {ki['statement'][:100]}" for ki in dc.key_ideas_ranked[:3]]
+                parts.append(f"Key ideas:\n  " + "\n  ".join(ideas))
+            if dc.assumptions:
+                parts.append(f"Assumptions: {'; '.join(dc.assumptions[:3])}")
+            if dc.failure_modes:
+                parts.append(f"Failure modes: {'; '.join(dc.failure_modes[:3])}")
+        elif a:
+            # Fallback to analysis data
             if a.problem_summary:
                 parts.append(f"Problem: {a.problem_summary[:200]}")
             if a.method_summary:
@@ -209,10 +229,6 @@ def _build_briefing_summaries(papers_data: list[dict]) -> str:
             if a.changed_slots:
                 parts.append(f"Changed slots: {', '.join(a.changed_slots)}")
             parts.append(f"Plugin patch: {a.is_plugin_patch} | Worth deep read: {a.worth_deep_read}")
-
-        if d:
-            parts.append(f"Delta paradigm: {d.paradigm_name}")
-            parts.append(f"Structural: {d.is_structural} | Gain: {d.primary_gain_source}")
 
         tags_str = ", ".join(p.tags[:8]) if p.tags else "N/A"
         parts.append(f"Tags: {tags_str}")

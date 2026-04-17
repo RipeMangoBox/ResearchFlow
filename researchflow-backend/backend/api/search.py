@@ -48,6 +48,37 @@ async def hybrid_search(
     return {"query": data.query, "total": len(results), "results": results}
 
 
+# ── Idea-centric search ────────────────────────────────────────
+
+class IdeaSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    category: str | None = None
+    min_structurality: float | None = None
+    min_evidence: int | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/search/ideas")
+async def idea_search(
+    data: IdeaSearchRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Idea-centric search across DeltaCards and IdeaDeltas.
+
+    Searches delta_statement, key_ideas, and assumptions.
+    Returns structured delta info with paper context.
+    """
+    results = await search_service.idea_search(
+        session,
+        query=data.query,
+        category=data.category,
+        min_structurality=data.min_structurality,
+        min_evidence=data.min_evidence,
+        limit=data.limit,
+    )
+    return {"query": data.query, "total": len(results), "results": results}
+
+
 # ── Embeddings ──────────────────────────────────────────────────
 
 @router.post("/embeddings/generate")

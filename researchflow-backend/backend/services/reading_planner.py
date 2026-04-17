@@ -17,6 +17,7 @@ from uuid import UUID
 from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.delta_card import DeltaCard
 from backend.models.enums import Importance, PaperState
 from backend.models.paper import Paper
 
@@ -66,10 +67,22 @@ async def generate_reading_plan(
     patches = []
     boundary = []
 
-    for p in papers:
-        entry = _make_entry(p)
+    # Pre-fetch DeltaCards for richer scoring
+    paper_ids = [p.id for p in papers]
+    dc_result = await session.execute(
+        select(DeltaCard).where(
+            DeltaCard.paper_id.in_(paper_ids),
+            DeltaCard.status != "deprecated",
+        )
+    )
+    dc_map = {dc.paper_id: dc for dc in dc_result.scalars()}
 
-        struct_score = p.structurality_score or 0.5
+    for p in papers:
+        dc = dc_map.get(p.id)
+        entry = _make_entry(p, dc)
+
+        # DeltaCard scores override paper-level scores when available
+        struct_score = (dc.structurality_score if dc and dc.structurality_score else None) or p.structurality_score or 0.5
         keep_score = p.keep_score or 0.5
         is_old_important = (p.year and p.year <= 2023 and
                            p.importance in (Importance.S, Importance.A))
@@ -137,8 +150,8 @@ async def generate_reading_plan(
     }
 
 
-def _make_entry(paper: Paper) -> dict:
-    return {
+def _make_entry(paper: Paper, dc: DeltaCard | None = None) -> dict:
+    entry = {
         "paper_id": str(paper.id),
         "title": paper.title,
         "venue": paper.venue,
@@ -152,6 +165,13 @@ def _make_entry(paper: Paper) -> dict:
         "reading_depth": "5min",
         "tier_reason": "",
     }
+    if dc:
+        entry["delta_card_id"] = str(dc.id)
+        entry["delta_statement"] = (dc.delta_statement or "")[:200]
+        entry["transferability_score"] = dc.transferability_score
+        if dc.structurality_score:
+            entry["structurality_score"] = dc.structurality_score
+    return entry
 
 
 def _explain_order() -> str:
