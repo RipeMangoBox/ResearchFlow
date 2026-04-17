@@ -1,40 +1,38 @@
-# ResearchFlow scripts
+# scripts/
 
-This folder centralizes executable maintenance and collection scripts for the
-ResearchFlow repository.
+Utility scripts for ResearchFlow. Backend API handles most operations now; these scripts are for local-only tasks and diagnostics.
 
-## Structure
+## Active scripts
 
-- `paper_collector_online/`
-  - `collect_from_urls.py`: fetch URLs → save HTML to `paperSources/` → generate triage list in `paperAnalysis/*.txt`
-- `paper_analysis_maintenance/`
-  - `salad_format_audit.py`
-  - `check_part_sections.py`
-  - `mark_wait_for_incomplete_parts.py`
-  - `fill_project_github_in_abstract.py`
-  - `update_status_by_parts.py`
-- `audit_metadata_consistency.py`
-  - unified metadata consistency audit across `paperAnalysis/*.txt` and `paperAnalysis/**/*.md`
-  - writes `paperAnalysis/quality_report_*.md` (optional `.json`)
-- `paper_download_tools/` (scripts with same-directory imports)
-  - `check_paper_downloads.py` (core module used by others)
-  - `download_wait_papers.py`
-  - `dedupe_paperpdfs.py`
-  - `mark_missing_wait.py`
-  - `fix_wrong_downloads_from_log.py`
-  - `redownload_correct_pdfs.py`
-  - `check_pdfs_against_log.py`
-- `maintenance/`
-  - `rename_dart.py`
-  - `get_missing_md.py`
+| Script | Purpose |
+|--------|---------|
+| `setup_shared_skills.py` | Create .agents/ and .codex/ skill aliases |
+| `link_codebase.py` | Create symlinks under linkedCodebases/ |
+| `auto_download_papers.py` | Download PDFs from triage logs |
+| `playwright_download.py` | Headless browser PDF download fallback |
+| `update_download_log.py` | Normalize download log format |
+| `find_pdfs.py` | Locate PDFs on disk |
+| `audit_knowledge_batch.py` | Check analysis file structure |
+| `fix_analysis_md_issues.py` | Repair broken frontmatter |
+| `fix_missing_venue_year.py` | Fill missing venue/year |
+| `review_analysis_mismatch.py` | Compare CSV log vs .md files |
 
-## Notes
+## Maintenance subdirectories
 
-- Prefer running scripts from the repository root, e.g.:
-  - `python3 scripts/paper_collector_online/collect_from_urls.py --help`
-- Shared skill aliases are managed by `scripts/setup_shared_skills.py`.
-  - Maintained source of truth: `.claude/skills` and `.claude/skills-config.json`
-  - Local generated Codex aliases: `.codex/skills`, `.codex/skills-config.json`
-  - `.codex/` is local generated state and is not tracked by git
-  - Example: `python3 scripts/setup_shared_skills.py --check`
-- Some scripts depend on optional packages (e.g. `requests`, `pypdf`).
+- `maintenance/get_missing_md.py` — Find PDFs without analysis notes
+- `paper_analysis_maintenance/check_part_sections.py` — Audit Part I/II/III headers
+- `paper_analysis_maintenance/fill_project_github_in_abstract.py` — Auto-fill GitHub links
+- `paper_analysis_maintenance/mark_wait_for_incomplete_parts.py` — Mark incomplete analyses
+- `paper_analysis_maintenance/salad_format_audit.py` — Strict format compliance check
+
+## Backend equivalents
+
+Most script functionality is now available via backend API:
+
+| Script task | Backend API |
+|-------------|-------------|
+| Import papers | `POST /api/v1/import/links` |
+| Download PDFs | `POST /api/v1/pipeline/{id}/download-pdf` |
+| Analyze papers | `POST /api/v1/pipeline/{id}/run` |
+| Search/query | `POST /api/v1/search/hybrid` |
+| Quality audit | `GET /api/v1/graph/quality` |

@@ -1,311 +1,263 @@
-# ResearchFlow 系统架构设计文档 v3.1
+# ResearchFlow Architecture v3.1
 
-> **产品定位**：ResearchFlow = Web 产品 + 自有后端编排 + MCP 兼容层 + 专家模式（Claude/Codex）
->
-> **核心理念**：Paper 不是主对象。**DeltaCard 是中间真相层，IdeaDelta 是可复用知识原子**。Paper 是容器，Evidence 是锚点，GraphAssertion 是检索与推理加速器。
+## 1. 一句话定义
 
----
-
-## 1. 系统全景
+**PostgreSQL 是唯一真相源。DeltaCard 是中间真相层。一切 UI/导出/Agent 都是投影。**
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          用 户 层                                   │
-│  Web 前端 (Next.js 7页)  │  Claude Code (MCP)  │  Codex CLI (MCP)  │
-└──────────┬───────────────────────┬───────────────────────┬──────────┘
-           │ HTTP/REST             │ MCP (JSON-RPC)        │
-           ▼                      ▼                       ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Caddy 反向代理 (HTTPS + Let's Encrypt)                             │
-│  / → frontend:3000  │  /api/* → api:8000  │  /mcp/* → api:8000     │
-└─────────────────────────────────────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  后端七层 + 知识图谱六层                                             │
+                        ┌─────────────────────┐
+                        │    用户界面 (投影)     │
+                        │ Web │ MCP │ Obsidian  │
+                        └──────────┬──────────┘
+                                   │
+┌──────────────────────────────────▼──────────────────────────────────┐
+│                        Core Backend                                 │
 │                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │ Serving Views (Layer 6)                                      │  │
-│  │ ReadingPath / Digest / ContrastView / Report / DirectionCard │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Quality Control (Layer 5) — NEW                              │  │
-│  │ ReviewTask (审核队列) / HumanOverride (人工覆盖)              │  │
-│  │ GraphAssertion 生命周期: candidate → published → deprecated   │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Evidence & Implementation (Layer 4)                          │  │
-│  │ EvidenceUnit (独立行, FK→IdeaDelta, FK→DeltaCard)            │  │
-│  │ GraphAssertionEvidence (supports/contradicts/qualifies)      │  │
-│  │ ImplementationUnit (file/class/function/shape_trace)         │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Idea Layer (Layer 3) — 核心主对象                             │  │
-│  │ DeltaCard: 中间真相层 (从L4一次构建，多次渲染)                │  │
-│  │ IdeaDelta: 从DeltaCard派生的可复用知识原子                    │  │
-│  │ GraphAssertion: 替代GraphEdge，支持生命周期管理               │  │
-│  │ GraphNode: 统一节点注册表                                     │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Canonical Domain (Layer 2)                                   │  │
-│  │ ParadigmFrame (4域: RL/VLM/Agent/MotionGen)                  │  │
-│  │ Slot (25个独立类型化槽位)                                     │  │
-│  │ MechanismFamily (19个, 层级结构)                              │  │
-│  │ Bottleneck (研究瓶颈, 带 embedding)                          │  │
-│  │ Alias (实体别名归一)                                          │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Scholarly Backbone (Layer 1)                                 │  │
-│  │ Paper / Author / Venue / Topic + cites 边                    │  │
-│  │ OpenAlex ID 对接准备 (openalex_id 字段)                      │  │
-│  ├───────────────────────────────────────────────────────────────┤  │
-│  │ Asset Layer (Layer 0)                                        │  │
-│  │ PDF / HTML / Repo / Dataset / Supplementary                  │  │
-│  │ 对象存储: LocalStorage (dev) / COS (prod)                    │  │
-│  └───────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
+│  │ 81 API 路由  │  │ 18 MCP 工具  │  │ 25 Service 模块            │ │
+│  └─────────────┘  └──────────────┘  └────────────────────────────┘ │
+│                                                                     │
+│  PostgreSQL (31 表) + pgvector + Redis + 对象存储                    │
 └─────────────────────────────────────────────────────────────────────┘
-           │                    │
-           ▼                    ▼
-┌──────────────────┐  ┌─────────────────────┐
-│ PostgreSQL 16    │  │ 对象存储 (COS/本地)  │
-│ + pgvector       │  │                     │
-│ 31 张表          │  │ papers/raw-pdf/     │
-│ (事实源)         │  │ reports/            │
-└──────────────────┘  └─────────────────────┘
 ```
 
 ---
 
-## 2. 数量统计
+## 2. 知识库结构：不是论文列表，是方法演化图谱
 
-| 组件 | 数量 | 明细 |
-|------|------|------|
-| **数据库表** | 31 | 5次 Alembic 迁移 (含 7 张 v3.1 新表) |
-| **API 端点** | 63 | 11 个 router (含 assertions) |
-| **MCP 工具** | 15 | 高层研究操作 (含 graph/review) |
-| **前端页面** | 7+layout | Dashboard/Papers/Import/Search/Reports/Digests/Directions |
-| **后端 Service** | 21 | 含 4 个 v3.1 新增 service |
-| **后台任务** | 5 task + 3 cron | arq worker |
-| **Docker 服务** | 6 | postgres/redis/api/worker/frontend/caddy |
-| **枚举类型** | 9 | 45 个枚举值 |
-| **ParadigmFrame** | 4 | RL/VLM/Agent/MotionGen |
-| **Slot** | 25 | 按领域类型化 |
-| **MechanismFamily** | 19 | 层级分类 |
-
----
-
-## 3. v3.1 新增核心概念
-
-### DeltaCard — 中间真相层
-
-DeltaCard 位于 PaperAnalysis（原始LLM输出）和 IdeaDelta（可复用知识原子）之间：
+### 2.1 核心数据模型
 
 ```
-L4 analysis_data → DeltaCard (一次构建)
-                       ├─→ IdeaDelta (派生知识原子)
-                       ├─→ EvidenceUnits (结构化证据)
-                       └─→ GraphAssertions (图谱断言)
+Paper (容器)
+  └─→ DeltaCard (中��真相层: 这篇论文改了��么)
+        ├─→ IdeaDelta (知识原子: 可复用的改进描述)
+        │     ├─→ EvidenceUnit (证据: 实验结果/代码验证/推理)
+        │     └─→ GraphAssertion (图谱边: supported_by/changes_slot/...)
+        ├─→ parent_delta_card_ids (DAG 继承: 基于哪些方法改进的)
+        └─→ ProjectBottleneck (解决了什么瓶颈)
+
+ParadigmTemplate (领域标准范式: RL/VLM/Agent/MotionGen/...)
+  └─→ Slot (范式中的可替换组件: denoiser/reward/encoder/...)
+
+MechanismFamily (机制族: diffusion/flow_matching/RL/...)
+  └─→ Alias (别名: DDPM → diffusion, FM → flow_matching)
 ```
 
-核心字段：delta_statement, baseline_paradigm, changed_slot_ids, mechanism_family_ids, key_ideas_ranked, structurality/extensionability/transferability scores, assumptions, failure_modes, evidence_refs。
+### 2.2 方法演化 DAG (核心创新)
 
-发布门槛：frame + bottleneck + changed_slots + evidence_refs >= 2。
-
-### GraphAssertion — 替代 GraphEdge
-
-GraphAssertion 支持完整生命周期：
+论文之间不是扁平列表，而是 **有向无环图 (DAG)**:
 
 ```
-candidate → published → deprecated/superseded
-         ↘ rejected
+GRPO (depth=0, baseline=true, downstream=7)
+├── GRPO+LP (depth=1, parent=[GRPO])
+│   ├── GRPO-LP+sampling (depth=2, parent=[GRPO+LP])
+│   └── GRPO-LP+KL (depth=2, parent=[GRPO+LP])
+├── GRPO+tree (depth=1, parent=[GRPO])
+└── GDPO (depth=1, parent=[GRPO, DPO])  ← 多继承: 两个范式组合
+    └─�� GDPO+image_thinking (depth=2, parent=[GDPO])
 ```
 
-- 结构性边 (supported_by, changes_slot 等) 自动发布
-- 高价值语义边 (contradicts, transferable_to, patch_of) 默认 candidate，需审核后发布
-- 每个 assertion 可链接多条 evidence (GraphAssertionEvidence)，角色支持 supports/contradicts/qualifies
+**自动升级规则**:
+- 当一个改进被 ≥3 篇论文用作 baseline → `is_established_baseline = true`
+- 当它还具有结构性 (`structurality_score ≥ 0.6`) → 候选新范式版本
+- `promote_to_paradigm()` 创建 `rl_standard_v2` 替代 `rl_standard_v1`
 
-### GraphNode — 统一节点注册
+### 2.3 论文过滤评分
 
-所有参与图谱的实体注册为 GraphNode (node_type + ref_table + ref_id)，消除了旧 graph_edges 的 type+id 字符串拼接。
+每篇论文入库后自动计算 4 个分数:
 
-### ReviewTask — 审核队列
-
-自动或手动创建，支持 pending → in_progress → approved/rejected。审核通过级联更新目标对象状态。
-
----
-
-## 4. 分析管线（16 步状态机）
-
-```
-ingest → canonicalize → enrich → fetch_assets → parse
-→ skim_extract (L3) → deep_extract (L4)
-→ delta_card_build    ← NEW
-→ entity_resolution   ← NEW
-→ assertion_propose   ← NEW (替代 edge_create)
-→ evidence_audit      ← NEW
-→ review              ← NEW
-→ publish → index → export → digest
-```
-
-### 与 Service 的映射
-
-| 步骤 | Service | 状态 |
+| 分数 | 权重因素 | 用途 |
 |------|---------|------|
-| ingest | ingestion_service | 保留 |
-| canonicalize | ingestion_service | 保留 |
-| enrich | enrich_service | 保留 |
-| parse | parse_service (L2) | 保留 |
-| skim_extract | analysis_service.skim_paper | 保留 |
-| deep_extract | analysis_service.deep_analyze_paper | 保留 |
-| **delta_card_build** | **delta_card_service.build_delta_card** | **v3.1 新增** |
-| **entity_resolution** | **entity_resolution_service** | **v3.1 新增** |
-| **assertion_propose** | **delta_card_service.propose_assertions** | **v3.1 新增** |
-| **evidence_audit** | **assertion_service.audit_assertion** | **v3.1 新增** |
-| **review** | **review_service** | **v3.1 新增** |
-| publish | delta_card_service.check_and_publish | 重构 |
-| index | embedding_service | 保留 |
-| export | compatibility/export_*.py | 增强 (DeltaCard 段落) |
-| digest | digest_service | 增强 (DeltaCard 统计) |
+| **keep_score** | Tier(开数据>开代码>中稿>预印本) + 顶会 + 重要度 + 时间衰减 | 是否值得入库 |
+| **analysis_priority** | 重要度 + 开源资产 + 有PDF + 顶会 + 新鲜度 | 分析优先级排序 |
+| **structurality_score** | 关键词信号 + L4分析的 method_category | 结构性改进 vs 插件 |
+| **extensionability_score** | 跨域关键词 + 多任务标签 + 开源资产 | 可扩展性 |
 
----
-
-## 5. 检索架构（6 路 Query Router）
-
-| 路由 | 查询类型 | 数据路径 |
-|------|---------|----------|
-| 1. 事实/引用 | "谁提的""谁引了谁" | GraphAssertions(cites) + 回退 graph_edges |
-| 2. 瓶颈 | "本质瓶颈有哪些" | Bottleneck → IdeaDelta → structurality |
-| 3. 机制 | "diffusion 有哪些路线" | MechanismFamily → IdeaDelta (entity_resolution 支持别名) |
-| 4. 迁移 | "RL insight 能否迁到 VLM" | GraphAssertions(transferable_to) |
-| 5. 综述 | "最近三个月结构性进展" | IdeaDelta + DeltaCard 聚合 + evidence |
-| 6. **Idea 搜索** | "关键词搜索改动" | DeltaCard.delta_statement + IdeaDelta ilike |
-
-基础层保留：keyword(tsvector) + semantic(pgvector) + structured SQL。
-
----
-
-## 6. API 端点总览 (63 routes)
-
-| Router | 前缀 | 端点数 | 说明 |
-|--------|------|--------|------|
-| papers | /papers | 8 | Paper CRUD + 列表 |
-| import | /import | 4 | 导入链接/PDF/Zotero |
-| analyses | /analyses | 5 | L3/L4 分析触发 |
-| reports | /reports | 2 | 报告生成 |
-| search | /search | 4 | hybrid + idea + embedding + reading plan |
-| digests | /digests | 3 | 日/周/月摘要 |
-| directions | /directions | 3 | 方向提议 + 展开 |
-| feedback | /feedback | 4 | 用户反馈 |
-| graph | /graph | 11 | 图谱查询 + 统计 |
-| **assertions** | **/assertions** | **15** | **断言/审核/覆盖/别名** |
-| health | / | 1 | 健康检查 |
-
-### v3.1 新增 API (assertions router)
-
+**方法分类标签** (L4 自动提取):
 ```
-POST   /assertions                        # 提议断言
-GET    /assertions/{id}                   # 断言详情 (含证据+节点)
-GET    /assertions/{id}/audit             # 证据审计
-POST   /assertions/{id}/publish           # 发布断言
-POST   /assertions/{id}/reject            # 拒绝断言
-GET    /assertions/node/{node_id}         # 节点关联断言
-GET    /assertions/reviews/queue          # 审核队列
-GET    /assertions/reviews/stats          # 队列统计
-POST   /assertions/reviews/{id}/assign    # 分配审核
-POST   /assertions/reviews/{id}/approve   # 批准 (级联)
-POST   /assertions/reviews/{id}/reject    # 拒绝 (级联)
-POST   /assertions/overrides              # 人工覆盖
-GET    /assertions/overrides              # 覆盖列表
-POST   /assertions/aliases                # 注册别名
-GET    /assertions/aliases                # 别名列表
+method/structural_architecture    — 改了核心架构
+method/plugin_module             — 加了一个模块
+method/reward_design             — 改了奖励函数
+method/training_recipe           — 改了训练方法
+method/representation_change     — 改了表示方式
+improvement/fundamental_rethink  — 根本性重新思考
+improvement/additive_plugin      — 加插件
+improvement/component_replacement — 替换核心组件
 ```
 
 ---
 
-## 7. MCP 工具 (15 tools)
+## 3. 完整流程: 从零到知识图谱
 
-| 工具 | 说明 | v3.1 |
-|------|------|------|
-| search_research_kb | Hybrid 论文搜索 | |
-| **search_ideas** | **DeltaCard/IdeaDelta 关键词搜索** | **新增** |
-| get_paper_report | 报告生成 (quick/briefing/deep) | |
-| compare_papers | 论文对比 | |
-| import_research_sources | 导入论文链接 | |
-| get_digest | 日/周/月摘要 | 增强 (DeltaCard 统计) |
-| get_reading_plan | 分层阅读计划 | 增强 (DeltaCard 评分) |
-| **propose_directions** | **研究方向提议** | **新增** |
-| enqueue_analysis | L3/L4 分析排队 | |
-| refresh_assets | 元数据补全 | |
-| record_user_feedback | 用户反馈 | |
-| get_paper_detail | 论文详情 | 增强 (含 DeltaCard) |
-| **get_graph_stats** | **图谱统计** | **新增** |
-| **review_queue** | **审核队列查询** | **新增** |
-| **submit_review_decision** | **审核决策 (级联)** | **新增** |
+### 3.1 冷启动: 给一个领域，从零构建
 
----
+```
+用户: "我要研究 RLHF for VLM"
+         │
+         ▼
+[Step 1] POST /pipeline/init-domain {"domain": "RLHF VLM"}
+         │  GitHub API 搜 awesome 仓库 → 解析 README → 提取论文链接
+         │  → 导入 72 篇 → triage 评分 → 按优先级排队
+         ▼
+[Step 2] POST /pipeline/batch?limit=10
+         │  对最高优先��的 10 篇依次:
+         │  下载PDF → 元数据补全 → L2解析 → L3速读 → L4深度分析
+         │  → DeltaCard构建 → IdeaDelta派生 → GraphAssertion提议
+         ▼
+[Step 3] 自动产出:
+         ├── 10 张 DeltaCard (每篇论文的结构化改动)
+         ├── 10 个 IdeaDelta (可复用知识原子)
+         ├── 30+ 条 GraphAssertion (图谱边)
+         ├── 方法分类: 3 structural + 5 plugin + 2 reward
+         ├── 3 个 ProjectBottleneck (自动从 L4 提取)
+         └── 范式: 如果领域没有现成��式，LLM 动态发现并创建
+```
 
-## 8. 数据库 Schema (31 张表)
+### 3.2 单篇论文完整管线 (16 步)
 
-### v3.1 新增表 (7 张)
+```
+ingest → triage → download_pdf → enrich (arXiv/Crossref)
+→ parse_L2 (pymupdf) → skim_L3 (LLM) → deep_L4 (LLM)
+→ delta_card_build → link_to_parent_baselines
+→ entity_resolution → assertion_propose → evidence_audit
+→ review → publish → index → export
+```
 
-| 表 | 说明 | 关键字段 |
-|----|------|----------|
-| delta_cards | 中间真相层 | paper_id, frame_id, delta_statement, scores, evidence_refs, status |
-| graph_nodes | 统一节点注册 | node_type, ref_table, ref_id, status |
-| graph_assertions | 断言 (替代 graph_edges) | from_node_id, to_node_id, edge_type, status, assertion_source |
-| graph_assertion_evidence | 断言-证据关联 | assertion_id, evidence_unit_id, role, weight |
-| review_tasks | 审核队列 | target_type, target_id, task_type, status, priority |
-| human_overrides | 人工覆盖记录 | target_type, field_name, old_value, new_value, reason |
-| aliases | 实体别名归一 | entity_type, entity_id, alias, confidence |
+### 3.3 研究探索: 多跳认知迭代
 
-### v3.1 修改的表
-
-| 表 | 新增列 |
-|----|--------|
-| idea_deltas | delta_card_id (FK → delta_cards) |
-| evidence_units | delta_card_id (FK → delta_cards) |
-
-### 保留但废弃的表
-
-| 表 | 状态 |
-|----|------|
-| graph_edges | 数据已迁移到 graph_assertions，保留作回退查询 |
-| method_deltas | 数据已迁移到 delta_cards，保留不删 |
-
----
-
-## 9. 硬约束 (8 条)
-
-| # | 约束 | 实现 |
-|---|------|------|
-| 1 | DeltaCard 无充分结构不发布 | frame + slots + evidence >= 2 |
-| 2 | IdeaDelta 无证据不发布 | publish_status gate: evidence_count >= 2 |
-| 3 | 高价值边需审核 | contradicts/transferable_to/patch_of → candidate + ReviewTask |
-| 4 | 边必须区分来源 | assertion_source: paper_asserted/system_inferred/human_verified |
-| 5 | paper→paper 只有 cites | edge_type 约束 |
-| 6 | 强做 entity resolution | Alias 表 + 3 级解析 (exact → alias → fuzzy) |
-| 7 | 多模态证据进图 | EvidenceUnit.atom_type 含 formula/table/figure |
-| 8 | 人工覆盖可追溯 | HumanOverride 记录 old/new value + reason |
+```
+POST /explore/start {"query": "RL advantage disappearance"}
+         │
+POST /explore/{id}/search {"query": "not plugin, fundamental"}
+         │  → 搜索 + 自动分类: structural=1, plugin=6
+         │  → gap分析: "缺少根本性改进，试试相邻领域"
+         │
+POST /explore/{id}/step {"step_type": "pivot",
+         │                "rejected_reason": "都是插件型"}
+         │  → 记录pivot + 建议: "seek_fundamental"
+         │
+POST /explore/{id}/search {"query": "think with image agentic GDPO"}
+         │  → 继续探索，系统记住拒绝模式
+         │
+GET /explore/{id}
+         └→ 完整路径: initial → refine → pivot → broaden
+            + 论文按 method/ 分类 + 下一步建议
+```
 
 ---
 
-## 10. 质量系统 (4 指标)
+## 4. 图谱断言模型
 
-| 指标 | 度量 |
-|------|------|
-| idea correctness | primary_bottleneck_F1, changed_slot_F1, mechanism_family_F1 |
-| idea keyness | Top1 hit, Recall@3, nDCG@3 |
-| link accuracy | 按边类型分开算 (same_mechanism, patch_of, contradicts, transferable_to) |
-| evidence grounding | 每个 IdeaDelta 是否 ≥2 证据, 强语义边是否有 evidence |
+### 4.1 GraphAssertion 生命周期
+
+```
+candidate ──→ published ──→ deprecated/superseded
+    │              │
+    └→ rejected    └→ (被新版本替代)
+```
+
+| 边类型 | 自动发布? | 说明 |
+|--------|----------|------|
+| supported_by | 是 | IdeaDelta ← Evidence |
+| changes_slot | 是 | IdeaDelta → Slot |
+| instance_of_mechanism | 是 | IdeaDelta → MechanismFamily |
+| targets_bottleneck | 是 | IdeaDelta → Bottleneck |
+| builds_on | 是 | DeltaCard → parent DeltaCard |
+| contradicts | **否 (需审核)** | 两个方法矛盾 |
+| transferable_to | **否** | 跨域迁移 |
+| patch_of | **否** | 一个方法是另一个的插件 |
+
+### 4.2 发布门控
+
+| 对象 | 发布条件 |
+|------|---------|
+| DeltaCard | frame_id + changed_slots + evidence_refs ≥ 2 |
+| IdeaDelta | evidence_count ≥ 2 + min(confidence) ≥ 0.85 |
+| 高价值断言 | 需要 ReviewTask 审核通��� |
 
 ---
 
-## 11. 技术选型
+## 5. 领域范式动态发现
+
+```python
+assign_paradigm(category, tags, title, abstract)
+  1. 静态映射: category/tags → 已知范式 (4 个内置)
+  2. 模糊匹配: DB 中已有范式的 domain 相似度
+  3. LLM 动态发现: 给 abstract → LLM 识别领域 + 生成 slots + bottleneck
+     → 自动创建 ParadigmTemplate + Slot 行
+     → 后续同领域论文复用
+```
+
+内置范式:
+```
+RL:            rollout → reward → credit_assignment → policy_update → exploration → planner
+VLM:           vision_encoder → projector → language_core → objective → data_mixture
+Agent:         perception → planning → action → memory → tool_use → reflection
+MotionGen:     motion_tokenizer → denoiser → conditioning → objective → sampling
+```
+
+---
+
+## 6. 数据库 Schema 总览 (31 表, 7 次迁移)
+
+### 核心表
+
+| 表 | 行数概念 | 说明 |
+|----|---------|------|
+| papers | 每篇论文 1 行 | 60+ 列: 元数据 + 评分 + 状态 |
+| delta_cards | 每篇论文 1 行 | 中间真相层 + DAG 继承字段 |
+| idea_deltas | 每篇论文 1 行 | 可复用知识原子 |
+| evidence_units | 每篇 2-5 行 | 证据单元 (实验/代码/推理) |
+| graph_assertions | 每篇 4-8 行 | 图谱边 + 生命周期 |
+| graph_nodes | 每个实体 1 行 | 统一节点注册 |
+| paradigm_templates | 每个领域 1-3 行 | 范式模板 + 版本演化 |
+| slots | 每范式 4-8 行 | 可替换组件 |
+| mechanism_families | ~20 行 | 机制族 (层级结构) |
+| project_bottlenecks | 每瓶颈 1 行 | 研究瓶颈 (L4 自动提取) |
+| review_tasks | 待审核项 | 审核队列 |
+| aliases | 别名映射 | 实体归一 |
+
+### 支��表
+
+paper_analyses, paper_assets, paper_versions, method_deltas (legacy),
+graph_edges (legacy), implementation_units, transfer_atoms, search_sessions,
+reading_plans, direction_cards, digests, jobs, model_runs, execution_memories,
+user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evidence
+
+---
+
+## 7. API 路由总览 (81 路由, 13 Router)
+
+| Router | 前缀 | 关键端点 |
+|--------|------|---------|
+| pipeline | /pipeline | `run`, `batch`, `init-domain`, `discover`, `build-domain`, `lineage`, `evolution` |
+| explore | /explore | `start`, `step`, `search`, `summary` |
+| assertions | /assertions | CRUD + `reviews/*` + `overrides` + `aliases` |
+| graph | /graph | `stats`, `quality`, `ideas`, `paradigms`, `mechanisms` |
+| search | /search | `hybrid`, `ideas`, `bottlenecks`, `mechanisms`, `transfers` |
+| papers | /papers | CRUD + 列表 + 过滤 |
+| import | /import | `links`, `pdf`, `parse` |
+| analyses | /analyses | `skim`, `deep`, `batch` |
+| reports | /reports | `generate` (quick/briefing/deep) |
+| digests | /digests | day/week/month 摘要 |
+| directions | /directions | 方向提议 + 展开 |
+| feedback | /feedback | 纠错/确认/标签修改 |
+| health | / | 健康检查 |
+
+---
+
+## 8. 技术栈
 
 | 组件 | 选型 |
 |------|------|
-| Web 框架 | FastAPI (async) |
+| Web框架 | FastAPI (async) |
 | 前端 | Next.js 15 + Tailwind |
 | ORM | SQLAlchemy 2.0 (async) |
 | 数据库 | PostgreSQL 16 + pgvector |
 | 任务队列 | arq (Redis) |
-| PDF 解析 | pymupdf |
-| 对象存储 | LocalStorage / Tencent COS |
-| LLM | Anthropic Claude + OpenAI + mock |
-| MCP | FastMCP (Python) |
+| PDF解析 | pymupdf |
+| LLM | Anthropic Claude / OpenAI / mock |
+| MCP | Python MCP SDK |
+| 论文发现 | Semantic Scholar API (免费) |
+| 领域初始化 | GitHub Search API → awesome 仓库解析 |
 | 部署 | Docker Compose + Caddy |

@@ -4,237 +4,150 @@
 
 <h1 align="center">ResearchFlow</h1>
 
-<p align="center"><strong>Web-first 科研操作系统。<br/>导入论文 → 自动分析 → 生成汇报报告 → 推荐阅读顺序 → 日周月总结。<br/>普通用户用网页，高级用户走 Claude Code / Codex 专家模式。</strong></p>
+<p align="center"><strong>给一篇论文 → 自动构建领域知识图谱 → 追踪方法演化 → 智能探索</strong></p>
 
 <p align="center">
-  <a href="README.md">English</a> |
-  <a href="README_CN.md">中文</a>
-</p>
-
-<p align="center">
-  <img alt="Web-first" src="https://img.shields.io/badge/Web--first-Research%20OS-1f6feb?style=flat-square"/>
-  <img alt="FastAPI backend" src="https://img.shields.io/badge/FastAPI-backend-0891b2?style=flat-square"/>
-  <img alt="PostgreSQL+pgvector" src="https://img.shields.io/badge/PostgreSQL-pgvector-0f766e?style=flat-square"/>
-  <img alt="MCP compatible" src="https://img.shields.io/badge/MCP-compatible-d97706?style=flat-square"/>
-  <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-expert%20mode-7c3aed?style=flat-square"/>
-  <img alt="Codex CLI" src="https://img.shields.io/badge/Codex%20CLI-expert%20mode-cc2936?style=flat-square"/>
-  <img alt="Zotero compatible" src="https://img.shields.io/badge/Zotero-compatible-475569?style=flat-square"/>
-  <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-111827?style=flat-square"/>
+  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
 </p>
 
 ---
 
-> **ResearchFlow = Web 产品 + 自有后端编排 + MCP 兼容层 + 专家模式（Claude/Codex）**
->
-> 普通用户只用网页：导入论文、看报告、看总结、选方向、给反馈。高级用户再通过 Claude Code / Codex 走专家入口。系统本体是自有后端（PostgreSQL + 对象存储 + 任务队列），不是任何 AI agent 会话。
->
-> 架构是 **workflow-first**，不是 agent-first。自建轻量编排层，需要 LLM 能力时通过 Agent SDK 调入，同时通过 MCP 暴露给 Claude Code / Codex。
+## 它做什么
 
----
-
-## 8 个核心用户功能
-
-| # | 功能 | 说明 |
-|---|------|------|
-| 1 | **导入任意研究输入** | awesome 列表 / 论文链接 / PDF / GitHub 仓库 / Zotero → 统一入库 |
-| 2 | **一键生成汇报报告** | 30 秒版 / 5 分钟汇报版 / 深度对比版，先对照范式再说改了什么 |
-| 3 | **Repo × Paper 联合深剖** | 公式→代码映射、shape trace、可修改性分析，带置信度 |
-| 4 | **增量更新与资产补全** | 自动补全 repo/project page/数据/配置，记录来源与置信度 |
-| 5 | **方向推荐** | 输入子方向 → 1-3 个方向卡片（成本/风险/复现条件）→ 展开可行性方案 |
-| 6 | **分层阅读推荐** | canonical baseline → 结构性改进 → 强团队跟进 → patch → 负例 |
-| 7 | **日/周/月总结** | 产品一等公民，自动生成，覆盖新增论文/方向变化/策略调整 |
-| 8 | **反馈与导出** | 收藏 / 批注 / 纠错 / 导出组会版 / 分享版 / Obsidian 版 |
-
----
-
-## 系统架构
-
-```text
-┌────────────────────────────────────────────────────────┐
-│  交互层    Web 前端 (Next.js) + Claude Code/Codex (MCP) │
-├────────────────────────────────────────────────────────┤
-│  Presentation   报告渲染 / 总结 / 方向推荐              │
-├────────────────────────────────────────────────────────┤
-│  Workflow/Job   15 种异步任务 (arq + Redis)             │
-├────────────────────────────────────────────────────────┤
-│  Retrieval      PostgreSQL + pgvector 混合搜索          │
-├────────────────────────────────────────────────────────┤
-│  Parse/Extract  PDF 解析 + LLM 四级分析 (L1→L4)        │
-├────────────────────────────────────────────────────────┤
-│  Ingestion      规范化 / 去重 / 资产补全                │
-└────────────────────────────────────────────────────────┘
-      ↕ 对象存储 (COS/OSS)          ↕ PostgreSQL (31 张表)
+```
+你: "这篇论文是关于 VLM 的 RLHF"
+         ↓
+Step 1:  找到领域的 awesome 仓库 → 导入 72 篇论文 → 评分排序
+Step 2:  下载 PDF → 分析 (L2解析 → L3速读 → L4深度) → 提取 DeltaCard
+Step 3:  构建方法演化 DAG: GRPO → GRPO+LP → GDPO → GDPO+image_thinking
+Step 4:  自动分类: 3 个结构性改进, 5 个插件型, 2 个 reward 改进
+Step 5:  你迭代探索，系统追踪你的 pivot 并建议下一步
 ```
 
-### 四级分析管线
-
-| 级别 | 处理方式 | Token 消耗 | 输出 |
-|------|----------|-----------|------|
-| L1 metadata | Crossref/arXiv API 补全 | 0 | 完整元数据 |
-| L2 parse | pymupdf 本地解析 | 0 | 章节/公式/表格/图注 |
-| L3 skim | LLM 轻量卡片 | ~2K | skim card + delta card |
-| L4 deep | LLM 全文分析 | ~10-20K | 完整报告 + 证据原子 |
-
-晋升由多维评分控制，不自动全量推进。
-
-### 兼容层
-
-数据库是事实源，Markdown 是导出物。`paperAnalysis/` `paperCollection/` `paperIDEAs/` 保留为兼容导出层，现有 `.claude/skills/` 继续可用。
+**核心理念**: 方法之间是 DAG (有向无环图)，不是扁平列表。系统追踪哪些改进变成了新 baseline，哪些只是插件，以及范式如何演化。
 
 ---
 
-## 🏗️ 仓库结构
-
-```text
-ResearchFlow/
-├── researchflow-backend/           # 后端服务 (新增)
-│   ├── backend/                    # FastAPI + ORM + Workers + MCP
-│   ├── frontend/                   # Next.js 前端 (7 页)
-│   ├── alembic/                    # 数据库迁移
-│   ├── migration/                  # 数据迁移脚本
-│   ├── compatibility/              # DB→Markdown 导出
-│   ├── docker-compose.yml
-│   ├── ARCHITECTURE.md             # 完整架构设计
-│   └── DEVELOPMENT_PLAN.md         # 分阶段开发方案
-├── paperAnalysis/                  # 兼容层：结构化分析笔记
-│   └── analysis_log.csv
-├── paperPDFs/                      # 兼容层：原始 PDF
-├── paperCollection/                # 兼容层：索引与导航
-│   └── index.jsonl
-├── paperIDEAs/                     # 兼容层：研究产出
-├── .claude/skills/                 # Skill 定义 (17 个)
-├── scripts/                        # 辅助脚本
-├── linkedCodebases/                # 外部代码库符号链接
-├── AGENTS.md                       # Agent 指南
-└── README_CN.md
-```
-
----
-
-## 用户角色与入口
-
-| 角色 | 入口 | 能做什么 |
-|------|------|----------|
-| 普通研究生/老师 | **Web 前端** | 导入论文、看报告、看总结、选方向、给反馈 |
-| 高级研究用户 | Web + **Claude Code/Codex** | 深度交互、自定义检索、跨论文对比、idea 收敛 |
-| 维护者/开发者 | **Claude Code/Codex** + 后台 | 开发 skill、修规则、审结果、管理 taxonomy |
-
-Claude Code / Codex 通过 MCP 连接后端，共享同一套知识库和工作流。
-
----
-
-## MCP Server（15 个工具 + 3 资源 + 2 提示模板）
-
-| 工具 | 功能 |
-|------|------|
-| `search_research_kb` | 关键词+语义+结构化搜索 |
-| `search_ideas` | DeltaCard/IdeaDelta 关键词搜索 |
-| `get_paper_report` | 获取论文报告 (30s/5min/deep) |
-| `compare_papers` | 2-5 篇论文对比 |
-| `import_research_sources` | 导入任意研究输入 |
-| `get_digest` | 日/周/月总结 |
-| `get_reading_plan` | 分层阅读推荐 |
-| `propose_directions` | 方向推荐卡片 |
-| `enqueue_analysis` | L3/L4 分析排队 |
-| `refresh_assets` | 资产补全与增量更新 |
-| `record_user_feedback` | 纠错/收藏/标签修改 |
-| `get_paper_detail` | 论文详情 (含 DeltaCard) |
-| `get_graph_stats` | 图谱统计 |
-| `review_queue` | 审核队列查询 |
-| `submit_review_decision` | 审核决策 (级联) |
-
----
-
-## 🚀 快速开始
-
-### 前置条件
-
-- Docker + Docker Compose（后端服务）
-- Python 3.12+（本地开发）
-- Node.js 20+（前端开发）
-
-### 1. 克隆并启动后端
+## 快速开始
 
 ```bash
-git clone https://github.com/<your-username>/ResearchFlow.git
+git clone https://github.com/RipeMangoBox/ResearchFlow.git
 cd ResearchFlow/researchflow-backend
-
-cp .env.example .env
-# 编辑 .env，设置密码和 API keys
-
-make db          # 启动 Postgres + Redis
-make migrate     # 创建数据库表
-make migrate-all # 导入现有数据 (CSV + MD)
-make up          # 启动全部服务
+cp .env.example .env              # 设置 ANTHROPIC_API_KEY
+make db && make migrate && make up
 ```
 
-### 2. 访问 Web 前端
+```bash
+# 从 awesome 仓库初始化领域
+curl -X POST localhost:8000/api/v1/pipeline/init-domain \
+  -d '{"domain": "RLHF VLM"}'
 
-打开 `http://localhost:3000`，即可使用全部功能。
-
-### 3. 专家模式（可选）
-
-Claude Code / Codex 用户通过 MCP 接入同一后端：
-
-```text
-# Claude Code 会自动发现 .mcp.json 配置
-# Codex CLI 使用 .codex/config.toml 配置
+# 或给一篇论文，自动发现相关论文
+curl -X POST localhost:8000/api/v1/import/links \
+  -d '{"items": [{"url": "https://arxiv.org/abs/2402.03300"}]}'
+curl -X POST localhost:8000/api/v1/pipeline/{paper_id}/discover
 ```
 
-### 4. 可选：Obsidian 可视化
-
-如果你希望在 Obsidian 中可视化浏览知识库，见 [Obsidian 配置](#obsidian-config)。
+Web 前端: `http://localhost:3000` | Claude Code: 自动发现 `.mcp.json`
 
 ---
 
-## 📖 使用方式
+## 知识图谱结构
 
-### 普通用户（Web 前端）
+```
+Paper → DeltaCard (中间真相层) → IdeaDelta (知识原子) → GraphAssertions (图谱边)
+          │
+          ├── parent_delta_card_ids    (DAG 继承: 基于哪些方法)
+          ├── method_category          (structural / plugin / reward / ...)
+          ├── improvement_type         (fundamental_rethink / additive_plugin / ...)
+          └── bottleneck_addressed     (自动提取的研究瓶颈)
+```
 
-1. 打开 Web 前端
-2. 在导入中心粘贴 awesome 列表链接或上传 PDF
-3. 系统自动：规范化 → 去重 → 补全元数据 → 多维评分 → 分级分析
-4. 查看自动生成的汇报报告（30s / 5min / 深度对比版）
-5. 按推荐顺序阅读论文
-6. 查看日/周/月总结
+**自动升级**: 当一个改进被 ≥3 篇论文用作 baseline → 标记为 `established_baseline`。如果还是结构性改进 → 可升级为新版范式。
 
-### 高级用户（Claude Code / Codex 专家模式）
+### 论文过滤优先级
 
-通过 MCP 接入后端，可使用 skill 和工具进行深度研究交互。
+| 层级 | 条件 | 权重 |
+|------|------|------|
+| 最高 | 开数据 (Tier A) | 0.40 |
+| 次高 | 开代码 (Tier B) | 0.30 |
+| 中 | 中稿无代码 (Tier C) | 0.20 |
+| 最低 | 预印本 (Tier D) | 0.10 |
+| 加分 | 顶会 + 重要度 + 时间衰减 | +0.05~0.25 |
 
-### Skill 快速参考（专家模式）
+### 方法分类 (L4 自动提取)
 
-| 场景 | Skill |
-|------|-------|
-| 不确定该做什么 | `research-workflow` |
-| 从 GitHub 收集论文 | `papers-collect-from-github-awesome` |
-| 分析 PDF | `papers-analyze-pdf` |
-| 检索/对比论文 | `papers-query-knowledge-base` |
-| 生成 idea | `research-brainstorm-from-kb` |
-| 审稿人压测 | `reviewer-stress-test` |
-
-> 完整 skill 列表见 [`.claude/skills/User_README_CN.md`](.claude/skills/User_README_CN.md)。
+```
+method/structural_architecture    — 改了核心架构
+method/plugin_module             — 加了一个模块
+method/reward_design             — 改了奖励函数
+method/training_recipe           — 改了训练方法
+improvement/fundamental_rethink  — 根本性重新思考
+improvement/additive_plugin      — 加插件
+```
 
 ---
+
+## 完整流程
+
+### 16 步管线
+
+```
+ingest → triage → download_pdf → enrich → parse_L2
+→ skim_L3 → deep_L4 → delta_card_build → link_parent_baselines
+→ entity_resolution → assertion_propose → evidence_audit
+→ review → publish → index → export
+```
+
+### 研究探索会话
+
+```
+POST /explore/start   → "RL 优势消失问题"
+POST /explore/search  → 搜索 + 分类: structural=1, plugin=6
+POST /explore/step    → pivot: "都是插件型，要看根本性方案"
+POST /explore/search  → "think with image agentic GDPO"
+GET  /explore/{id}    → 完整探索路径 + 论文分类 + 下一步建议
+```
+
+---
+
+## 系统规模
+
+| 组件 | 数量 |
+|------|------|
+| 数据库表 | 31 (7 次迁移) |
+| API 路由 | 81 (13 Router) |
+| MCP 工具 | 18 |
+| Service 模块 | 25 |
+| 测试 | 29 |
+| 范式模板 | 4 内置 + LLM 动态发现 |
+
+## 仓库结构
+
+```
+ResearchFlow/
+├── researchflow-backend/        # 核心后端 (唯一写入目标)
+│   ├── backend/                 # FastAPI + ORM + Services + MCP
+│   ├── frontend/                # Next.js (7 页)
+│   ├── alembic/                 # 迁移 (001-007)
+│   ├── tests/                   # pytest (29 tests)
+│   └── ARCHITECTURE.md          # 完整架构文档
+├── paperAnalysis/               # 导出: 分析笔记
+├── paperCollection/             # 导出: 索引 + 导航
+├── paperIDEAs/                  # 导出: 研究产出
+├── .claude/skills/              # Claude Code 技能
+├── scripts/                     # 工具脚本
+└── AGENTS.md                    # Agent 接入指南
+```
 
 ## 文档
 
-| 文档 | 说明 |
+| 文档 | 内容 |
 |------|------|
-| [`researchflow-backend/ARCHITECTURE.md`](researchflow-backend/ARCHITECTURE.md) | 完整系统架构设计（六层架构、数据流、ER 图、部署） |
-| [`researchflow-backend/DEVELOPMENT_PLAN.md`](researchflow-backend/DEVELOPMENT_PLAN.md) | 分阶段开发方案（8 个 Phase、任务分解、验收标准） |
-| [`.claude/skills/User_README_CN.md`](.claude/skills/User_README_CN.md) | Skill 快速路由（专家模式用） |
-
----
-
-## 部署
-
-目标环境：腾讯云 Lighthouse 2C4G / 100GB SSD + COS 对象存储。年化成本约 1500-1900 元（不含 LLM token）。
-
-```bash
-cd researchflow-backend
-docker compose up -d
-```
+| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | 完整架构: 知识图谱 + 方法演化 + 过滤 + 流程 |
+| [Backend README](researchflow-backend/README.md) | 后端开发: 安装 + 功能 + API |
+| [DEPLOY_GUIDE.md](researchflow-backend/DEPLOY_GUIDE.md) | 云端部署 |
+| [AGENTS.md](AGENTS.md) | MCP 工具 + 技能路由 |
 
 ## License
 

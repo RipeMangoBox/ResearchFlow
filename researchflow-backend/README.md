@@ -10,11 +10,11 @@ Web-first 科研操作系统，以 **单核多投影架构 (v3.1)** 为核心。
 
 | 组件 | 数量 |
 |------|------|
-| 数据库表 | 31 (5 次 Alembic 迁移) |
-| API 端点 | 63 (11 个 router) |
-| MCP 工具 | 15 |
+| 数据库表 | 31 (7 次 Alembic 迁移) |
+| API 端点 | 81 (13 个 router) |
+| MCP 工具 | 18 |
 | 前端页面 | 7 |
-| 后端 Service | 21 |
+| 后端 Service | 25 |
 | 后台任务 | 5 task + 3 cron |
 | 知识图谱: ParadigmFrame | 4 (RL/VLM/Agent/MotionGen) |
 | 知识图谱: Slot | 25 |
