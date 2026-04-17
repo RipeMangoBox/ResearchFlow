@@ -189,7 +189,7 @@ def upgrade() -> None:
                COALESCE(primary_gain_source, paradigm_name || ' delta'),
                'published',
                CASE WHEN is_structural THEN 0.8 ELSE 0.3 END,
-               'migrated_from_method_deltas',
+               'migrated_v005',
                created_at, updated_at
         FROM method_deltas
     """)

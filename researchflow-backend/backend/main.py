@@ -9,6 +9,7 @@ from backend.api.papers import router as papers_router
 from backend.api.digests import router as digests_router
 from backend.api.directions import router as directions_router
 from backend.api.feedback import router as feedback_router
+from backend.api.assertions import router as assertions_router
 from backend.api.graph import router as graph_router
 from backend.api.reports import router as reports_router
 from backend.api.search import router as search_router
@@ -45,6 +46,7 @@ app.include_router(digests_router, prefix=settings.api_prefix)
 app.include_router(directions_router, prefix=settings.api_prefix)
 app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(graph_router, prefix=settings.api_prefix)
+app.include_router(assertions_router, prefix=settings.api_prefix)
 
 
 @app.get(f"{settings.api_prefix}/health")
