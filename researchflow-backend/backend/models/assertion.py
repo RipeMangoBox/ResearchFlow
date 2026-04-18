@@ -17,7 +17,7 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 
@@ -96,6 +96,10 @@ class GraphAssertion(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    # ORM relationships
+    from_node = relationship("GraphNode", foreign_keys=[from_node_id], lazy="selectin")
+    to_node = relationship("GraphNode", foreign_keys=[to_node_id], lazy="selectin")
 
     __table_args__ = (
         Index("idx_assertions_from", "from_node_id"),

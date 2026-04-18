@@ -68,27 +68,31 @@ GRPO (baseline, depth=0, 7 downstream papers)
 
 | | Count |
 |-|-------|
-| DB tables | 31 |
-| API routes | 81 |
-| MCP tools | 18 |
-| Services | 25 |
-| Tests | 29 |
-| Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM dynamic discovery |
+| DB tables | 40 (+4 materialized views) |
+| API routes | 95+ |
+| MCP tools | 18 (+ 3 resources, 2 prompts) |
+| Services | 30 |
+| Tests | 29+ |
+| Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM candidate discovery |
 
 ## Repository layout
 
 ```
 researchflow-backend/          # Core backend (single source of truth)
-  backend/                     #   FastAPI + ORM + 25 services + MCP server
-  alembic/                     #   DB migrations (001–007)
+  backend/                     #   FastAPI + ORM + 30 services + MCP server
+  alembic/                     #   DB migrations (001–010)
+  frontend/                    #   Next.js 15 web UI (papers/search/reviews/reports)
+  compatibility/               #   DB → Markdown/CSV export tools
   tests/                       #   pytest suite
-  ARCHITECTURE.md              #   ← Full technical reference
+  ARCHITECTURE.md              #   ← Full technical reference (v3.2)
   DEPLOY_GUIDE.md              #   Cloud deployment guide
-paperAnalysis/                 # Read-only export: analysis Markdown
+paperAnalysis/                 # Read-only export: analysis Markdown (by domain/venue)
 paperCollection/               # Read-only export: index + Obsidian navigation
 paperIDEAs/                    # Read-only export: research outputs
-.claude/skills/                # Claude Code skill definitions (19 skills)
-scripts/                       # Local utility scripts
+.claude/skills/                # Claude Code skill definitions (18 skills)
+scripts/                       # Local utility & maintenance scripts
+assets/                        # Logo, banner images
+linkedCodebases/               # Symlinks to external repos for cross-referencing
 AGENTS.md                      # Agent integration guide
 ```
 

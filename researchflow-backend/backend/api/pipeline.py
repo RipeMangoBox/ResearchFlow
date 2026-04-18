@@ -198,6 +198,43 @@ async def evolution_candidates(
     return await evolution_service.check_paradigm_evolution(session, domain)
 
 
+@router.post("/export/sync-analyses")
+async def sync_analyses(
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+):
+    """Export all L4-analyzed papers to paperAnalysis/ Markdown files."""
+    from backend.services.export_service import export_paper_analysis
+    from sqlalchemy import select
+    from backend.models.paper import Paper
+    from backend.models.enums import PaperState
+
+    result = await session.execute(
+        select(Paper.id).where(
+            Paper.state.in_([PaperState.L4_DEEP, PaperState.CHECKED])
+        ).limit(limit)
+    )
+    exported = 0
+    for (pid,) in result:
+        try:
+            path = await export_paper_analysis(session, pid)
+            if path:
+                exported += 1
+        except Exception:
+            pass
+    return {"exported": exported}
+
+
+@router.post("/export/build-collection-index")
+async def build_collection_index(
+    session: AsyncSession = Depends(get_session),
+):
+    """Build paperCollection/index.jsonl + navigation pages from DB."""
+    from backend.services.export_service import build_collection_index as _build
+    result = await _build(session)
+    return result
+
+
 @router.post("/evolution/promote/{delta_card_id}")
 async def promote_to_paradigm(
     delta_card_id: UUID,

@@ -70,27 +70,31 @@ GRPO (基线, depth=0, 7篇下游)
 
 | | 数量 |
 |-|------|
-| 数据库表 | 31 |
-| API 路由 | 81 |
-| MCP 工具 | 18 |
-| Service | 25 |
-| 测试 | 29 |
-| 内置范式 | 4 (RL/VLM/Agent/MotionGen) + LLM 动态发现 |
+| 数据库表 | 40 (+4 物化视图) |
+| API 路由 | 95+ |
+| MCP 工具 | 18 (+ 3 资源, 2 提示模板) |
+| Service | 30 |
+| 测试 | 29+ |
+| 内置范式 | 4 (RL/VLM/Agent/MotionGen) + LLM 候选发现 |
 
 ## 仓库结构
 
 ```
 researchflow-backend/          # 核心后端 (唯一写入目标)
-  backend/                     #   FastAPI + ORM + 25 Services + MCP
-  alembic/                     #   数据库迁移 (001-007)
+  backend/                     #   FastAPI + ORM + 30 Services + MCP
+  alembic/                     #   数据库迁移 (001-010)
+  frontend/                    #   Next.js 15 Web UI (论文/搜索/审核/报告)
+  compatibility/               #   DB → Markdown/CSV 导出工具
   tests/                       #   pytest 测试
-  ARCHITECTURE.md              #   ← 完整技术文档
+  ARCHITECTURE.md              #   ← 完整技术文档 (v3.2)
   DEPLOY_GUIDE.md              #   部署指南
-paperAnalysis/                 # 只读导出: 分析笔记
+paperAnalysis/                 # 只读导出: 分析笔记 (按领域/会议分目录)
 paperCollection/               # 只读导出: 索引 + Obsidian 导航
 paperIDEAs/                    # 只读导出: 研究产出
-.claude/skills/                # Claude Code 技能 (19 个)
-scripts/                       # 本地工具脚本
+.claude/skills/                # Claude Code 技能 (18 个)
+scripts/                       # 本地工具与维护脚本
+assets/                        # Logo、Banner 图片
+linkedCodebases/               # 外部仓库符号链接
 AGENTS.md                      # Agent 接入指南
 ```
 

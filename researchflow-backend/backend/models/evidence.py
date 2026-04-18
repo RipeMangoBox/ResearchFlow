@@ -6,7 +6,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Enum, ForeignKey, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 from backend.models.enums import EvidenceBasis
@@ -51,6 +51,9 @@ class EvidenceUnit(Base):
     failure_modes: Mapped[str | None] = mapped_column(Text)
 
     embedding = mapped_column(Vector(1536), nullable=True)
+
+    # ORM relationships
+    paper = relationship("Paper", foreign_keys=[paper_id], lazy="selectin")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

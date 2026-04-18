@@ -600,27 +600,36 @@ async def list_lineage_candidates(
     from backend.models.lineage import DeltaCardLineage
     from backend.models.delta_card import DeltaCard
     from backend.models.paper import Paper
+    from sqlalchemy.orm import aliased
+
+    child_dc = aliased(DeltaCard, name="child_dc")
+    parent_dc = aliased(DeltaCard, name="parent_dc")
+    child_paper = aliased(Paper, name="child_paper")
+    parent_paper = aliased(Paper, name="parent_paper")
 
     result = await session.execute(
-        select(DeltaCardLineage)
+        select(
+            DeltaCardLineage,
+            child_paper.title.label("child_title"),
+            parent_paper.title.label("parent_title"),
+        )
+        .join(child_dc, DeltaCardLineage.child_delta_card_id == child_dc.id)
+        .join(child_paper, child_dc.paper_id == child_paper.id)
+        .join(parent_dc, DeltaCardLineage.parent_delta_card_id == parent_dc.id)
+        .join(parent_paper, parent_dc.paper_id == parent_paper.id)
         .where(DeltaCardLineage.status == status)
         .order_by(DeltaCardLineage.created_at)
         .limit(limit)
     )
-    items = []
-    for ln in result.scalars():
-        child_dc = await session.get(DeltaCard, ln.child_delta_card_id)
-        parent_dc = await session.get(DeltaCard, ln.parent_delta_card_id)
-        child_paper = await session.get(Paper, child_dc.paper_id) if child_dc else None
-        parent_paper = await session.get(Paper, parent_dc.paper_id) if parent_dc else None
-
-        items.append({
+    return [
+        {
             "id": str(ln.id),
-            "child_title": child_paper.title[:80] if child_paper else "Unknown",
-            "parent_title": parent_paper.title[:80] if parent_paper else "Unknown",
+            "child_title": (ct or "Unknown")[:80],
+            "parent_title": (pt or "Unknown")[:80],
             "relation_type": ln.relation_type,
             "confidence": ln.confidence,
             "status": ln.status,
             "created_at": ln.created_at.isoformat() if ln.created_at else None,
-        })
-    return items
+        }
+        for ln, ct, pt in result
+    ]

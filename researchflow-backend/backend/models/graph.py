@@ -21,7 +21,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 
@@ -138,6 +138,10 @@ class IdeaDelta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # ORM relationships
+    paper = relationship("Paper", foreign_keys=[paper_id], lazy="selectin")
+    delta_card = relationship("DeltaCard", foreign_keys=[delta_card_id], lazy="selectin")
 
     __table_args__ = (
         Index("idx_idea_deltas_paper", "paper_id"),

@@ -17,6 +17,11 @@ from backend.database import Base
 TEST_DB_URL = "postgresql+asyncpg://hzh@localhost:5432/researchflow_test"
 
 CLEANUP_TABLES = [
+    "taxonomy_versions",
+    "contribution_to_canonical_idea", "canonical_ideas",
+    "delta_card_lineage",
+    "paradigm_candidates", "slot_candidates", "mechanism_candidates",
+    "paper_bottleneck_claims", "project_focus_bottlenecks",
     "graph_assertion_evidence", "graph_assertions", "graph_nodes",
     "review_tasks", "human_overrides", "aliases",
     "implementation_units", "graph_edges",

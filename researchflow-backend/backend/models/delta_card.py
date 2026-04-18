@@ -12,7 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
 
@@ -104,6 +104,9 @@ class DeltaCard(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # ORM relationships
+    paper = relationship("Paper", foreign_keys=[paper_id], lazy="selectin")
 
     __table_args__ = (
         Index("idx_delta_cards_paper", "paper_id"),

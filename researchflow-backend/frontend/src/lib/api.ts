@@ -250,18 +250,40 @@ export const api = {
   getAssertionDetail: (assertionId: string) =>
     request<GraphAssertion>(`/graph/assertions/${assertionId}`),
 
-  // Review queue
-  getReviewQueue: (status?: string, targetType?: string) => {
-    const params = new URLSearchParams();
-    if (status) params.set("status", status);
+  // Review queue (v3.2)
+  getReviewQueue: (status = "pending", targetType?: string, limit = 50) => {
+    const params = new URLSearchParams({ status, limit: String(limit) });
     if (targetType) params.set("target_type", targetType);
-    const qs = params.toString();
-    return request<{ items: ReviewTask[]; total: number }>(`/review/tasks${qs ? `?${qs}` : ""}`);
+    return request<{ total: number; tasks: ReviewTask[] }>(`/reviews?${params}`);
   },
-  submitReviewDecision: (taskId: string, decision: string, reviewer: string) =>
-    request<ReviewTask>(`/review/tasks/${taskId}/decide`, {
+  getReviewStats: () => request<{ by_status: Record<string, number>; by_target_type: Record<string, number>; total_pending: number }>("/reviews/stats"),
+  approveReview: (taskId: string, reviewer: string, notes?: string) =>
+    request<any>(`/reviews/${taskId}/approve`, {
       method: "POST",
-      body: JSON.stringify({ decision, reviewer }),
+      body: JSON.stringify({ reviewer, notes }),
+    }),
+  rejectReview: (taskId: string, reviewer: string, reason?: string) =>
+    request<any>(`/reviews/${taskId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reviewer, reason }),
+    }),
+
+  // Lineage
+  getLineage: (paperId: string, direction = "both") =>
+    request<any>(`/pipeline/${paperId}/lineage?direction=${direction}`),
+
+  // Bottleneck search
+  searchBottlenecks: (keyword: string, limit = 20) =>
+    request<any>("/search/bottlenecks", {
+      method: "POST",
+      body: JSON.stringify({ keyword, limit }),
+    }),
+
+  // Intent-based query (v3.2)
+  intentQuery: (query: string, intent?: string, constraints?: Record<string, any>, limit = 20) =>
+    request<any>("/search/query", {
+      method: "POST",
+      body: JSON.stringify({ query, intent, constraints, limit }),
     }),
 
   // Aliases

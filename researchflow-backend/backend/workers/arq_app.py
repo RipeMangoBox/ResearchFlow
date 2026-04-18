@@ -63,6 +63,28 @@ async def task_cleanup_expired(ctx: dict):
     return {"archived": count}
 
 
+async def task_refresh_materialized_views(ctx: dict):
+    """Refresh all CQRS-lite materialized views for read-optimized queries."""
+    from backend.database import async_session
+    from sqlalchemy import text
+
+    views = ["paper_search_docs", "idea_search_docs", "lineage_view", "review_queue_view"]
+    refreshed = []
+    async with async_session() as session:
+        for view in views:
+            try:
+                await session.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}"))
+                refreshed.append(view)
+            except Exception:
+                try:
+                    await session.execute(text(f"REFRESH MATERIALIZED VIEW {view}"))
+                    refreshed.append(view)
+                except Exception as e2:
+                    refreshed.append(f"{view}: FAILED")
+        await session.commit()
+    return {"refreshed": refreshed}
+
+
 # ── Startup / shutdown ──────────────────────────────────────────
 
 async def startup(ctx: dict):
@@ -93,9 +115,12 @@ class WorkerSettings:
         task_daily_digest,
         task_weekly_digest,
         task_cleanup_expired,
+        task_refresh_materialized_views,
     ]
 
     cron_jobs = [
+        # Refresh materialized views every 30 minutes
+        cron(task_refresh_materialized_views, minute={0, 30}),
         # Daily digest at 23:00
         cron(task_daily_digest, hour=23, minute=0),
         # Weekly digest on Sunday at 22:00

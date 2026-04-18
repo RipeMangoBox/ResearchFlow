@@ -340,6 +340,13 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
     await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
 
+    # ── Auto-export to paperAnalysis/ Markdown ───────────────
+    try:
+        from backend.services.export_service import export_paper_analysis
+        await export_paper_analysis(session, paper.id)
+    except Exception as e:
+        logger.warning(f"Auto-export to paperAnalysis/ failed for {paper.id}: {e}")
+
     return analysis
 
 

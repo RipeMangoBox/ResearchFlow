@@ -46,8 +46,8 @@ _EVIDENCE_SIGNALS = {
 }
 
 
-def classify_intent(query: str) -> str:
-    """Classify a query into one of 4 intents based on keyword signals."""
+def _keyword_classify(query: str) -> tuple[str, int]:
+    """Keyword-based intent classification. Returns (intent, score)."""
     q = query.lower()
     scores = {
         "bottleneck": sum(1 for w in _BOTTLENECK_SIGNALS if w in q),
@@ -56,9 +56,77 @@ def classify_intent(query: str) -> str:
         "evidence": sum(1 for w in _EVIDENCE_SIGNALS if w in q),
     }
     best = max(scores, key=scores.get)
-    if scores[best] == 0:
-        return "bottleneck"  # default: treat as problem-oriented
-    return best
+    return best, scores[best]
+
+
+# Intent descriptions for embedding-based classification
+_INTENT_DESCRIPTIONS = {
+    "bottleneck": "What is the core limitation, challenge, or bottleneck blocking progress in this research direction? What problems are hard to solve?",
+    "mechanism": "What methods, techniques, approaches, or mechanisms are available? What are the different routes and strategies?",
+    "lineage": "How did this method evolve over time? What is it based on? What builds on it? Show the development history and inheritance.",
+    "evidence": "Where is the experimental evidence? Show me ablation results, code implementations, proofs, and concrete measurements.",
+}
+
+_intent_embeddings_cache: dict[str, list[float]] | None = None
+
+
+async def _get_intent_embeddings() -> dict[str, list[float]]:
+    """Lazily compute and cache embeddings for intent descriptions."""
+    global _intent_embeddings_cache
+    if _intent_embeddings_cache is not None:
+        return _intent_embeddings_cache
+
+    from backend.services.embedding_service import embed_text
+    _intent_embeddings_cache = {}
+    for intent, desc in _INTENT_DESCRIPTIONS.items():
+        _intent_embeddings_cache[intent] = await embed_text(desc)
+    return _intent_embeddings_cache
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def classify_intent(query: str) -> str:
+    """Classify a query into one of 4 intents.
+
+    Strategy: keyword match first; if no keywords hit, use embedding similarity.
+    """
+    # 1. Try keyword match (fast, reliable for explicit queries)
+    keyword_intent, keyword_score = _keyword_classify(query)
+    if keyword_score >= 2:
+        return keyword_intent
+
+    # 2. Fall back to embedding similarity (handles mixed language, implicit queries)
+    try:
+        from backend.services.embedding_service import embed_text
+        query_emb = await embed_text(query)
+        intent_embs = await _get_intent_embeddings()
+
+        best_intent = "bottleneck"
+        best_sim = -1.0
+        for intent, emb in intent_embs.items():
+            sim = _cosine_sim(query_emb, emb)
+            if sim > best_sim:
+                best_sim = sim
+                best_intent = intent
+
+        # If keyword had a weak signal (score=1), boost that intent
+        if keyword_score == 1:
+            # Keyword match breaks ties
+            return keyword_intent
+
+        return best_intent
+    except Exception as e:
+        logger.warning(f"Embedding-based intent classification failed: {e}")
+        # Final fallback: keyword result or default
+        return keyword_intent if keyword_score > 0 else "bottleneck"
 
 
 # ── Negative constraint application ──────────────────────────────
@@ -491,7 +559,7 @@ async def route_query(
     If intent is not specified, auto-classify from query text.
     """
     if not intent:
-        intent = classify_intent(query)
+        intent = await classify_intent(query)
 
     handlers = {
         "bottleneck": query_bottleneck,
