@@ -123,7 +123,9 @@ async def run_full_pipeline(
     # Step 2: Enrich metadata
     if not paper.abstract or not paper.authors:
         from backend.services import enrich_service
-        enriched = await enrich_service.enrich_paper(session, paper_id)
+        import httpx
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            enriched = await enrich_service.enrich_paper(session, paper, client)
         progress["steps"]["enrich"] = enriched if enriched else "no_data"
         await session.commit()
         await session.refresh(paper)
