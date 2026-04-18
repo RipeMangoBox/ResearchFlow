@@ -144,7 +144,53 @@ async def resolve_venue(
     except Exception as e:
         logger.warning(f"DBLP check failed for {paper_id}: {e}")
 
-    # 3. Resolve canonical from all observations
+    # 3. LLM judgment for ambiguous/conflicting cases
+    if results and any(r for r in results.values() if isinstance(r, dict)):
+        # Check if we have conflicting acceptance signals
+        statuses = set()
+        for src, r in results.items():
+            if isinstance(r, dict) and r.get("status"):
+                statuses.add(r["status"])
+            if isinstance(r, dict) and r.get("accepted") is not None:
+                statuses.add("accepted" if r["accepted"] else "rejected")
+
+        if len(statuses) > 1 or (statuses and "unknown" in statuses):
+            # Conflicting or uncertain — use LLM judgment
+            try:
+                from backend.services.vlm_extraction_service import judge_acceptance_status
+                from backend.models.metadata import MetadataObservation
+                from sqlalchemy import select as sa_select
+
+                obs_result = await session.execute(
+                    sa_select(MetadataObservation).where(
+                        MetadataObservation.entity_id == paper_id,
+                        MetadataObservation.field_name == "acceptance_status",
+                    ).order_by(MetadataObservation.authority_rank)
+                )
+                obs_list = [
+                    {"source": o.source, "value": o.value_json, "confidence": o.confidence}
+                    for o in obs_result.scalars().all()
+                ]
+                if obs_list:
+                    judgment = await judge_acceptance_status(
+                        session, paper_id, title, obs_list
+                    )
+                    if judgment.get("accepted") is not None:
+                        await record_observation(
+                            session,
+                            entity_type="paper",
+                            entity_id=paper_id,
+                            field_name="acceptance_status",
+                            value="accepted" if judgment["accepted"] else "rejected",
+                            source="llm_judgment",
+                            confidence=judgment.get("confidence", 0.5),
+                        )
+                        results["llm_judgment"] = judgment
+                        sources_checked.append("llm_judgment")
+            except Exception as e:
+                logger.warning(f"LLM acceptance judgment failed for {paper_id}: {e}")
+
+    # 4. Resolve canonical from all observations
     canonical = await resolve_paper_metadata(session, paper_id)
 
     return {
