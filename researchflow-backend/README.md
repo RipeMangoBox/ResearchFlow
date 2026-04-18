@@ -7,7 +7,7 @@ Core backend for ResearchFlow. See [root README](../README.md) for project overv
 ```bash
 cp .env.example .env     # Set ANTHROPIC_API_KEY (or OPENAI_API_KEY)
 make db                   # Start PostgreSQL + Redis
-make migrate              # Run 10 Alembic migrations (40 tables + 4 materialized views)
+make migrate              # Run 11 Alembic migrations (42 tables + 4 materialized views)
 make up                   # Start API + worker + frontend
 ```
 
@@ -20,17 +20,17 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the complete technical reference:
 - 16-step analysis pipeline
 - Paper filtering & method classification
 - Research exploration sessions
-- All 95+ API routes & 40 DB tables + 4 materialized views
+- All 96 API routes & 42 DB tables + 4 materialized views
 
 ## Key directories
 
 ```
 backend/
-  api/          14 routers (95+ routes)
+  api/          13 routers (96 routes)
   services/     30 service modules
-  models/       ORM models (40 tables)
-  mcp/          MCP server (18 tools, 3 resources, 2 prompts)
-alembic/        Migrations 001–010
+  models/       ORM models (42 tables)
+  mcp/          MCP server (18 tools, 6 resources, 4 prompts)
+alembic/        Migrations 001–011
 frontend/       Next.js 15 web UI
 tests/          pytest suite
 compatibility/  DB → Markdown export pipeline

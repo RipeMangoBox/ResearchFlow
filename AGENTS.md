@@ -22,12 +22,32 @@
 | `get_reading_plan` | Tiered reading: baseline → structural → plugin |
 | `propose_directions` | Research direction proposals |
 | `enqueue_analysis` | Queue L3 skim or L4 deep analysis |
-| `refresh_assets` | Enrich metadata from arXiv / Crossref |
+| `refresh_assets` | Enrich metadata from arXiv / Crossref / OpenAlex / GitHub |
 | `record_user_feedback` | Corrections / confirmations / tag edits |
 | `get_paper_detail` | Full paper detail with DeltaCard |
 | `get_graph_stats` | Knowledge graph statistics |
 | `review_queue` | Pending review tasks |
 | `submit_review_decision` | Approve / reject reviews (cascades) |
+
+## MCP resources (6)
+
+| URI scheme | What it returns |
+|------------|----------------|
+| `paper://{id}` | Paper detail with analysis + DeltaCard |
+| `delta-card://{id}` | DeltaCard structured snapshot |
+| `graph://stats` | Knowledge graph statistics |
+| `canonical-idea://{id}` | Cross-paper canonical idea detail |
+| `review-task://{id}` | Review task with target object |
+| `lineage://{paper_id}` | Method lineage DAG (ancestors + descendants) |
+
+## MCP prompts (4)
+
+| Prompt | Use when |
+|--------|----------|
+| `deep-paper-report` | Deep analysis report for a paper |
+| `weekly-research-review` | Weekly research digest |
+| `lineage-review` | Trace method evolution for a paper |
+| `direction-gap-analysis` | Find gaps in a research direction |
 
 ## Skill routing (Claude Code / Codex)
 
@@ -41,6 +61,19 @@
 | Reviewer stress test | `reviewer-stress-test` |
 
 Full list: [`.claude/skills/User_README.md`](.claude/skills/User_README.md)
+
+## Remote MCP connection
+
+```json
+// .mcp.json — connect to remote ResearchFlow server
+{
+  "mcpServers": {
+    "researchflow": {
+      "url": "https://researchflow.xyz/sse"
+    }
+  }
+}
+```
 
 ## Rules
 

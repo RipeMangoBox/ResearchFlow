@@ -68,11 +68,12 @@ GRPO (baseline, depth=0, 7 downstream papers)
 
 | | Count |
 |-|-------|
-| DB tables | 40 (+4 materialized views) |
-| API routes | 95+ |
-| MCP tools | 18 (+ 3 resources, 2 prompts) |
+| DB tables | 42 (+4 materialized views) |
+| API routes | 96 |
+| MCP tools | 18 tools + 6 resources + 4 prompts |
 | Services | 30 |
-| Tests | 29+ |
+| Migrations | 11 (001–011) |
+| Frontend pages | 13 |
 | Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM candidate discovery |
 
 ## Repository layout
@@ -80,7 +81,7 @@ GRPO (baseline, depth=0, 7 downstream papers)
 ```
 researchflow-backend/          # Core backend (single source of truth)
   backend/                     #   FastAPI + ORM + 30 services + MCP server
-  alembic/                     #   DB migrations (001–010)
+  alembic/                     #   DB migrations (001–011)
   frontend/                    #   Next.js 15 web UI (papers/search/reviews/reports)
   compatibility/               #   DB → Markdown/CSV export tools
   tests/                       #   pytest suite

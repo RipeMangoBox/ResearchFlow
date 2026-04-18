@@ -70,11 +70,12 @@ GRPO (基线, depth=0, 7篇下游)
 
 | | 数量 |
 |-|------|
-| 数据库表 | 40 (+4 物化视图) |
-| API 路由 | 95+ |
-| MCP 工具 | 18 (+ 3 资源, 2 提示模板) |
+| 数据库表 | 42 (+4 物化视图) |
+| API 路由 | 96 |
+| MCP | 18 工具 + 6 资源 + 4 提示模板 |
 | Service | 30 |
-| 测试 | 29+ |
+| 迁移 | 11 (001–011) |
+| 前端页面 | 13 |
 | 内置范式 | 4 (RL/VLM/Agent/MotionGen) + LLM 候选发现 |
 
 ## 仓库结构
@@ -82,7 +83,7 @@ GRPO (基线, depth=0, 7篇下游)
 ```
 researchflow-backend/          # 核心后端 (唯一写入目标)
   backend/                     #   FastAPI + ORM + 30 Services + MCP
-  alembic/                     #   数据库迁移 (001-010)
+  alembic/                     #   数据库迁移 (001–011)
   frontend/                    #   Next.js 15 Web UI (论文/搜索/审核/报告)
   compatibility/               #   DB → Markdown/CSV 导出工具
   tests/                       #   pytest 测试

@@ -62,7 +62,7 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml exec -T postgres \
   psql -U rf -d researchflow -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-# 运行迁移（7 次）
+# 运行迁移（11 次）
 docker compose -f docker-compose.prod.yml exec -T -e PYTHONPATH=/app api \
   alembic -c alembic/alembic.ini upgrade head
 

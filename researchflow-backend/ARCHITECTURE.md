@@ -14,10 +14,10 @@
 │                        Core Backend                                 │
 │                                                                     │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │ 95+ API 路由 │  │ 18 MCP 工具  │  │ 27 Service 模块            │ │
+│  │ 96 API 路由  │  │ 18 MCP 工具  │  │ 30 Service 模块            │ │
 │  └─────────────┘  └──────────────┘  └────────────────────────────┘ │
 │                                                                     │
-│  PostgreSQL (40 表 + 4 物化视图) + pgvector + Redis + 对象存储       │
+│  PostgreSQL (42 表 + 4 物化视图) + pgvector + Redis + 对象存储       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -208,7 +208,7 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 
 ---
 
-## 6. 数据库 Schema 总览 (40 表 + 4 物化视图, 10 次迁移)
+## 6. 数据库 Schema 总览 (42 表 + 4 物化视图, 11 次迁移)
 
 ### 核心表
 
@@ -235,8 +235,10 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 | **slot_candidates** | 候选项 | **v3.2** 候选槽位 |
 | **mechanism_candidates** | 候选项 | **v3.2** 候选机制族 |
 | **taxonomy_versions** | 每次变更 1 行 | **v3.2** ontology 变更快照 |
+| **search_branches** | 探索分支 | **v3.2** 搜索会话中的分支决策 |
+| **render_artifacts** | 输出制品 | **v3.2** 报告/摘要/导出追踪 |
 
-### 支��表
+### 支撑表
 
 paper_analyses, paper_assets, paper_versions, method_deltas (legacy),
 graph_edges (legacy), implementation_units, transfer_atoms, search_sessions,
@@ -254,7 +256,7 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 
 ---
 
-## 7. API 路由总览 (95+ 路由, 14 Router)
+## 7. API 路由总览 (96 路由, 13 Router)
 
 | Router | 前缀 | 关键端点 |
 |--------|------|---------|
