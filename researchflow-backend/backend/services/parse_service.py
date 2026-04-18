@@ -132,7 +132,9 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         old_analysis.is_current = False
 
     # ── Upload figure images to object storage ───────────────────
-    figure_image_records = await _upload_figure_images(paper_id, pymupdf_result.figure_images)
+    figure_image_records = await _upload_figure_images(
+        paper_id, pymupdf_result.figure_images, figure_captions
+    )
 
     # ── Build parse metadata ─────────────────────────────────────
     parse_metadata = {
@@ -278,13 +280,25 @@ async def _resolve_pdf_path(paper: Paper) -> str | None:
     return None
 
 
-async def _upload_figure_images(paper_id: UUID, figure_images: list[dict]) -> list[dict]:
-    """Upload extracted figure images to object storage."""
+async def _upload_figure_images(
+    paper_id: UUID,
+    figure_images: list[dict],
+    figure_captions: list[dict] | None = None,
+) -> list[dict]:
+    """Upload extracted figure images to object storage.
+
+    Each figure gets:
+      - Stored at papers/{paper_id}/figures/fig_001.png
+      - public_url for CDN/Obsidian remote reference
+      - Matched caption from GROBID/PyMuPDF
+      - bbox and extraction_method metadata
+    """
     if not figure_images:
         return []
 
     storage = get_storage()
     records = []
+    captions = figure_captions or []
 
     for i, fig in enumerate(figure_images):
         ext = fig.get("ext", "png")
@@ -294,20 +308,55 @@ async def _upload_figure_images(paper_id: UUID, figure_images: list[dict]) -> li
             record = {
                 "figure_num": i + 1,
                 "object_key": object_key,
-                "page_num": fig["page_num"],
-                "width": fig["width"],
-                "height": fig["height"],
-                "size_bytes": fig["size_bytes"],
+                "page_num": fig.get("page_num", -1),
+                "width": fig.get("width", 0),
+                "height": fig.get("height", 0),
+                "size_bytes": fig.get("size_bytes", 0),
+                "extraction_method": fig.get("extraction_method", "unknown"),
+                "bbox": fig.get("bbox"),
             }
-            # Add public URL if available
+
+            # Add public URL for report embedding
             public_url = storage.get_public_url(object_key)
             if public_url:
                 record["public_url"] = public_url
+
+            # Match caption by page proximity
+            best_caption = _match_caption_to_figure(fig, captions, i)
+            if best_caption:
+                record["caption"] = best_caption.get("caption", "")
+                record["caption_label"] = best_caption.get("label") or f"Figure {best_caption.get('figure_num', i+1)}"
+
             records.append(record)
         except Exception as e:
             logger.warning(f"Failed to store figure {i+1} for {paper_id}: {e}")
 
     return records
+
+
+def _match_caption_to_figure(
+    fig: dict,
+    captions: list[dict],
+    fig_index: int,
+) -> dict | None:
+    """Match a figure image to its caption by page number or index."""
+    fig_page = fig.get("page_num", -1)
+
+    # Try matching by page number (captions near the figure)
+    page_captions = [c for c in captions if c.get("page_num") == fig_page]
+    if page_captions:
+        return page_captions[0]
+
+    # Fallback: match by figure_num index
+    for cap in captions:
+        if cap.get("figure_num") == fig_index + 1:
+            return cap
+
+    # Fallback: match by order
+    if fig_index < len(captions):
+        return captions[fig_index]
+
+    return None
 
 
 async def parse_all_unprocessed(session: AsyncSession, limit: int = 10) -> list[dict]:

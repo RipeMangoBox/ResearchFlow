@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import fitz  # pymupdf
+
 
 @dataclass
 class ParsedPDF:
@@ -79,8 +81,6 @@ def parse_pdf(pdf_path: str | Path) -> ParsedPDF:
 
     Returns a ParsedPDF with sections, formulas, tables, and figure captions.
     """
-    import fitz  # pymupdf
-
     doc = fitz.open(str(pdf_path))
     result = ParsedPDF(page_count=len(doc))
 
@@ -205,8 +205,133 @@ def _extract_table_captions(text: str) -> list[dict]:
 def _extract_figure_images(doc) -> list[dict]:
     """Extract figure images from a pymupdf Document.
 
-    Filters out tiny images (<5KB, likely icons/logos) and returns
-    metadata + raw bytes for each significant figure.
+    Two-strategy approach:
+    1. Page-region screenshot: detect figure areas by clustering image
+       bounding boxes on each page → render that page region as PNG.
+       Captures the full figure including labels, subfigures, axes.
+    2. Fallback to embedded xref images for pages without detectable regions.
+
+    Returns list of dicts with image_bytes + metadata.
+    """
+    images = []
+
+    for page_num, page in enumerate(doc):
+        page_images = list(page.get_images(full=True))
+        if not page_images:
+            continue
+
+        # Collect bounding boxes of all images on this page
+        img_rects = []
+        for img_info in page_images:
+            xref = img_info[0]
+            try:
+                img_instances = page.get_image_rects(xref)
+                for rect in img_instances:
+                    if rect.width > 50 and rect.height > 50:  # Skip tiny icons
+                        img_rects.append(rect)
+            except Exception:
+                continue
+
+        if not img_rects:
+            continue
+
+        # Cluster nearby image rects into figure regions
+        figure_regions = _cluster_image_rects(img_rects, page.rect)
+
+        for region in figure_regions:
+            # Expand region slightly to include captions/labels
+            expanded = _expand_rect(region, page.rect, margin=15)
+
+            try:
+                # Render the page region as high-res PNG (2x zoom for clarity)
+                mat = fitz.Matrix(2.0, 2.0)
+                pix = page.get_pixmap(matrix=mat, clip=expanded)
+                image_bytes = pix.tobytes("png")
+
+                if len(image_bytes) < 3000:  # Skip tiny results
+                    continue
+
+                images.append({
+                    "page_num": page_num,
+                    "width": pix.width,
+                    "height": pix.height,
+                    "ext": "png",
+                    "size_bytes": len(image_bytes),
+                    "image_bytes": image_bytes,
+                    "bbox": [round(expanded.x0, 1), round(expanded.y0, 1),
+                             round(expanded.x1, 1), round(expanded.y1, 1)],
+                    "extraction_method": "page_region",
+                })
+
+                if len(images) >= 20:
+                    return images
+            except Exception:
+                continue
+
+    # Fallback: if page-region extraction found nothing, use embedded xref images
+    if not images:
+        images = _extract_xref_images(doc)
+
+    return images
+
+
+def _cluster_image_rects(rects: list, page_rect) -> list:
+    """Cluster nearby image rectangles into figure regions.
+
+    Images within the same figure (e.g., subfigures a/b/c) are close together.
+    Merges rects that overlap or are within 30pt of each other.
+    """
+    import fitz
+
+    if not rects:
+        return []
+
+    # Sort by y-position (top to bottom)
+    sorted_rects = sorted(rects, key=lambda r: (r.y0, r.x0))
+
+    clusters = []
+    current_cluster = fitz.Rect(sorted_rects[0])
+
+    for rect in sorted_rects[1:]:
+        # Check if this rect is close to the current cluster
+        expanded = fitz.Rect(
+            current_cluster.x0 - 30, current_cluster.y0 - 30,
+            current_cluster.x1 + 30, current_cluster.y1 + 30,
+        )
+        if expanded.intersects(rect):
+            # Merge into current cluster
+            current_cluster = current_cluster | rect  # Union
+        else:
+            # Save current cluster, start new one
+            if current_cluster.width > 80 and current_cluster.height > 80:
+                clusters.append(current_cluster)
+            current_cluster = fitz.Rect(rect)
+
+    # Don't forget the last cluster
+    if current_cluster.width > 80 and current_cluster.height > 80:
+        clusters.append(current_cluster)
+
+    return clusters
+
+
+def _expand_rect(rect, page_rect, margin: int = 15):
+    """Expand a rect by margin but clamp within page bounds.
+
+    Also extends downward to capture figure captions below the image.
+    """
+    import fitz
+    return fitz.Rect(
+        max(rect.x0 - margin, page_rect.x0),
+        max(rect.y0 - margin, page_rect.y0),
+        min(rect.x1 + margin, page_rect.x1),
+        min(rect.y1 + margin + 40, page_rect.y1),  # +40 for caption text below
+    )
+
+
+def _extract_xref_images(doc) -> list[dict]:
+    """Fallback: extract embedded image objects by xref.
+
+    Used when page-region extraction finds nothing (e.g., scanned PDFs).
     """
     images = []
     seen_xrefs = set()
@@ -224,21 +349,21 @@ def _extract_figure_images(doc) -> list[dict]:
                     continue
 
                 image_bytes = base_image["image"]
-                if len(image_bytes) < 5000:  # Skip tiny images (<5KB)
+                if len(image_bytes) < 5000:
                     continue
 
                 ext = base_image.get("ext", "png")
                 images.append({
-                    "xref": xref,
                     "page_num": page_num,
                     "width": base_image.get("width", 0),
                     "height": base_image.get("height", 0),
                     "ext": ext,
                     "size_bytes": len(image_bytes),
                     "image_bytes": image_bytes,
+                    "extraction_method": "xref_embedded",
                 })
 
-                if len(images) >= 20:  # Cap at 20 images per PDF
+                if len(images) >= 20:
                     return images
             except Exception:
                 continue
