@@ -145,84 +145,243 @@ async def extract_figures_precise(
 # ── Step 1: Deterministic candidate detection ────────────────
 
 def _detect_candidate_regions(doc) -> list[dict]:
-    """Detect candidate figure/table regions on each page using PyMuPDF.
+    """Detect figure/table regions using caption-anchored scanning.
 
-    Strategy:
-    - Find all image bboxes on each page
-    - Cluster nearby images into figure regions
-    - Expand regions to include captions
-    - Also detect large blank/graphic areas (for vector-drawn figures)
+    Strategy (top-down):
+    1. Find all "Figure X" / "Table X" caption text positions on each page
+    2. For each caption: scan upward to find the figure content boundary
+       (images, drawings, or non-text region above the caption)
+    3. The bbox = content region + caption text
+    4. Fallback: if no captions found, cluster image bboxes (old method)
 
-    Returns: [{page_num, bbox: [x0,y0,x1,y1], source: "image_cluster"|"large_block"}]
+    This is far more reliable than bottom-up image clustering because
+    the caption text position is deterministic and unambiguous.
     """
+    import re
     candidates = []
 
-    for page_num in range(min(len(doc), 15)):  # First 15 pages
+    for page_num in range(min(len(doc), 15)):
         page = doc[page_num]
         page_rect = page.rect
 
-        # Strategy A: cluster embedded image bboxes
-        img_rects = []
-        for img_info in page.get_images(full=True):
-            xref = img_info[0]
-            try:
-                for inst_rect in page.get_image_rects(xref):
-                    if inst_rect.width > 40 and inst_rect.height > 40:
-                        img_rects.append(inst_rect)
-            except Exception:
-                continue
+        # ── Strategy A: Caption-anchored detection ────────────
+        # Find caption text blocks: "Figure 1.", "Fig. 2:", "Table 3."
+        # Must START with the label (not "...see Figure 1..." in body text)
+        caption_pattern = re.compile(
+            r'^(Figure|Fig\.|Table)\s*(\d+)\s*[.:\s]',
+            re.IGNORECASE
+        )
 
-        if img_rects:
-            clusters = _cluster_rects(img_rects)
-            for cluster in clusters:
-                expanded = _expand_for_caption(cluster, page_rect)
-                candidates.append({
-                    "page_num": page_num,
-                    "bbox": [round(expanded.x0), round(expanded.y0),
-                             round(expanded.x1), round(expanded.y1)],
-                    "source": "image_cluster",
+        text_blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
+        text_block_list = []  # [(y0, y1, x0, x1, text)]
+        for block in text_blocks:
+            if block["type"] != 0:  # 0 = text block
+                continue
+            block_text = ""
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    block_text += span.get("text", "")
+            bbox = block["bbox"]  # (x0, y0, x1, y1)
+            text_block_list.append((bbox[1], bbox[3], bbox[0], bbox[2], block_text.strip()))
+
+        # Sort text blocks by y-position
+        text_block_list.sort(key=lambda b: b[0])
+
+        # Find caption blocks — must START with "Figure X" / "Table X"
+        # This avoids matching "...in Table 1..." in body text
+        caption_blocks = []
+        seen_labels = set()
+        for y0, y1, x0, x1, text in text_block_list:
+            m = caption_pattern.match(text)
+            if m:
+                fig_type = "table" if m.group(1).lower() == "table" else "figure"
+                fig_num = int(m.group(2))
+                label_key = f"{fig_type}_{fig_num}"
+                if label_key in seen_labels:
+                    continue  # Skip duplicate captions on same page
+                seen_labels.add(label_key)
+                caption_blocks.append({
+                    "y0": y0, "y1": y1, "x0": x0, "x1": x1,
+                    "text": text, "type": fig_type, "num": fig_num,
                 })
 
-        # Strategy B: detect drawing regions (vector graphics)
-        # Pages with few text blocks but drawings often have figures
-        drawings = page.get_drawings()
-        if len(drawings) > 20:  # Lots of drawing commands = likely a vector figure
-            # Find bounding box of all drawings
-            draw_rects = [fitz.Rect(d["rect"]) for d in drawings if d.get("rect")]
-            draw_rects = [r for r in draw_rects
-                          if r.width > 50 and r.height > 50
-                          and r.width < page_rect.width * 0.95]  # Not full-page
-            if draw_rects:
-                drawing_clusters = _cluster_rects(draw_rects)
-                for cluster in drawing_clusters:
-                    # Check it doesn't overlap with already-found image clusters
-                    overlap = False
-                    for existing in candidates:
-                        if existing["page_num"] == page_num:
-                            er = fitz.Rect(*existing["bbox"])
-                            if er.intersects(cluster) and er.get_area() > 0:
-                                overlap_area = (er & cluster).get_area()
-                                if overlap_area / min(er.get_area(), cluster.get_area()) > 0.5:
-                                    overlap = True
-                                    break
-                    if not overlap:
-                        expanded = _expand_for_caption(cluster, page_rect)
-                        candidates.append({
-                            "page_num": page_num,
-                            "bbox": [round(expanded.x0), round(expanded.y0),
-                                     round(expanded.x1), round(expanded.y1)],
-                            "source": "drawing_cluster",
-                        })
+        # For each caption, find figure content above it
+        for cap in caption_blocks:
+            figure_bbox = _find_content_above_caption(
+                page, cap, text_block_list
+            )
+            if figure_bbox:
+                candidates.append({
+                    "page_num": page_num,
+                    "bbox": [round(figure_bbox.x0), round(figure_bbox.y0),
+                             round(figure_bbox.x1), round(figure_bbox.y1)],
+                    "source": "caption_anchored",
+                    "label": f"{'Figure' if cap['type'] == 'figure' else 'Table'} {cap['num']}",
+                    "caption_text": cap["text"][:200],
+                })
 
-    # Deduplicate and sort by page then y-position
+        # ── Strategy B: Fallback — image/drawing cluster ──────
+        # Only for pages where no captions were found
+        if not any(c["page_num"] == page_num for c in candidates):
+            fallback = _fallback_cluster_detection(page, page_num)
+            candidates.extend(fallback)
+
+    # Deduplicate overlapping candidates on same page
     candidates = _deduplicate_candidates(candidates)
     candidates.sort(key=lambda c: (c["page_num"], c["bbox"][1]))
+    return candidates[:25]
 
-    return candidates[:25]  # Cap at 25 candidates
+
+def _find_content_above_caption(page, caption: dict, text_blocks: list) -> "fitz.Rect | None":
+    """Given a caption position, find the figure/table content region above it.
+
+    Key insight: the figure region is the FULL-WIDTH space between
+    the previous text block (or page top) and the caption.
+
+    For academic papers, figures occupy either:
+    - Full page width (single-column figures)
+    - Half page width (in-column figures)
+
+    We detect which case by checking if there's a text gap spanning
+    more than half the page width above the caption.
+    """
+    import re as _re
+    page_rect = page.rect
+    cap_y = caption["y0"]  # Top of caption text
+    cap_x0 = caption["x0"]
+    cap_x1 = caption["x1"]
+
+    # Find the nearest BODY TEXT block ABOVE the caption
+    # Skip: other captions, very short blocks (labels), blocks very close to caption
+    above_text_y1 = page_rect.y0  # Default: top of page
+
+    for y0, y1, x0, x1, text in text_blocks:
+        if y1 > cap_y - 5:
+            continue  # Not above
+        if len(text) < 20:
+            continue  # Too short (likely label, equation number)
+        if _re.match(r'^(Figure|Fig\.|Table)\s*\d+', text, _re.IGNORECASE):
+            continue  # Another caption
+        # Must be a real paragraph — at least 2 lines or 50 chars
+        if len(text) < 50 and y1 - y0 < 15:
+            continue
+        if y1 > above_text_y1:
+            above_text_y1 = y1
+
+    # The figure region is between above_text_y1 and caption bottom
+    gap = cap_y - above_text_y1
+
+    if gap < 20:
+        # Very small gap — no figure content above this caption
+        # Maybe the caption is below a table rendered as text
+        # Try expanding downward instead (for tables)
+        if caption["type"] == "table":
+            # Look for table content below caption
+            below_blocks = [(y0, y1, x0, x1) for y0, y1, x0, x1, t in text_blocks
+                            if y0 > caption["y1"] + 2]
+            if below_blocks:
+                table_bottom = min(b[1] for b in below_blocks[:8])
+                return fitz.Rect(
+                    max(page_rect.x0 + 5, cap_x0 - 20),
+                    cap_y - 5,
+                    min(page_rect.x1 - 5, cap_x1 + 20),
+                    table_bottom + 5,
+                )
+        return None
+
+    # Determine width: if caption spans >55% of page width, assume full-width figure
+    caption_width = cap_x1 - cap_x0
+    if caption_width > page_rect.width * 0.55:
+        # Full-width figure (common in academic papers)
+        fig_x0 = page_rect.x0
+        fig_x1 = page_rect.x1
+    else:
+        # In-column figure — try to detect column boundaries
+        # Use the caption x-range as a guide, expand slightly
+        mid_x = page_rect.width / 2
+        if cap_x0 < mid_x:
+            # Left column figure
+            fig_x0 = page_rect.x0
+            fig_x1 = mid_x + 10
+        else:
+            # Right column figure
+            fig_x0 = mid_x - 10
+            fig_x1 = page_rect.x1
+
+    result = fitz.Rect(
+        max(fig_x0, page_rect.x0),
+        max(above_text_y1, page_rect.y0),
+        min(fig_x1, page_rect.x1),
+        min(caption["y1"] + 5, page_rect.y1),
+    )
+
+    # Sanity check: figure region should be reasonably sized
+    if result.height < 40 or result.width < 60:
+        return None
+
+    return result
 
 
-def _cluster_rects(rects: list) -> list:
-    """Merge overlapping or nearby rectangles into clusters."""
+def _fallback_cluster_detection(page, page_num: int) -> list[dict]:
+    """Fallback: cluster images + drawings when no captions found."""
+    page_rect = page.rect
+    candidates = []
+
+    # Cluster images
+    img_rects = []
+    for img_info in page.get_images(full=True):
+        xref = img_info[0]
+        try:
+            for r in page.get_image_rects(xref):
+                if r.width > 40 and r.height > 40:
+                    img_rects.append(r)
+        except Exception:
+            continue
+
+    if img_rects:
+        clusters = _cluster_rects(img_rects, merge_dist=80)
+        for cluster in clusters:
+            expanded = fitz.Rect(
+                max(cluster.x0 - 10, page_rect.x0),
+                max(cluster.y0 - 10, page_rect.y0),
+                min(cluster.x1 + 10, page_rect.x1),
+                min(cluster.y1 + 45, page_rect.y1),
+            )
+            candidates.append({
+                "page_num": page_num,
+                "bbox": [round(expanded.x0), round(expanded.y0),
+                         round(expanded.x1), round(expanded.y1)],
+                "source": "image_cluster_fallback",
+            })
+
+    # Cluster drawings
+    drawings = page.get_drawings()
+    if len(drawings) > 20:
+        draw_rects = [fitz.Rect(d["rect"]) for d in drawings if d.get("rect")]
+        draw_rects = [r for r in draw_rects if r.width > 50 and r.height > 50]
+        if draw_rects:
+            clusters = _cluster_rects(draw_rects, merge_dist=40)
+            for cluster in clusters:
+                if not any(fitz.Rect(*c["bbox"]).intersects(cluster)
+                           for c in candidates if c["page_num"] == page_num):
+                    expanded = fitz.Rect(
+                        max(cluster.x0 - 10, page_rect.x0),
+                        max(cluster.y0 - 10, page_rect.y0),
+                        min(cluster.x1 + 10, page_rect.x1),
+                        min(cluster.y1 + 45, page_rect.y1),
+                    )
+                    candidates.append({
+                        "page_num": page_num,
+                        "bbox": [round(expanded.x0), round(expanded.y0),
+                                 round(expanded.x1), round(expanded.y1)],
+                        "source": "drawing_cluster_fallback",
+                    })
+
+    return candidates
+
+
+def _cluster_rects(rects: list, merge_dist: int = 80) -> list:
+    """Merge overlapping or nearby rectangles. merge_dist controls gap tolerance."""
     if not rects:
         return []
 
@@ -232,34 +391,22 @@ def _cluster_rects(rects: list) -> list:
     for rect in sorted_rects[1:]:
         merged = False
         for i, cluster in enumerate(clusters):
-            # Check if rect is within 25pt of cluster
             expanded = fitz.Rect(
-                cluster.x0 - 25, cluster.y0 - 25,
-                cluster.x1 + 25, cluster.y1 + 25,
+                cluster.x0 - merge_dist, cluster.y0 - merge_dist,
+                cluster.x1 + merge_dist, cluster.y1 + merge_dist,
             )
             if expanded.intersects(rect):
-                clusters[i] = cluster | rect  # Union
+                clusters[i] = cluster | rect
                 merged = True
                 break
         if not merged:
             clusters.append(fitz.Rect(rect))
 
-    # Filter out tiny clusters
     return [c for c in clusters if c.width > 60 and c.height > 60]
 
 
-def _expand_for_caption(rect, page_rect, margin: int = 10) -> fitz.Rect:
-    """Expand rect with margin and extra space below for caption."""
-    return fitz.Rect(
-        max(rect.x0 - margin, page_rect.x0),
-        max(rect.y0 - margin, page_rect.y0),
-        min(rect.x1 + margin, page_rect.x1),
-        min(rect.y1 + margin + 35, page_rect.y1),  # +35 for caption line
-    )
-
-
 def _deduplicate_candidates(candidates: list[dict]) -> list[dict]:
-    """Remove candidates that heavily overlap with each other."""
+    """Remove heavily overlapping candidates on same page."""
     if len(candidates) <= 1:
         return candidates
 
@@ -273,10 +420,14 @@ def _deduplicate_candidates(candidates: list[dict]) -> list[dict]:
             e_rect = fitz.Rect(*existing["bbox"])
             if c_rect.intersects(e_rect):
                 intersection = c_rect & e_rect
-                smaller = min(c_rect.get_area(), e_rect.get_area())
-                if smaller > 0 and intersection.get_area() / smaller > 0.6:
-                    # Keep the larger one
-                    if c_rect.get_area() > e_rect.get_area():
+                smaller_area = min(c_rect.get_area(), e_rect.get_area())
+                if smaller_area > 0 and intersection.get_area() / smaller_area > 0.5:
+                    # Keep the larger or the caption-anchored one
+                    if c.get("source") == "caption_anchored":
+                        existing["bbox"] = c["bbox"]
+                        existing["source"] = c["source"]
+                        existing["label"] = c.get("label", existing.get("label", ""))
+                    elif c_rect.get_area() > e_rect.get_area():
                         existing["bbox"] = c["bbox"]
                     overlap = True
                     break
