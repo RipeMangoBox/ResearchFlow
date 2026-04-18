@@ -1,10 +1,20 @@
 """Enrich service — auto-complete paper metadata from external APIs.
 
 Sources:
-  1. arXiv API (for papers with arxiv_id)
-  2. Crossref API (for DOI lookup by title)
+  1. arXiv API (title, abstract, authors, year, DOI, categories, **comments**)
+  2. Crossref API (DOI, authors, venue, year)
+  3. OpenAlex API (venue, citation count, year, open access, DOI)
+  4. GitHub API (code repository discovery)
+  5. HuggingFace API (model/dataset discovery)
+  6. Semantic Scholar API (citation count, references, related papers)
 
-Only fills in missing fields — never overwrites existing data.
+v2 changes:
+  - Writes metadata_observations for every source (observation ledger)
+  - Extracts arXiv comments field ("Accepted at ICLR 2025" etc.)
+  - Connects HuggingFace discovery
+  - Adds Semantic Scholar enrichment for citation count
+  - Dataset link discovery
+  - Still fills Paper fields directly as backward compat
 """
 
 import asyncio
@@ -21,6 +31,11 @@ from backend.models.enums import PaperState
 from backend.models.paper import Paper
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid circular dependency at module load
+def _record_obs():
+    from backend.services.metadata_resolver_service import record_observation
+    return record_observation
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 CROSSREF_API = "https://api.crossref.org/works"
@@ -82,6 +97,12 @@ async def _fetch_arxiv(client: httpx.AsyncClient, arxiv_id: str) -> dict | None:
         # DOI (sometimes in arxiv:doi)
         doi = entry.findtext("arxiv:doi", None, ns)
 
+        # Comments field — often contains "Accepted at ICLR 2025", "12 pages, 5 figures"
+        comment = entry.findtext("arxiv:comment", None, ns)
+
+        # Journal reference (sometimes set for published papers)
+        journal_ref = entry.findtext("arxiv:journal_ref", None, ns)
+
         return {
             "title": title if title else None,
             "abstract": abstract if abstract else None,
@@ -89,6 +110,8 @@ async def _fetch_arxiv(client: httpx.AsyncClient, arxiv_id: str) -> dict | None:
             "year": year,
             "doi": doi,
             "keywords": categories if categories else None,
+            "comment": comment.strip() if comment else None,
+            "journal_ref": journal_ref.strip() if journal_ref else None,
         }
     except ET.ParseError as e:
         logger.warning(f"arXiv XML parse error for {arxiv_id}: {e}")
@@ -317,16 +340,143 @@ async def _discover_huggingface(client: httpx.AsyncClient, title: str) -> dict |
     return None
 
 
+# ── Semantic Scholar enrichment ───────────────────────────────
+
+S2_API = "https://api.semanticscholar.org/graph/v1"
+
+async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> dict | None:
+    """Fetch citation count + venue from Semantic Scholar."""
+    # Find paper on S2
+    s2_id = None
+    if paper.arxiv_id:
+        s2_id = f"arXiv:{re.sub(r'v[0-9]+$', '', paper.arxiv_id)}"
+    elif paper.doi:
+        s2_id = f"DOI:{paper.doi}"
+
+    if not s2_id:
+        return None
+
+    try:
+        resp = await client.get(
+            f"{S2_API}/paper/{s2_id}",
+            params={"fields": "title,venue,year,citationCount,referenceCount,externalIds,url"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        return {
+            "citation_count": data.get("citationCount", 0),
+            "reference_count": data.get("referenceCount", 0),
+            "venue": data.get("venue", ""),
+            "year": data.get("year"),
+            "s2_url": data.get("url", ""),
+            "external_ids": data.get("externalIds", {}),
+        }
+    except Exception as e:
+        logger.debug(f"S2 API error for {s2_id}: {e}")
+        return None
+
+
+# ── Acceptance status from arXiv comments ────────────────────
+
+def _parse_acceptance_from_comment(comment: str) -> dict | None:
+    """Parse arXiv comment for conference acceptance info.
+
+    Examples:
+      "Accepted at ICLR 2025"
+      "Published in NeurIPS 2024"
+      "To appear at CVPR 2025"
+      "AAAI 2025 oral"
+    """
+    if not comment:
+        return None
+
+    comment_lower = comment.lower()
+
+    # Patterns for acceptance
+    import re
+    acceptance_patterns = [
+        r'(?:accepted|published|to appear|appeared)\s+(?:at|in|by)\s+([A-Za-z]+)\s*(\d{4})',
+        r'(ICLR|NeurIPS|ICML|CVPR|ICCV|ECCV|AAAI|IJCAI|ACL|EMNLP|NAACL|SIGGRAPH|CHI|KDD|WWW)\s*[\'"]?(\d{4})',
+    ]
+
+    for pattern in acceptance_patterns:
+        m = re.search(pattern, comment, re.IGNORECASE)
+        if m:
+            venue = m.group(1).upper()
+            year = int(m.group(2))
+            # Check for acceptance type
+            acc_type = ""
+            if "oral" in comment_lower:
+                acc_type = "oral"
+            elif "spotlight" in comment_lower:
+                acc_type = "spotlight"
+            elif "poster" in comment_lower:
+                acc_type = "poster"
+            elif "workshop" in comment_lower:
+                acc_type = "workshop"
+
+            return {
+                "venue": venue,
+                "year": year,
+                "acceptance_status": "accepted",
+                "acceptance_type": acc_type,
+            }
+
+    return None
+
+
 # ── Main enrich logic ───────────────────────────────────────────
 
 async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncClient) -> dict[str, bool]:
-    """Enrich a single paper. Returns dict of which fields were updated."""
+    """Enrich a single paper from multiple external sources.
+
+    v2: Writes observations to metadata_observations table AND fills Paper fields.
+    Returns dict of which fields were updated.
+    """
+    record_observation = _record_obs()
     updated = {}
 
-    # 1. Try arXiv if we have arxiv_id
+    # ── 1. arXiv ──────────────────────────────────────────────
     if paper.arxiv_id:
         arxiv_data = await _fetch_arxiv(client, paper.arxiv_id)
         if arxiv_data:
+            # Record observations
+            if arxiv_data.get("abstract"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="abstract", value=arxiv_data["abstract"][:500],
+                    source="arxiv", source_url=f"https://arxiv.org/abs/{paper.arxiv_id}")
+            if arxiv_data.get("authors"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="authors", value=arxiv_data["authors"],
+                    source="arxiv", source_url=f"https://arxiv.org/abs/{paper.arxiv_id}")
+            if arxiv_data.get("year"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="year", value=arxiv_data["year"],
+                    source="arxiv")
+
+            # Parse acceptance from arXiv comment field
+            if arxiv_data.get("comment"):
+                acceptance = _parse_acceptance_from_comment(arxiv_data["comment"])
+                if acceptance:
+                    await record_observation(session, entity_type="paper", entity_id=paper.id,
+                        field_name="acceptance_status", value=acceptance["acceptance_status"],
+                        source="arxiv", confidence=0.7,
+                        source_url=f"https://arxiv.org/abs/{paper.arxiv_id}")
+                    if acceptance.get("venue"):
+                        await record_observation(session, entity_type="paper", entity_id=paper.id,
+                            field_name="venue", value=acceptance["venue"],
+                            source="arxiv", confidence=0.7)
+
+            # Also from journal_ref
+            if arxiv_data.get("journal_ref"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="venue", value=arxiv_data["journal_ref"],
+                    source="arxiv", confidence=0.6)
+
+            # Fill Paper fields (backward compat)
             if not paper.abstract and arxiv_data.get("abstract"):
                 paper.abstract = arxiv_data["abstract"]
                 updated["abstract"] = True
@@ -343,12 +493,20 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 paper.keywords = arxiv_data["keywords"]
                 updated["keywords"] = True
 
-    # 2. Try Crossref for DOI / author supplementation
+    # ── 2. Crossref ───────────────────────────────────────────
     if not paper.doi and paper.title:
-        # Small delay to be polite to Crossref
         await asyncio.sleep(0.5)
         cr_data = await _fetch_crossref(client, paper.title)
         if cr_data:
+            if cr_data.get("venue_crossref"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="venue", value=cr_data["venue_crossref"],
+                    source="crossref")
+            if cr_data.get("authors"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="authors", value=cr_data["authors"],
+                    source="crossref")
+
             if not paper.doi and cr_data.get("doi"):
                 paper.doi = cr_data["doi"]
                 updated["doi"] = True
@@ -359,9 +517,18 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 paper.year = cr_data["year"]
                 updated["year"] = True
 
-    # 3. Try OpenAlex for venue verification + citation count
+    # ── 3. OpenAlex ───────────────────────────────────────────
     oa_data = await _fetch_openalex(client, paper)
     if oa_data:
+        if oa_data.get("venue"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="venue", value=oa_data["venue"],
+                source="openalex")
+        if oa_data.get("cited_by_count"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="citation_count", value=oa_data["cited_by_count"],
+                source="openalex")
+
         if oa_data.get("openalex_id") and not paper.openalex_id:
             paper.openalex_id = oa_data["openalex_id"]
             updated["openalex_id"] = True
@@ -369,7 +536,7 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             paper.venue = oa_data["venue"][:100]
             updated["venue"] = True
         if oa_data.get("cited_by_count") and (not paper.cited_by_count or paper.cited_by_count == 0):
-            paper.cited_by_count = min(oa_data["cited_by_count"], 32767)  # SmallInteger limit
+            paper.cited_by_count = min(oa_data["cited_by_count"], 32767)
             updated["cited_by_count"] = True
         if not paper.abstract and oa_data.get("abstract"):
             paper.abstract = oa_data["abstract"]
@@ -381,7 +548,23 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             paper.year = oa_data["year"]
             updated["year"] = True
 
-    # 4. Try GitHub for code link discovery (if no code_url yet)
+    # ── 4. Semantic Scholar (citation count + venue) ──────────
+    s2_data = await _fetch_semantic_scholar(client, paper)
+    if s2_data:
+        if s2_data.get("citation_count"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="citation_count", value=s2_data["citation_count"],
+                source="semantic_scholar", source_url=s2_data.get("s2_url"))
+            # S2 is more authoritative for citations than OA
+            if not paper.cited_by_count or paper.cited_by_count == 0:
+                paper.cited_by_count = min(s2_data["citation_count"], 32767)
+                updated["cited_by_count"] = True
+        if s2_data.get("venue"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="venue", value=s2_data["venue"],
+                source="semantic_scholar", source_url=s2_data.get("s2_url"))
+
+    # ── 5. GitHub code discovery ──────────────────────────────
     if not paper.code_url and paper.title:
         await asyncio.sleep(0.3)
         gh_data = await _discover_github_links(client, paper.title)
@@ -389,8 +572,21 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             paper.code_url = gh_data["code_url"]
             paper.open_code = True
             updated["code_url"] = True
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="code_url", value=gh_data["code_url"],
+                source="github")
 
-    # 5. Update state if enrichment happened and paper is in ephemeral flow
+    # ── 6. HuggingFace model/dataset discovery ────────────────
+    if paper.title:
+        await asyncio.sleep(0.3)
+        hf_data = await _discover_huggingface(client, paper.title)
+        if hf_data and hf_data.get("huggingface_url"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="huggingface_url", value=hf_data["huggingface_url"],
+                source="github")  # recording as a data link
+            updated["huggingface_url"] = True
+
+    # ── 7. Update state ──────────────────────────────────────
     if updated and paper.state == PaperState.CANONICALIZED:
         paper.state = PaperState.ENRICHED
 

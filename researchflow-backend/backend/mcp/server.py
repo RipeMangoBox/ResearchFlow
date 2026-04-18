@@ -280,6 +280,52 @@ TOOLS = [
             "required": ["task_id", "decision"],
         },
     ),
+
+    # ── v4 Metadata extraction tools ─────────────────────────
+    Tool(
+        name="resolve_venue",
+        description="Detect conference acceptance status for a paper. Checks OpenReview, DBLP, arXiv comments. Records multi-source observations with authority ranking.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="get_paper_citations",
+        description="Get structured references (papers cited by this paper) and citations (papers citing this paper) from GROBID parse + Semantic Scholar API.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="get_metadata_conflicts",
+        description="Show unresolved metadata conflicts for a paper across sources (arXiv vs OpenReview vs DBLP etc).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="get_paper_figures",
+        description="Get all extracted figures and tables for a paper with object storage URLs. Includes captions, page numbers, dimensions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+            },
+            "required": ["paper_id"],
+        },
+    ),
 ]
 
 
@@ -304,6 +350,8 @@ async def call_tool(name: str, arguments: dict):
 
 async def _dispatch(name: str, args: dict, session) -> dict:
     """Route tool calls to the appropriate service."""
+    from backend.models.paper import Paper
+    from sqlalchemy import select
 
     if name == "search_research_kb":
         from backend.services import search_service
@@ -485,6 +533,100 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             return await review_service.approve_review(session, task_id, reviewer, args.get("notes"))
         else:
             return await review_service.reject_review(session, task_id, reviewer, args.get("notes"))
+
+    # ── v4 Metadata extraction tools ─────────────────────────
+    elif name == "resolve_venue":
+        from backend.services.venue_resolver_service import resolve_venue
+        pid = UUID(args["paper_id"])
+        paper = await session.get(Paper, pid)
+        if not paper:
+            return {"error": "Paper not found"}
+        authors_list = None
+        if paper.authors and isinstance(paper.authors, list):
+            authors_list = [a.get("name", "") for a in paper.authors if isinstance(a, dict)]
+        return await resolve_venue(
+            session, pid,
+            title=paper.title,
+            authors=authors_list,
+            arxiv_id=paper.arxiv_id or "",
+            current_venue=paper.venue or "",
+            current_year=paper.year or 0,
+        )
+
+    elif name == "get_paper_citations":
+        from backend.models.analysis import PaperAnalysis
+        from backend.models.enums import AnalysisLevel
+        pid = UUID(args["paper_id"])
+        paper = await session.get(Paper, pid)
+        if not paper:
+            return {"error": "Paper not found"}
+
+        result = {"paper_id": args["paper_id"], "title": paper.title}
+
+        # 1. GROBID-extracted references from L2 parse
+        l2 = (await session.execute(
+            select(PaperAnalysis).where(
+                PaperAnalysis.paper_id == pid,
+                PaperAnalysis.level == AnalysisLevel.L2_PARSE,
+                PaperAnalysis.is_current.is_(True),
+            )
+        )).scalar_one_or_none()
+
+        if l2 and l2.evidence_spans:
+            grobid_refs = l2.evidence_spans.get("grobid_references", [])
+            result["references_from_pdf"] = grobid_refs
+            result["reference_count"] = len(grobid_refs)
+        else:
+            result["references_from_pdf"] = []
+            result["reference_count"] = 0
+
+        # 2. S2 citations (papers citing THIS paper)
+        try:
+            from backend.services import discovery_service
+            disc = await discovery_service.discover_related_papers(
+                session, pid, max_refs=0, max_citations=20, auto_ingest=False
+            )
+            result["cited_by"] = disc.get("citations", []) if isinstance(disc, dict) else []
+            result["cited_by_count"] = paper.cited_by_count or 0
+        except Exception as e:
+            result["cited_by"] = []
+            result["cited_by_error"] = str(e)[:100]
+
+        return result
+
+    elif name == "get_metadata_conflicts":
+        from backend.services.metadata_resolver_service import get_conflicts
+        pid = UUID(args["paper_id"])
+        conflicts = await get_conflicts(session, pid)
+        return {"paper_id": args["paper_id"], "conflicts": conflicts}
+
+    elif name == "get_paper_figures":
+        from backend.models.analysis import PaperAnalysis
+        from backend.models.enums import AnalysisLevel
+        pid = UUID(args["paper_id"])
+
+        l2 = (await session.execute(
+            select(PaperAnalysis).where(
+                PaperAnalysis.paper_id == pid,
+                PaperAnalysis.level == AnalysisLevel.L2_PARSE,
+                PaperAnalysis.is_current.is_(True),
+            )
+        )).scalar_one_or_none()
+
+        result = {"paper_id": args["paper_id"]}
+        if l2:
+            result["figures"] = l2.extracted_figure_images or []
+            result["figure_captions"] = l2.figure_captions or []
+            result["tables"] = l2.extracted_tables or []
+            result["formulas"] = l2.extracted_formulas or []
+        else:
+            result["figures"] = []
+            result["figure_captions"] = []
+            result["tables"] = []
+            result["formulas"] = []
+            result["note"] = "No L2 parse available. Run the pipeline first."
+
+        return result
 
     return {"error": f"Unknown tool: {name}"}
 

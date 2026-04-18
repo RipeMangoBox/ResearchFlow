@@ -144,6 +144,39 @@ async def run_full_pipeline(
     else:
         progress["steps"]["enrich"] = "skipped (already enriched)"
 
+    # Step 2.5: Venue resolution (OpenReview + DBLP + arXiv comments)
+    if not paper.acceptance_type:
+        try:
+            from backend.services.venue_resolver_service import resolve_venue
+            authors_list = None
+            if paper.authors and isinstance(paper.authors, list):
+                authors_list = [a.get("name", "") for a in paper.authors if isinstance(a, dict)]
+            venue_result = await resolve_venue(
+                session, paper.id,
+                title=paper.title,
+                authors=authors_list,
+                arxiv_id=paper.arxiv_id or "",
+                current_venue=paper.venue or "",
+                current_year=paper.year or 0,
+            )
+            progress["steps"]["venue_resolve"] = {
+                "venue": venue_result.get("venue"),
+                "acceptance_status": venue_result.get("acceptance_status"),
+                "sources_checked": venue_result.get("sources_checked"),
+            }
+            # Apply results to paper
+            if venue_result.get("acceptance_status") and venue_result["acceptance_status"] != "unknown":
+                paper.acceptance_type = venue_result["acceptance_status"]
+            if venue_result.get("venue") and not paper.venue:
+                paper.venue = venue_result["venue"][:100]
+            await session.commit()
+            await session.refresh(paper)
+        except Exception as e:
+            logger.warning(f"Venue resolution failed for {paper_id}: {e}")
+            progress["steps"]["venue_resolve"] = f"error: {str(e)[:100]}"
+    else:
+        progress["steps"]["venue_resolve"] = "skipped (already resolved)"
+
     # Step 3: L2 Parse PDF
     from backend.models.analysis import PaperAnalysis
     has_l2 = (await session.execute(
@@ -203,6 +236,22 @@ async def run_full_pipeline(
         await session.commit()
     else:
         progress["steps"]["deep_l4"] = "skipped (already analyzed)"
+
+    # Step 6: Discover related papers (references + citations via S2)
+    try:
+        from backend.services import discovery_service
+        disc_result = await discovery_service.discover_related_papers(
+            session, paper_id, max_refs=20, max_citations=10
+        )
+        progress["steps"]["discover_citations"] = {
+            "refs_found": disc_result.get("references_found", 0) if isinstance(disc_result, dict) else 0,
+            "citations_found": disc_result.get("citations_found", 0) if isinstance(disc_result, dict) else 0,
+            "new_papers_ingested": disc_result.get("new_papers", 0) if isinstance(disc_result, dict) else 0,
+        }
+        await session.commit()
+    except Exception as e:
+        logger.warning(f"Citation discovery failed for {paper_id}: {e}")
+        progress["steps"]["discover_citations"] = f"error: {str(e)[:100]}"
 
     # Check graph output
     from backend.models.delta_card import DeltaCard
