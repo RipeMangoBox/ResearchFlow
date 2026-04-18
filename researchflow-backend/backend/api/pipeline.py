@@ -126,10 +126,19 @@ async def download_pdf(
 # ── Domain initialization ─────────────────────────────────────────
 
 class InitDomainRequest(BaseModel):
-    domain: str = Field(..., min_length=1)
-    repo_url: str | None = None
+    domain: str = Field(..., min_length=1, alias="domain_name")
+    seed_papers: list[str] | None = Field(default=None, description="arXiv IDs or URLs of seed papers")
+    seed_repos: list[str] | None = Field(default=None, description="Awesome-list repo URLs")
+    openalex_topic_ids: list[str] | None = None
+    constraints: dict | None = None
+    negative_constraints: list[str] | None = None
     max_papers: int = Field(default=50, ge=1, le=200)
     category: str | None = None
+    # Legacy compat
+    repo_url: str | None = None
+
+    class Config:
+        populate_by_name = True
 
 
 @router.post("/init-domain")
@@ -137,18 +146,32 @@ async def init_domain(
     data: InitDomainRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Initialize a domain KB from awesome-list repos.
+    """Initialize a domain KB from multiple sources.
 
-    Finds the best awesome-list for the domain, extracts papers,
-    ingests them, and returns a priority queue for analysis.
+    Sources (in priority order): seed_papers → awesome repos → OpenAlex topics → S2 expansion.
+    Creates DomainSpec, triages papers into rings (baseline/structural/plugin).
     """
     try:
-        result = await domain_init_service.init_domain_from_awesome(
-            session, data.domain,
-            repo_url=data.repo_url,
-            max_papers=data.max_papers,
-            category=data.category,
-        )
+        # Use multi-source if any new params provided, else legacy
+        if data.seed_papers or data.openalex_topic_ids or data.seed_repos:
+            result = await domain_init_service.init_domain_multi_source(
+                session,
+                domain_name=data.domain,
+                seed_papers=data.seed_papers,
+                seed_repos=data.seed_repos or ([data.repo_url] if data.repo_url else None),
+                openalex_topic_ids=data.openalex_topic_ids,
+                constraints=data.constraints,
+                negative_constraints=data.negative_constraints,
+                max_papers=data.max_papers,
+                category=data.category,
+            )
+        else:
+            result = await domain_init_service.init_domain_from_awesome(
+                session, data.domain,
+                repo_url=data.repo_url,
+                max_papers=data.max_papers,
+                category=data.category,
+            )
         await session.commit()
         return result
     except Exception:
@@ -223,6 +246,28 @@ async def sync_analyses(
         except Exception:
             pass
     return {"exported": exported}
+
+
+@router.post("/sync-domain/{domain_id}")
+async def sync_domain(
+    domain_id: UUID,
+    mode: str = Query(default="hot", pattern="^(hot|weekly|monthly)$"),
+    max_new: int = Query(default=20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    """Incrementally sync a domain's KB from registered sources.
+
+    Modes: hot (daily, OpenAlex new works), weekly (+S2 expansion),
+    monthly (+re-analyze low-confidence + ontology audit).
+    """
+    from backend.services import domain_sync_service
+    try:
+        result = await domain_sync_service.sync_domain(session, domain_id, mode, max_new)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/refresh-connections")

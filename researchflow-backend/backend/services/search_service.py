@@ -36,6 +36,9 @@ async def hybrid_search(
     year_max: int | None = None,
     tags: list[str] | None = None,
     min_structurality: float | None = None,
+    must_not_method_categories: list[str] | None = None,
+    must_have_open_code: bool | None = None,
+    exclude_tags: list[str] | None = None,
     semantic: bool = True,
     limit: int = 20,
 ) -> list[dict]:
@@ -59,6 +62,14 @@ async def hybrid_search(
         conditions.append(Paper.tags.contains(tags))
     if min_structurality is not None:
         conditions.append(Paper.structurality_score >= min_structurality)
+    if must_have_open_code:
+        conditions.append(or_(Paper.open_code.is_(True), Paper.code_url.isnot(None)))
+    if must_not_method_categories:
+        for cat in must_not_method_categories:
+            conditions.append(~Paper.tags.contains([f"method/{cat}"]))
+    if exclude_tags:
+        for tag in exclude_tags:
+            conditions.append(~Paper.tags.contains([tag]))
 
     filter_clause = and_(*conditions) if conditions else True
 

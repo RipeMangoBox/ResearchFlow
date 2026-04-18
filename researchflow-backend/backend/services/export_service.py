@@ -322,10 +322,13 @@ async def export_obsidian_vault(
     id_to_title = {str(p.id): p.title for p in papers}
 
     # ── 2. Generate paper pages (structured modification card) ─
+    # Directory by ring: 10_Baselines/ 20_Structural/ 30_Plugins/
+    ring_dirs = {"baseline": "10_Baselines", "structural": "20_Structural", "plugin": "30_Plugins"}
     for p in papers:
-        cat_dir = root / "papers" / (p.category or "Uncategorized")
-        venue_dir = cat_dir / (f"{p.venue}_{p.year}" if p.venue and p.year else "Unknown")
-        venue_dir.mkdir(parents=True, exist_ok=True)
+        ring = getattr(p, "ring", None) or "plugin"
+        ring_dir_name = ring_dirs.get(ring, "30_Plugins")
+        paper_dir = root / ring_dir_name / (p.category or "Uncategorized")
+        paper_dir.mkdir(parents=True, exist_ok=True)
 
         safe_title = _sanitize_wikilink(p.title)
         filename = f"{p.title_sanitized or str(p.id)}.md"
@@ -484,11 +487,11 @@ async def export_obsidian_vault(
             body.append(f"\n### Delta Statement\n\n{p.delta_statement}\n")
 
         content = _render_frontmatter(fm) + "\n".join(body)
-        (venue_dir / filename).write_text(content, encoding="utf-8")
+        (paper_dir / filename).write_text(content, encoding="utf-8")
         stats["papers"] += 1
 
     # ── 3. Generate mechanism hub pages ───────────────────────
-    mech_dir = root / "concepts" / "mechanisms"
+    mech_dir = root / "40_Mechanisms"
     mech_dir.mkdir(parents=True, exist_ok=True)
 
     for mf in mechanisms:
@@ -515,7 +518,7 @@ async def export_obsidian_vault(
         stats["mechanisms"] += 1
 
     # ── 4. Generate bottleneck hub pages ──────────────────────
-    bn_dir = root / "concepts" / "bottlenecks"
+    bn_dir = root / "50_Bottlenecks"
     bn_dir.mkdir(parents=True, exist_ok=True)
 
     # Get paper-bottleneck claims
@@ -552,7 +555,7 @@ async def export_obsidian_vault(
         stats["bottlenecks"] += 1
 
     # ── 5. Generate paradigm hub pages ────────────────────────
-    para_dir = root / "concepts" / "paradigms"
+    para_dir = root / "60_Paradigms"
     para_dir.mkdir(parents=True, exist_ok=True)
 
     for pt in paradigms:
@@ -632,7 +635,9 @@ FROM "concepts/paradigms"
 SORT title ASC
 ```
 """
-    (root / "_Index.md").write_text(index_content, encoding="utf-8")
+    home_dir = root / "00_Home"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    (home_dir / "_Index.md").write_text(index_content, encoding="utf-8")
 
     # ── 7. Graph view instructions ────────────────────────────
     graph_content = """---
@@ -666,7 +671,7 @@ Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
 - Hub nodes = important mechanisms or bottlenecks many papers reference
 - Clusters = research sub-communities
 """
-    (root / "_Graph.md").write_text(graph_content, encoding="utf-8")
+    (home_dir / "_Graph.md").write_text(graph_content, encoding="utf-8")
 
     # ── 8. Domain Overview entry page ─────────────────────────
     analyzed = [p for p in papers if p.state == "l4_deep"]
@@ -710,7 +715,7 @@ Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
         body_type = "structural" if p.dc_struct and float(p.dc_struct) >= 0.5 else "plugin"
         overview_body.append(f"{i}. [[{_sanitize_wikilink(p.title)}]] — struct={score}, {body_type}")
 
-    (root / "_DomainOverview.md").write_text(
+    (home_dir / "_DomainOverview.md").write_text(
         _render_frontmatter({"title": "方向总览", "type": "index"}) + "\n".join(overview_body),
         encoding="utf-8",
     )
@@ -757,7 +762,7 @@ Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
                 evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] — 改了: {slot_str}")
             evo_body.append("")
 
-    (root / "_MethodEvolution.md").write_text(
+    (home_dir / "_MethodEvolution.md").write_text(
         _render_frontmatter({"title": "方法演化脉络", "type": "index"}) + "\n".join(evo_body),
         encoding="utf-8",
     )
@@ -779,7 +784,7 @@ Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
     if not bottlenecks:
         bn_body.append("*暂无瓶颈数据。运行更多论文的 L4 分析后会自动提取。*")
 
-    (root / "_BottleneckMap.md").write_text(
+    (home_dir / "_BottleneckMap.md").write_text(
         _render_frontmatter({"title": "瓶颈地图", "type": "index"}) + "\n".join(bn_body),
         encoding="utf-8",
     )

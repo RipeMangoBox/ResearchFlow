@@ -20,6 +20,9 @@ class SearchRequest(BaseModel):
     year_max: int | None = None
     tags: list[str] | None = None
     min_structurality: float | None = None
+    must_not_method_categories: list[str] | None = None
+    must_have_open_code: bool | None = None
+    exclude_tags: list[str] | None = None
     semantic: bool = True
     limit: int = Field(default=20, ge=1, le=100)
 
@@ -42,6 +45,9 @@ async def hybrid_search(
         year_max=data.year_max,
         tags=data.tags,
         min_structurality=data.min_structurality,
+        must_not_method_categories=data.must_not_method_categories,
+        must_have_open_code=data.must_have_open_code,
+        exclude_tags=data.exclude_tags,
         semantic=data.semantic,
         limit=data.limit,
     )

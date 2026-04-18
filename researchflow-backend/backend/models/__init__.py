@@ -23,6 +23,7 @@ from backend.models.review import ReviewTask, HumanOverride, Alias, TaxonomyVers
 from backend.models.canonical_idea import CanonicalIdea, ContributionToCanonicalIdea
 from backend.models.lineage import DeltaCardLineage
 from backend.models.candidates import ParadigmCandidate, SlotCandidate, MechanismCandidate
+from backend.models.domain import DomainSpec, DomainSourceRegistry, IncrementalCheckpoint
 
 __all__ = [
     "AnalysisLevel", "AssetType", "EvidenceBasis", "FeedbackType",
@@ -42,4 +43,5 @@ __all__ = [
     "CanonicalIdea", "ContributionToCanonicalIdea",
     "DeltaCardLineage",
     "ParadigmCandidate", "SlotCandidate", "MechanismCandidate",
+    "DomainSpec", "DomainSourceRegistry", "IncrementalCheckpoint",
 ]

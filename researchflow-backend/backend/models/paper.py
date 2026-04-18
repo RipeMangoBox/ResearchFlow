@@ -109,6 +109,11 @@ class Paper(Base):
     # Current published DeltaCard (append-only: papers point to latest)
     current_delta_card_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
+    # Triage ring — determines analysis depth
+    ring: Mapped[str | None] = mapped_column(String(20))
+    # baseline / structural / plugin
+    domain_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
     # Source tracking
     source: Mapped[str | None] = mapped_column(String(50))
     source_ref: Mapped[str | None] = mapped_column(Text)

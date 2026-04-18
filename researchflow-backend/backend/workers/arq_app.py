@@ -63,6 +63,50 @@ async def task_cleanup_expired(ctx: dict):
     return {"archived": count}
 
 
+async def task_sync_domains_hot(ctx: dict):
+    """Daily hot sync — check OpenAlex for new papers in all active domains."""
+    from backend.database import async_session
+    from backend.services import domain_sync_service
+    from backend.models.domain import DomainSpec
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        domains = (await session.execute(
+            select(DomainSpec).where(DomainSpec.status == "active")
+        )).scalars().all()
+        results = []
+        for d in domains:
+            try:
+                r = await domain_sync_service.sync_domain(session, d.id, "hot", 10)
+                results.append({"domain": d.name, "new": r.get("papers_new", 0)})
+            except Exception as e:
+                results.append({"domain": d.name, "error": str(e)[:80]})
+        await session.commit()
+    return {"synced": len(results), "results": results}
+
+
+async def task_sync_domains_weekly(ctx: dict):
+    """Weekly sync — OpenAlex + S2 expansion + awesome diff."""
+    from backend.database import async_session
+    from backend.services import domain_sync_service
+    from backend.models.domain import DomainSpec
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        domains = (await session.execute(
+            select(DomainSpec).where(DomainSpec.status == "active")
+        )).scalars().all()
+        results = []
+        for d in domains:
+            try:
+                r = await domain_sync_service.sync_domain(session, d.id, "weekly", 20)
+                results.append({"domain": d.name, "new": r.get("papers_new", 0)})
+            except Exception as e:
+                results.append({"domain": d.name, "error": str(e)[:80]})
+        await session.commit()
+    return {"synced": len(results), "results": results}
+
+
 async def task_refresh_materialized_views(ctx: dict):
     """Refresh all CQRS-lite materialized views for read-optimized queries."""
     from backend.database import async_session
@@ -116,11 +160,16 @@ class WorkerSettings:
         task_weekly_digest,
         task_cleanup_expired,
         task_refresh_materialized_views,
+        task_sync_domains_hot,
+        task_sync_domains_weekly,
     ]
 
     cron_jobs = [
         # Refresh materialized views every 30 minutes
         cron(task_refresh_materialized_views, minute={0, 30}),
+        # Domain sync: daily hot at 06:00, weekly on Monday at 04:00
+        cron(task_sync_domains_hot, hour=6, minute=0),
+        cron(task_sync_domains_weekly, weekday=0, hour=4, minute=0),
         # Daily digest at 23:00
         cron(task_daily_digest, hour=23, minute=0),
         # Weekly digest on Sunday at 22:00
