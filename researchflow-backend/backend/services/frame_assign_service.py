@@ -260,6 +260,18 @@ async def _discover_paradigm_via_llm(
 
             logger.info(f"Created paradigm candidate: {paradigm_name} with {len(slots_json)} slot candidates for domain={domain}")
 
+            # Auto-create review task
+            from backend.services.review_service import create_review_task
+            await session.flush()
+            await create_review_task(
+                session,
+                target_type="paradigm_candidate",
+                target_id=cand.id,
+                task_type="auto_review",
+                priority=2,
+                notes=f"New paradigm candidate: {paradigm_name} (domain={domain})",
+            )
+
         await session.flush()
 
         # Return None — paper proceeds without paradigm frame until candidate is promoted

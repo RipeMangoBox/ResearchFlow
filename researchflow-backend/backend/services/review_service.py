@@ -1,10 +1,13 @@
-"""Review service — audit queue management.
+"""Review service — audit queue management + human overrides + candidate promotion.
 
 Manages ReviewTask lifecycle:
   - Create review tasks (auto or manual)
   - List/filter pending reviews by type, priority
   - Assign to reviewer
   - Approve/reject with cascading effects on target objects
+  - Apply human overrides (record + apply change)
+  - Promote/reject paradigm, slot, mechanism candidates
+  - List lineage candidates for review
 """
 
 import logging
@@ -314,3 +317,310 @@ def _task_to_dict(task: ReviewTask) -> dict:
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
+
+
+# ── Review detail (with target object) ───────────────────────────
+
+async def get_review_detail(session: AsyncSession, task: ReviewTask) -> dict:
+    """Get review task with its target object summary."""
+    detail = _task_to_dict(task)
+    target = None
+
+    if task.target_type == "assertion":
+        obj = await session.get(GraphAssertion, task.target_id)
+        if obj:
+            target = {
+                "edge_type": obj.edge_type,
+                "status": obj.status,
+                "confidence": obj.confidence,
+                "assertion_source": obj.assertion_source,
+            }
+    elif task.target_type == "delta_card":
+        obj = await session.get(DeltaCard, task.target_id)
+        if obj:
+            from backend.models.paper import Paper
+            paper = await session.get(Paper, obj.paper_id)
+            target = {
+                "paper_title": paper.title if paper else "Unknown",
+                "delta_statement": (obj.delta_statement or "")[:200],
+                "status": obj.status,
+                "structurality_score": obj.structurality_score,
+            }
+    elif task.target_type == "idea_delta":
+        obj = await session.get(IdeaDelta, task.target_id)
+        if obj:
+            target = {
+                "delta_statement": (obj.delta_statement or "")[:200],
+                "publish_status": obj.publish_status,
+                "confidence": obj.confidence,
+                "evidence_count": obj.evidence_count,
+            }
+    elif task.target_type == "lineage":
+        from backend.models.lineage import DeltaCardLineage
+        obj = await session.get(DeltaCardLineage, task.target_id)
+        if obj:
+            target = {
+                "relation_type": obj.relation_type,
+                "confidence": obj.confidence,
+                "status": obj.status,
+            }
+    elif task.target_type == "paradigm_candidate":
+        from backend.models.candidates import ParadigmCandidate
+        obj = await session.get(ParadigmCandidate, task.target_id)
+        if obj:
+            target = {
+                "name": obj.name,
+                "domain": obj.domain,
+                "trigger_count": obj.trigger_count,
+                "status": obj.status,
+            }
+
+    detail["target"] = target
+    return detail
+
+
+# ── Apply human overrides ────────────────────────────────────────
+
+# Map of target_type → (model_class, allowed_fields)
+_OVERRIDE_TARGETS = {
+    "delta_card": ("backend.models.delta_card", "DeltaCard", {
+        "delta_statement", "structurality_score", "extensionability_score",
+        "transferability_score", "status", "baseline_paradigm",
+    }),
+    "idea_delta": ("backend.models.graph", "IdeaDelta", {
+        "delta_statement", "publish_status", "confidence",
+        "structurality_score", "transferability_score",
+    }),
+    "assertion": ("backend.models.assertion", "GraphAssertion", {
+        "status", "confidence", "edge_type", "assertion_source",
+    }),
+    "paper": ("backend.models.paper", "Paper", {
+        "importance", "category", "venue", "year", "mechanism_family",
+        "tags", "role_in_kb",
+    }),
+}
+
+
+async def apply_override(
+    session: AsyncSession,
+    target_type: str,
+    target_id: UUID,
+    field_name: str,
+    new_value,
+    reason: str | None = None,
+    overridden_by: str | None = None,
+) -> dict:
+    """Record a human override AND apply it to the target object."""
+    if target_type not in _OVERRIDE_TARGETS:
+        raise ValueError(f"Unknown target_type: {target_type}")
+
+    module_path, class_name, allowed_fields = _OVERRIDE_TARGETS[target_type]
+    if field_name not in allowed_fields:
+        raise ValueError(f"Field '{field_name}' not overridable on {target_type}. Allowed: {allowed_fields}")
+
+    # Dynamic import
+    import importlib
+    mod = importlib.import_module(module_path)
+    model_class = getattr(mod, class_name)
+
+    obj = await session.get(model_class, target_id)
+    if not obj:
+        raise ValueError(f"{target_type} {target_id} not found")
+
+    # Capture old value
+    old_value = getattr(obj, field_name, None)
+
+    # Apply the change
+    setattr(obj, field_name, new_value)
+
+    # Record the override
+    override = await create_override(
+        session,
+        target_type=target_type,
+        target_id=target_id,
+        field_name=field_name,
+        old_value=old_value,
+        new_value=new_value,
+        reason=reason,
+        overridden_by=overridden_by,
+    )
+
+    await session.flush()
+    return {
+        "override_id": str(override.id),
+        "target_type": target_type,
+        "target_id": str(target_id),
+        "field_name": field_name,
+        "old_value": old_value if not isinstance(old_value, (dict, list)) else old_value,
+        "new_value": new_value,
+        "applied": True,
+    }
+
+
+# ── Paradigm candidate management ───────────────────────────────
+
+async def list_paradigm_candidates(
+    session: AsyncSession,
+    status: str = "pending",
+    limit: int = 20,
+) -> list[dict]:
+    from backend.models.candidates import ParadigmCandidate
+    result = await session.execute(
+        select(ParadigmCandidate)
+        .where(ParadigmCandidate.status == status)
+        .order_by(desc(ParadigmCandidate.trigger_count))
+        .limit(limit)
+    )
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "domain": c.domain,
+            "description": c.description,
+            "slots_json": c.slots_json,
+            "trigger_count": c.trigger_count,
+            "status": c.status,
+            "max_similarity_to_existing": c.max_similarity_to_existing,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in result.scalars()
+    ]
+
+
+async def promote_paradigm_candidate(
+    session: AsyncSession,
+    candidate_id: UUID,
+    reviewer: str,
+    name_override: str | None = None,
+) -> dict | None:
+    """Promote a paradigm candidate to a live ParadigmTemplate + Slots."""
+    from backend.models.candidates import ParadigmCandidate
+    from backend.models.analysis import ParadigmTemplate
+    from backend.models.graph import Slot
+
+    cand = await session.get(ParadigmCandidate, candidate_id)
+    if not cand:
+        return None
+
+    paradigm_name = name_override or cand.name
+
+    # Check no duplicate live paradigm
+    existing = await session.execute(
+        select(ParadigmTemplate).where(ParadigmTemplate.name == paradigm_name).limit(1)
+    )
+    if existing.scalar_one_or_none():
+        raise ValueError(f"Paradigm '{paradigm_name}' already exists")
+
+    # Create live paradigm
+    slots_dict = {}
+    raw_slots = cand.slots_json or []
+    if isinstance(raw_slots, list):
+        slots_dict = {s["name"]: s.get("description", "") for s in raw_slots if isinstance(s, dict)}
+
+    paradigm = ParadigmTemplate(
+        name=paradigm_name,
+        version="v1",
+        domain=cand.domain,
+        slots=slots_dict,
+    )
+    session.add(paradigm)
+    await session.flush()
+
+    # Create slot records
+    slot_count = 0
+    for i, s in enumerate(raw_slots if isinstance(raw_slots, list) else []):
+        if not isinstance(s, dict) or not s.get("name"):
+            continue
+        slot = Slot(
+            paradigm_id=paradigm.id,
+            name=s["name"],
+            description=s.get("description"),
+            slot_type=s.get("slot_type", "architecture"),
+            is_required=s.get("is_required", True),
+            sort_order=i,
+        )
+        session.add(slot)
+        slot_count += 1
+
+    # Update candidate status
+    cand.status = "approved"
+    cand.promoted_paradigm_id = paradigm.id
+    cand.reviewed_by = reviewer
+    cand.reviewed_at = datetime.now(timezone.utc)
+
+    # Record taxonomy version
+    from backend.models.review import TaxonomyVersion
+    tv = TaxonomyVersion(
+        entity_type="paradigm_template",
+        entity_id=paradigm.id,
+        action="created_from_candidate",
+        version_label=f"{paradigm_name}_v1",
+        changed_by=reviewer,
+        change_summary=f"Promoted from candidate (trigger_count={cand.trigger_count})",
+    )
+    session.add(tv)
+
+    await session.flush()
+    return {
+        "paradigm_id": str(paradigm.id),
+        "name": paradigm_name,
+        "domain": cand.domain,
+        "slots_created": slot_count,
+        "candidate_trigger_count": cand.trigger_count,
+    }
+
+
+async def reject_paradigm_candidate(
+    session: AsyncSession,
+    candidate_id: UUID,
+    reviewer: str,
+    reason: str | None = None,
+) -> dict | None:
+    from backend.models.candidates import ParadigmCandidate
+    cand = await session.get(ParadigmCandidate, candidate_id)
+    if not cand:
+        return None
+
+    cand.status = "rejected"
+    cand.reviewed_by = reviewer
+    cand.reviewed_at = datetime.now(timezone.utc)
+    cand.review_notes = reason
+
+    await session.flush()
+    return {"candidate_id": str(candidate_id), "status": "rejected"}
+
+
+# ── Lineage candidates ──────────────────────────────────────────
+
+async def list_lineage_candidates(
+    session: AsyncSession,
+    status: str = "candidate",
+    limit: int = 50,
+) -> list[dict]:
+    from backend.models.lineage import DeltaCardLineage
+    from backend.models.delta_card import DeltaCard
+    from backend.models.paper import Paper
+
+    result = await session.execute(
+        select(DeltaCardLineage)
+        .where(DeltaCardLineage.status == status)
+        .order_by(DeltaCardLineage.created_at)
+        .limit(limit)
+    )
+    items = []
+    for ln in result.scalars():
+        child_dc = await session.get(DeltaCard, ln.child_delta_card_id)
+        parent_dc = await session.get(DeltaCard, ln.parent_delta_card_id)
+        child_paper = await session.get(Paper, child_dc.paper_id) if child_dc else None
+        parent_paper = await session.get(Paper, parent_dc.paper_id) if parent_dc else None
+
+        items.append({
+            "id": str(ln.id),
+            "child_title": child_paper.title[:80] if child_paper else "Unknown",
+            "parent_title": parent_paper.title[:80] if parent_paper else "Unknown",
+            "relation_type": ln.relation_type,
+            "confidence": ln.confidence,
+            "status": ln.status,
+            "created_at": ln.created_at.isoformat() if ln.created_at else None,
+        })
+    return items

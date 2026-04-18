@@ -19,7 +19,7 @@ from backend.models.direction import DirectionCard, UserBookmark, UserEvent
 from backend.models.graph import IdeaDelta, Slot, MechanismFamily, GraphEdge, ImplementationUnit
 from backend.models.delta_card import DeltaCard
 from backend.models.assertion import GraphNode, GraphAssertion, GraphAssertionEvidence
-from backend.models.review import ReviewTask, HumanOverride, Alias
+from backend.models.review import ReviewTask, HumanOverride, Alias, TaxonomyVersion
 from backend.models.canonical_idea import CanonicalIdea, ContributionToCanonicalIdea
 from backend.models.lineage import DeltaCardLineage
 from backend.models.candidates import ParadigmCandidate, SlotCandidate, MechanismCandidate
@@ -38,7 +38,7 @@ __all__ = [
     "IdeaDelta", "Slot", "MechanismFamily", "GraphEdge", "ImplementationUnit",
     "DeltaCard",
     "GraphNode", "GraphAssertion", "GraphAssertionEvidence",
-    "ReviewTask", "HumanOverride", "Alias",
+    "ReviewTask", "HumanOverride", "Alias", "TaxonomyVersion",
     "CanonicalIdea", "ContributionToCanonicalIdea",
     "DeltaCardLineage",
     "ParadigmCandidate", "SlotCandidate", "MechanismCandidate",

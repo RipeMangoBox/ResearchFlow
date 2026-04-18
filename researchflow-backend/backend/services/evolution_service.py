@@ -120,8 +120,9 @@ async def link_to_parent_baselines(
 
     await session.flush()
 
-    # Create lineage records in independent table
+    # Create lineage records in independent table + auto review tasks
     from backend.models.lineage import DeltaCardLineage
+    from backend.services.review_service import create_review_task
     for pid in parent_ids:
         lineage = DeltaCardLineage(
             child_delta_card_id=card.id,
@@ -132,6 +133,16 @@ async def link_to_parent_baselines(
             source="system_inferred",
         )
         session.add(lineage)
+        await session.flush()
+        # Auto-create review task for lineage edge
+        await create_review_task(
+            session,
+            target_type="lineage",
+            target_id=lineage.id,
+            task_type="auto_review",
+            priority=3,
+            notes=f"builds_on edge: {card.id} → {pid}",
+        )
 
     # Create "builds_on" graph assertions
     from backend.services.delta_card_service import get_or_create_node

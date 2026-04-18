@@ -1,8 +1,9 @@
-"""Review, override, and alias models for the quality control system.
+"""Review, override, alias, and taxonomy versioning models.
 
-- ReviewTask: audit queue for delta_cards, assertions, idea_deltas
+- ReviewTask: audit queue for delta_cards, assertions, idea_deltas, lineage, candidates
 - HumanOverride: tracks manual corrections with before/after values
 - Alias: entity name normalization for mechanism families, bottlenecks, etc.
+- TaxonomyVersion: tracks ontology changes (paradigm/slot/mechanism creates/updates)
 """
 
 import uuid
@@ -106,4 +107,38 @@ class Alias(Base):
     __table_args__ = (
         Index("idx_aliases_entity", "entity_type", "entity_id"),
         Index("idx_aliases_alias", "alias"),
+    )
+
+
+class TaxonomyVersion(Base):
+    """Tracks ontology changes over time — paradigm/slot/mechanism creates/updates/merges.
+
+    Every change to the taxonomy gets a version record for audit trail and rollback.
+    """
+    __tablename__ = "taxonomy_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    entity_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # paradigm_template / slot / mechanism_family / canonical_idea
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    action: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )  # created / updated / merged / deprecated / created_from_candidate
+    version_label: Mapped[str | None] = mapped_column(String(100))
+    changed_by: Mapped[str | None] = mapped_column(String(50))
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    before_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    after_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_taxonomy_versions_entity", "entity_type", "entity_id"),
+        Index("idx_taxonomy_versions_action", "action"),
     )

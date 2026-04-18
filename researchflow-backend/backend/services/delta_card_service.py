@@ -488,6 +488,18 @@ async def run_delta_card_pipeline(
     # 5. Check publish gates
     dc_status, idea_status = await check_and_publish(session, delta_card, idea)
 
+    # 6. Auto-create review task if DeltaCard stays draft (low confidence / missing data)
+    if dc_status == "draft":
+        from backend.services.review_service import create_review_task
+        await create_review_task(
+            session,
+            target_type="delta_card",
+            target_id=delta_card.id,
+            task_type="auto_review",
+            priority=4,
+            notes=f"DeltaCard did not auto-publish (missing frame/slots/evidence)",
+        )
+
     logger.info(
         f"DeltaCard pipeline complete: paper={paper_id}, "
         f"delta_card={delta_card.id}({dc_status}), "
