@@ -225,6 +225,25 @@ async def sync_analyses(
     return {"exported": exported}
 
 
+@router.post("/refresh-connections")
+async def refresh_connections(
+    paper_id: UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Re-link papers: update same_family, downstream_count, baseline promotions.
+
+    Call after importing new papers to update relationships across the KB.
+    If paper_id given, refresh that paper + neighbors only.
+    """
+    try:
+        result = await evolution_service.refresh_connections(session, paper_id)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
+
+
 @router.post("/export/obsidian-vault")
 async def export_obsidian_vault(
     session: AsyncSession = Depends(get_session),

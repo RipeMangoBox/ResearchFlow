@@ -23,18 +23,24 @@ logger = logging.getLogger(__name__)
 
 # ── Prompt templates ────────────────────────────────────────────
 
-L3_SYSTEM = """You are a research paper analyst. Produce a structured JSON analysis.
-Focus on what the paper actually changes relative to the standard approach in its field.
-Distinguish structural changes from plugin patches.
-Be honest about confidence — mark speculative claims as such."""
+L3_SYSTEM = """You are a critical research paper analyst. Produce a structured JSON analysis.
+
+CRITICAL RULES:
+1. Distinguish STORY from SUBSTANCE: what the paper CLAIMS vs what the EXPERIMENTS PROVE.
+2. Distinguish structural changes from plugin patches. A true structural change rewires the pipeline; a plugin adds a module without changing the flow.
+3. Be honest about confidence — mark speculative claims as such.
+4. If this is a survey, benchmark, position, or theoretical paper (no new method proposed), set paper_type accordingly and set changed_slots to [].
+5. Check if the paper's abstract claims match its experimental results. Flag discrepancies."""
 
 L3_PROMPT_TEMPLATE = """Analyze this paper and return a JSON object with these fields:
 
-- problem_summary: What problem does this paper solve? (2-3 sentences, Chinese)
-- method_summary: What is the core method? (3-5 sentences, Chinese)
-- evidence_summary: Key experimental results and ablations. (2-3 sentences, Chinese)
+- paper_type: ONE of "method" | "survey" | "benchmark" | "position" | "theoretical" | "dataset"
+- problem_summary: What problem does this paper solve? Distinguish the PAPER'S CLAIM from what experiments actually prove. (2-3 sentences, Chinese)
+- method_summary: What is the core method? What did they ACTUALLY change vs inherit from prior work? (3-5 sentences, Chinese)
+- evidence_summary: Key experimental results. Are baselines strong and fair? Any cherry-picking? (2-3 sentences, Chinese)
 - core_intuition: The "Aha!" moment — what changed and why it works. (2-3 sentences, Chinese)
-- changed_slots: Array of method slots this paper changes (e.g. ["denoiser", "conditioning", "sampling"])
+- narrative_vs_substance: Does the paper's narrative (abstract/intro) match its experimental evidence? Note any discrepancies. (1-2 sentences, Chinese)
+- changed_slots: Array of method slots this paper changes (e.g. ["denoiser", "conditioning", "sampling"]). Empty array [] for surveys/benchmarks.
 - is_plugin_patch: Boolean — is this a small plugin fix or a structural change?
 - worth_deep_read: Boolean — should this paper be analyzed in full depth?
 - confidence_notes: Array of {{claim, confidence (0-1), basis ("text_stated"|"experiment_backed"|"inferred"|"speculative"), reasoning}}
@@ -47,12 +53,22 @@ Category: {category}
 
 Return ONLY valid JSON, no markdown fences."""
 
-L4_SYSTEM = """You are a senior research analyst producing deep paper analysis.
+L4_SYSTEM = """You are a senior research analyst producing deep, critical paper analysis.
+
 Your analysis must:
 1. Align findings to the domain's canonical paradigm — specify which slots changed
-2. Distinguish code-verified facts from speculative interpretations
-3. Extract atomic evidence units with source anchors
-4. Assess cross-domain transferability
+2. DISTINGUISH STORY FROM SUBSTANCE: what the paper claims in abstract/intro vs what experiments actually prove
+3. VERIFY BASELINES: are they the strongest available? Are comparisons fair? Are any strong baselines suspiciously absent?
+4. Extract atomic evidence units with source anchors — distinguish code-verified from text-stated from inferred
+5. Assess cross-domain transferability
+6. For surveys/benchmarks/theoretical papers: adapt analysis — don't force method/slot analysis on non-method papers
+
+CRITICAL: Do not take the paper's self-assessment at face value. Cross-check claims against tables/figures. Flag if:
+- Abstract claims improvement X% but tables show it's only on subset
+- Baselines are from 2+ years ago when stronger recent ones exist
+- Ablations don't isolate the claimed contribution
+- The 'structural change' is actually just adding a module
+
 Output in Chinese. Be rigorous about evidence quality."""
 
 L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON format:
@@ -100,7 +116,10 @@ L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON f
   "key_figures": [
     {{"fig_ref": "Table 2 / Figure 3 / Algorithm 1", "caption": "what this figure shows", "evidence_for": "which claim this figure supports (1 sentence, Chinese)"}}
   ],
+  "paper_type": "ONE of: method | survey | benchmark | position | theoretical | dataset",
+  "narrative_vs_substance": "Does abstract/intro match experimental results? Note discrepancies (1-2 sentences, Chinese)",
   "baseline_paper_titles": ["list of paper titles this work directly builds on or compares against"],
+  "baseline_fairness": "Are baselines the strongest available? Any strong methods suspiciously absent? (1-2 sentences, Chinese)",
   "same_family_method": "name of the broader method family this belongs to (e.g. direct_preference_optimization, group_relative_reward, constitutional_ai)",
   "confidence_notes": [
     {{"claim": "...", "confidence": 0.0-1.0, "basis": "...", "reasoning": "..."}}
@@ -174,7 +193,10 @@ async def skim_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | N
     )
 
     # Parse JSON response
-    analysis_data = _parse_json_response(resp.text)
+    analysis_data = _parse_json_response(
+        resp.text,
+        required_fields=["problem_summary", "method_summary", "changed_slots"],
+    )
 
     # Mark old L3 as superseded
     old_l3 = await session.execute(
@@ -271,7 +293,23 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         prompt_version="l4_v1",
     )
 
-    analysis_data = _parse_json_response(resp.text)
+    analysis_data = _parse_json_response(
+        resp.text,
+        required_fields=["problem_summary", "method_summary", "evidence_summary",
+                         "changed_slots", "delta_card", "evidence_units"],
+    )
+
+    # Adjust confidence based on input quality
+    input_length = len(text_content)
+    if input_length < 500:
+        analysis_data["_input_quality"] = "title_only"
+        analysis_confidence = 0.3
+    elif input_length < 2000:
+        analysis_data["_input_quality"] = "abstract_only"
+        analysis_confidence = 0.5
+    else:
+        analysis_data["_input_quality"] = "full_text"
+        analysis_confidence = 0.8
 
     # Mark old L4 as superseded
     old_l4 = await session.execute(
@@ -296,7 +334,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         model_name=resp.model,
         prompt_version="l4_v1",
         schema_version="v1",
-        confidence=0.8,
+        confidence=analysis_confidence,
         problem_summary=analysis_data.get("problem_summary"),
         method_summary=analysis_data.get("method_summary"),
         evidence_summary=analysis_data.get("evidence_summary"),
@@ -347,6 +385,13 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
 
     # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
     await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
+
+    # ── Auto-refresh connections (incremental cross-update) ────
+    try:
+        from backend.services.evolution_service import refresh_connections
+        await refresh_connections(session, paper.id)
+    except Exception as e:
+        logger.warning(f"Connection refresh failed for {paper.id}: {e}")
 
     # ── Auto-export to paperAnalysis/ Markdown ───────────────
     try:
@@ -544,28 +589,44 @@ async def skim_batch(session: AsyncSession, limit: int = 5) -> list[dict]:
 
 # ── Helpers ─────────────────────────────────────────────────────
 
-def _parse_json_response(text: str) -> dict:
-    """Parse JSON from LLM response, handling common formatting issues."""
-    # Strip markdown code fences
+def _parse_json_response(text: str, required_fields: list[str] | None = None) -> dict:
+    """Parse JSON from LLM response with validation.
+
+    Handles: markdown fences, leading/trailing text, nested JSON.
+    Validates: required fields present and non-None.
+    Returns empty dict ONLY as last resort (logged as error).
+    """
     text = text.strip()
+    # Strip markdown code fences
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.startswith("```")]
         text = "\n".join(lines)
 
+    parsed = None
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         # Try to find JSON object in the text
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             try:
-                return json.loads(text[start:end])
+                parsed = json.loads(text[start:end])
             except json.JSONDecodeError:
                 pass
-    logger.warning(f"Failed to parse LLM JSON response: {text[:200]}")
-    return {}
+
+    if parsed is None:
+        logger.error(f"FAILED to parse LLM JSON (total failure): {text[:300]}")
+        return {}
+
+    # Validate required fields
+    if required_fields:
+        missing = [f for f in required_fields if not parsed.get(f)]
+        if missing:
+            logger.warning(f"LLM JSON missing required fields: {missing}. Available keys: {list(parsed.keys())}")
+
+    return parsed
 
 
 def _build_report_md(paper: Paper, data: dict) -> str:

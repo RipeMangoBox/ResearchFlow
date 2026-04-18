@@ -2,8 +2,11 @@
 
 Every call is logged to model_runs for cost tracking and auditability.
 Falls back to mock mode when no API key is configured.
+
+v3.3: Retry with exponential backoff, timeout handling, structured error recovery.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -15,6 +18,9 @@ from backend.config import settings
 from backend.models.system import ModelRun
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2.0  # seconds
 
 
 class LLMResponse:
@@ -40,22 +46,53 @@ async def call_llm(
     job_id: UUID | None = None,
     prompt_version: str = "v1",
 ) -> LLMResponse:
-    """Call an LLM and return structured response.
+    """Call an LLM with retry and return structured response.
 
     Provider selection:
     1. If ANTHROPIC_API_KEY is set → use Claude
     2. If OPENAI_API_KEY is set → use OpenAI
     3. Otherwise → mock mode (returns placeholder)
+
+    Retries up to MAX_RETRIES times with exponential backoff on transient errors.
     """
     start = time.monotonic()
 
-    if settings.anthropic_api_key:
-        resp = await _call_anthropic(prompt, system, model or "claude-sonnet-4-20250514", max_tokens, temperature)
-    elif settings.openai_api_key:
-        default_model = settings.openai_model or "gpt-4o-mini"
-        resp = await _call_openai(prompt, system, model or default_model, max_tokens, temperature)
-    else:
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         resp = _mock_response(prompt, system)
+    else:
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                if settings.anthropic_api_key:
+                    resp = await asyncio.wait_for(
+                        _call_anthropic(prompt, system, model or "claude-sonnet-4-20250514", max_tokens, temperature),
+                        timeout=180,
+                    )
+                else:
+                    default_model = settings.openai_model or "gpt-4o-mini"
+                    resp = await asyncio.wait_for(
+                        _call_openai(prompt, system, model or default_model, max_tokens, temperature),
+                        timeout=180,
+                    )
+                break  # Success
+            except asyncio.TimeoutError:
+                last_error = "LLM call timed out after 180s"
+                logger.warning(f"LLM timeout (attempt {attempt+1}/{MAX_RETRIES})")
+            except Exception as e:
+                last_error = str(e)
+                err_str = str(e).lower()
+                # Retry on transient errors only
+                if any(kw in err_str for kw in ("rate_limit", "429", "500", "502", "503", "timeout", "connection")):
+                    logger.warning(f"LLM transient error (attempt {attempt+1}/{MAX_RETRIES}): {e}")
+                else:
+                    raise  # Non-transient error, fail immediately
+
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                logger.info(f"Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+        else:
+            raise RuntimeError(f"LLM call failed after {MAX_RETRIES} attempts: {last_error}")
 
     # Log to model_runs
     if session:

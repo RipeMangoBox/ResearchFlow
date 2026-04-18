@@ -380,3 +380,77 @@ async def _card_summary(session: AsyncSession, card: DeltaCard, depth: int = 0) 
         "structurality_score": card.structurality_score,
         "depth_in_tree": depth,
     }
+
+
+# ── Incremental cross-update ─────────────────────────────────
+
+async def refresh_connections(
+    session: AsyncSession,
+    paper_id: UUID | None = None,
+) -> dict:
+    """Re-link papers after new arrivals. Updates same_family, downstream_count.
+
+    If paper_id is given, refresh connections for that paper and its neighbors.
+    If None, refresh all papers with DeltaCards.
+    """
+    stats = {"same_family_updated": 0, "downstream_refreshed": 0, "baselines_promoted": 0}
+
+    if paper_id:
+        # Refresh one paper + its neighbors
+        card = await session.execute(
+            select(DeltaCard).where(
+                DeltaCard.paper_id == paper_id,
+                DeltaCard.status != "deprecated",
+            ).order_by(desc(DeltaCard.created_at)).limit(1)
+        )
+        dc = card.scalar_one_or_none()
+        if dc:
+            await _refresh_same_family(session, dc, stats)
+    else:
+        # Refresh all
+        all_cards = await session.execute(
+            select(DeltaCard).where(DeltaCard.status != "deprecated")
+        )
+        for dc in all_cards.scalars():
+            await _refresh_same_family(session, dc, stats)
+
+    # Recompute downstream counts from lineage table
+    from backend.models.lineage import DeltaCardLineage
+    parent_counts = await session.execute(
+        select(
+            DeltaCardLineage.parent_delta_card_id,
+            func.count().label("cnt"),
+        ).where(
+            DeltaCardLineage.status.in_(["candidate", "published"])
+        ).group_by(DeltaCardLineage.parent_delta_card_id)
+    )
+    for parent_id, cnt in parent_counts:
+        parent = await session.get(DeltaCard, parent_id)
+        if parent:
+            old_count = parent.downstream_count or 0
+            parent.downstream_count = cnt
+            stats["downstream_refreshed"] += 1
+            if cnt >= BASELINE_ADOPTION_THRESHOLD and not parent.is_established_baseline:
+                parent.is_established_baseline = True
+                stats["baselines_promoted"] += 1
+
+    await session.flush()
+    return stats
+
+
+async def _refresh_same_family(session: AsyncSession, dc: DeltaCard, stats: dict):
+    """Update same_family_paper_ids for a single DeltaCard."""
+    if not dc.mechanism_family_ids:
+        return
+
+    same_fam = await session.execute(
+        select(DeltaCard.paper_id).where(
+            DeltaCard.mechanism_family_ids.overlap(dc.mechanism_family_ids),
+            DeltaCard.paper_id != dc.paper_id,
+            DeltaCard.status != "deprecated",
+        ).limit(20)
+    )
+    new_ids = [r[0] for r in same_fam]
+    if new_ids != (dc.same_family_paper_ids or []):
+        dc.same_family_paper_ids = new_ids if new_ids else None
+        stats["same_family_updated"] += 1
