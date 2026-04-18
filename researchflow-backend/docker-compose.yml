@@ -74,6 +74,55 @@ services:
           memory: 1024M
     command: arq backend.workers.arq_app.WorkerSettings
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file: .env
+    ports:
+      - "0.0.0.0:8001:8001"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    command: python -m backend.mcp.server --sse --port 8001
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+
 volumes:
   pgdata:
   redisdata:
+  caddy_data:
+  caddy_config:

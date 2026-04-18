@@ -1,9 +1,6 @@
 {$DOMAIN:localhost} {
-    # API + MCP
+    # API
     handle /api/* {
-        reverse_proxy api:8000
-    }
-    handle /mcp/* {
         reverse_proxy api:8000
     }
     handle /docs {
@@ -11,6 +8,14 @@
     }
     handle /openapi.json {
         reverse_proxy api:8000
+    }
+
+    # MCP SSE server (remote connection for Claude Code)
+    handle /sse {
+        reverse_proxy mcp:8001
+    }
+    handle /messages/* {
+        reverse_proxy mcp:8001
     }
 
     # Frontend (everything else)
