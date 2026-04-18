@@ -266,7 +266,10 @@ async def export_obsidian_vault(
                pa.core_intuition, pa.full_report_md, pa.changed_slots,
                pa.extracted_figure_images
         FROM papers p
-        LEFT JOIN delta_cards dc ON dc.id = p.current_delta_card_id
+        LEFT JOIN delta_cards dc ON dc.id = COALESCE(
+            p.current_delta_card_id,
+            (SELECT id FROM delta_cards dc2 WHERE dc2.paper_id = p.id AND dc2.status != 'deprecated' ORDER BY dc2.created_at DESC LIMIT 1)
+        )
         LEFT JOIN paper_analyses pa ON pa.paper_id = p.id
             AND pa.is_current = true AND pa.level = 'l4_deep'
         WHERE p.state NOT IN ('archived_or_expired', 'skip')
