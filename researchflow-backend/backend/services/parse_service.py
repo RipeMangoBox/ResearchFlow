@@ -131,10 +131,29 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
     if old_analysis:
         old_analysis.is_current = False
 
-    # ── Upload figure images to object storage ───────────────────
-    figure_image_records = await _upload_figure_images(
-        paper_id, pymupdf_result.figure_images, figure_captions
-    )
+    # ── Extract and upload figures ────────────────────────────────
+    # Primary: VLM-guided precise extraction (1 API call)
+    # Fallback: PyMuPDF heuristic extraction (free, CPU only)
+    figure_image_records = []
+    if settings.anthropic_api_key and pdf_path:
+        try:
+            from backend.services.figure_extraction_service import extract_figures_precise
+            figure_image_records = await extract_figures_precise(
+                pdf_path=pdf_path,
+                paper_id=paper_id,
+                paper_title=paper.title,
+                session=session,
+            )
+            if figure_image_records:
+                logger.info(f"VLM figure extraction: {len(figure_image_records)} figures for {paper_id}")
+        except Exception as e:
+            logger.warning(f"VLM figure extraction failed, falling back to heuristic: {e}")
+
+    # Fallback: heuristic extraction if VLM didn't produce results
+    if not figure_image_records:
+        figure_image_records = await _upload_figure_images(
+            paper_id, pymupdf_result.figure_images, figure_captions
+        )
 
     # ── Build parse metadata ─────────────────────────────────────
     parse_metadata = {
@@ -197,64 +216,6 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
 
     await session.flush()
     await session.refresh(analysis)
-
-    # ── VLM post-processing (Claude API, no GPU needed) ──────
-    # Runs after L2 is saved. Classifies key figures and extracts
-    # formulas from images that PyMuPDF/GROBID missed.
-    if figure_image_records and settings.anthropic_api_key:
-        try:
-            from backend.services.vlm_extraction_service import (
-                classify_and_describe_figures,
-                extract_formulas_from_images,
-            )
-            # Classify top 3 figures (cost-efficient)
-            fig_descriptions = await classify_and_describe_figures(
-                session, paper_id,
-                figure_images=figure_image_records,
-                figure_captions=figure_captions,
-                paper_title=paper.title,
-                max_figures=3,
-            )
-            if fig_descriptions:
-                # Store VLM descriptions alongside raw figure data
-                for desc in fig_descriptions:
-                    for rec in figure_image_records:
-                        if rec.get("figure_num") == desc.get("figure_num"):
-                            rec["semantic_role"] = desc.get("semantic_role", "other")
-                            rec["vlm_description"] = desc.get("description", "")
-                            rec["is_key_figure"] = desc.get("is_key_figure", False)
-                            rec["key_elements"] = desc.get("key_elements", [])
-                            break
-
-                # Update the analysis with enriched figure data
-                analysis.extracted_figure_images = figure_image_records
-                parse_metadata["vlm_figures_classified"] = len(fig_descriptions)
-
-            # Extract formulas from images (for formulas rendered as images)
-            vlm_formulas = await extract_formulas_from_images(
-                session, paper_id,
-                figure_images=figure_image_records,
-                paper_title=paper.title,
-            )
-            if vlm_formulas:
-                # Append VLM-extracted formulas to existing formulas
-                existing_formulas = list(analysis.extracted_formulas or [])
-                for f in vlm_formulas:
-                    if f["latex"] not in existing_formulas:
-                        existing_formulas.append(f["latex"])
-                analysis.extracted_formulas = existing_formulas[:40]
-                parse_metadata["vlm_formulas_extracted"] = len(vlm_formulas)
-
-            # Update parse metadata
-            if analysis.evidence_spans:
-                analysis.evidence_spans["parse_metadata"] = parse_metadata
-            parse_metadata["parsers_used"].append("vlm")
-
-            await session.flush()
-            logger.info(f"VLM post-processing done for {paper_id}")
-
-        except Exception as e:
-            logger.warning(f"VLM post-processing failed for {paper_id}: {e}")
 
     return analysis
 
