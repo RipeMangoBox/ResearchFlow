@@ -1,8 +1,8 @@
-# ResearchFlow Architecture v3.1
+# ResearchFlow Architecture v3.2
 
 ## 1. 一句话定义
 
-**PostgreSQL 是唯一真相源。DeltaCard 是中间真相层。一切 UI/导出/Agent 都是投影。**
+**PostgreSQL 是唯一真相源。DeltaCard 是不可变中间真相层。一切 UI/导出/Agent 都是投影。**
 
 ```
                         ┌─────────────────────┐
@@ -14,10 +14,10 @@
 │                        Core Backend                                 │
 │                                                                     │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │ 81 API 路由  │  │ 18 MCP 工具  │  │ 25 Service 模块            │ │
+│  │ 95+ API 路由 │  │ 18 MCP 工具  │  │ 27 Service 模块            │ │
 │  └─────────────┘  └──────────────┘  └────────────────────────────┘ │
 │                                                                     │
-│  PostgreSQL (31 表) + pgvector + Redis + 对象存储                    │
+│  PostgreSQL (40 表 + 4 物化视图) + pgvector + Redis + 对象存储       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -28,19 +28,26 @@
 ### 2.1 核心数据模型
 
 ```
-Paper (容器)
-  └─→ DeltaCard (中��真相层: 这篇论文改了��么)
+Paper (容器, current_delta_card_id 指向当前发布版)
+  └─→ DeltaCard (不可变快照, append-only, 带 analysis_run_id/source_asset_hash)
         ├─→ IdeaDelta (知识原子: 可复用的改进描述)
         │     ├─→ EvidenceUnit (证据: 实验结果/代码验证/推理)
-        │     └─→ GraphAssertion (图谱边: supported_by/changes_slot/...)
-        ├─→ parent_delta_card_ids (DAG 继承: 基于哪些方法改进的)
-        └─→ ProjectBottleneck (解决了什么瓶颈)
+        │     ├─→ GraphAssertion (图谱边: supported_by/changes_slot/...)
+        │     └─→ ContributionToCanonicalIdea (映射到跨论文归一概念)
+        ├─→ DeltaCardLineage (独立 DAG 继承表: builds_on/extends/replaces)
+        └─→ PaperBottleneckClaim (论文声称解决的瓶颈)
 
-ParadigmTemplate (领域标准范式: RL/VLM/Agent/MotionGen/...)
-  └─→ Slot (范式中的可替换组件: denoiser/reward/encoder/...)
+ProjectBottleneck (全局瓶颈本体)
+  ├─→ PaperBottleneckClaim (论文级事实)
+  └─→ ProjectFocusBottleneck (项目级决策, 带负约束)
 
-MechanismFamily (机制族: diffusion/flow_matching/RL/...)
-  └─→ Alias (别名: DDPM → diffusion, FM → flow_matching)
+CanonicalIdea (跨论文归一概念层)
+  └─→ ContributionToCanonicalIdea (N 个贡献 → M 个概念)
+
+ParadigmTemplate / Slot / MechanismFamily (领域本体)
+  └─→ ParadigmCandidate / SlotCandidate / MechanismCandidate (候选层, 需审核)
+
+TaxonomyVersion (所有 ontology 变更的版本快照)
 ```
 
 ### 2.2 方法演化 DAG (核心创新)
@@ -57,10 +64,13 @@ GRPO (depth=0, baseline=true, downstream=7)
     └─�� GDPO+image_thinking (depth=2, parent=[GDPO])
 ```
 
-**自动升级规则**:
+**v3.2 升级规则 (candidate → review → publish)**:
 - 当一个改进被 ≥3 篇论文用作 baseline → `is_established_baseline = true`
 - 当它还具有结构性 (`structurality_score ≥ 0.6`) → 候选新范式版本
-- `promote_to_paradigm()` 创建 `rl_standard_v2` 替代 `rl_standard_v1`
+- `builds_on` 边默认为 `candidate` 状态，需审核后发布
+- 自动发现的范式创建 `ParadigmCandidate`，不直接创建 `ParadigmTemplate`
+- 通过 `POST /reviews/candidates/paradigms/{id}/promote` 审核后升级
+- 所有 ontology 变更记录在 `taxonomy_versions` 表中
 
 ### 2.3 论文过滤评分
 
@@ -198,24 +208,33 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 
 ---
 
-## 6. 数据库 Schema 总览 (31 表, 7 次迁移)
+## 6. 数据库 Schema 总览 (40 表 + 4 物化视图, 10 次迁移)
 
 ### 核心表
 
 | 表 | 行数概念 | 说明 |
 |----|---------|------|
-| papers | 每篇论文 1 行 | 60+ 列: 元数据 + 评分 + 状态 |
-| delta_cards | 每篇论文 1 行 | 中间真相层 + DAG 继承字段 |
-| idea_deltas | 每篇论文 1 行 | 可复用知识原子 |
+| papers | 每篇论文 1 行 | 60+ 列: 元数据 + 评分 + 状态 + current_delta_card_id |
+| delta_cards | 每篇论文 N 行 (append-only) | 不可变快照 + analysis_run_id/source_asset_hash |
+| idea_deltas | 每篇论文 1+ 行 | 可复用知识原子 |
 | evidence_units | 每篇 2-5 行 | 证据单元 (实验/代码/推理) |
 | graph_assertions | 每篇 4-8 行 | 图谱边 + 生命周期 |
 | graph_nodes | 每个实体 1 行 | 统一节点注册 |
 | paradigm_templates | 每个领域 1-3 行 | 范式模板 + 版本演化 |
 | slots | 每范式 4-8 行 | 可替换组件 |
 | mechanism_families | ~20 行 | 机制族 (层级结构) |
-| project_bottlenecks | 每瓶颈 1 行 | 研究瓶颈 (L4 自动提取) |
-| review_tasks | 待审核项 | 审核队列 |
+| project_bottlenecks | 每瓶颈 1 行 | 全局瓶颈本体 |
+| review_tasks | 待审核项 | 审核队列 (自动 + 人工) |
 | aliases | 别名映射 | 实体归一 |
+| **paper_bottleneck_claims** | 每篇 0-3 行 | **v3.2** 论文级瓶颈声称 |
+| **project_focus_bottlenecks** | 每项目 N 行 | **v3.2** 项目级关注瓶颈 (带负约束) |
+| **canonical_ideas** | 跨论文概念 | **v3.2** 归一概念层 |
+| **contribution_to_canonical_idea** | 1:N 映射 | **v3.2** 论文贡献→概念 |
+| **delta_card_lineage** | 每对 1 行 | **v3.2** 独立演化 DAG (candidate 默认) |
+| **paradigm_candidates** | 候选项 | **v3.2** 候选范式 (需审核) |
+| **slot_candidates** | 候选项 | **v3.2** 候选槽位 |
+| **mechanism_candidates** | 候选项 | **v3.2** 候选机制族 |
+| **taxonomy_versions** | 每次变更 1 行 | **v3.2** ontology 变更快照 |
 
 ### 支��表
 
@@ -224,17 +243,27 @@ graph_edges (legacy), implementation_units, transfer_atoms, search_sessions,
 reading_plans, direction_cards, digests, jobs, model_runs, execution_memories,
 user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evidence
 
+### 物化视图 (CQRS-lite)
+
+| 视图 | 说明 | 刷新 |
+|------|------|------|
+| paper_search_docs | 论文 + DeltaCard + 证据数 去规范化 | `POST /search/refresh-views` |
+| idea_search_docs | IdeaDelta + 论文 + DeltaCard 去规范化 | 同上 |
+| lineage_view | 方法演化 DAG + 论文标题展平 | 同上 |
+| review_queue_view | 待审核项 + 目标摘要 | 同上 |
+
 ---
 
-## 7. API 路由总览 (81 路由, 13 Router)
+## 7. API 路由总览 (95+ 路由, 14 Router)
 
 | Router | 前缀 | 关键端点 |
 |--------|------|---------|
 | pipeline | /pipeline | `run`, `batch`, `init-domain`, `discover`, `build-domain`, `lineage`, `evolution` |
 | explore | /explore | `start`, `step`, `search`, `summary` |
-| assertions | /assertions | CRUD + `reviews/*` + `overrides` + `aliases` |
+| assertions | /assertions | CRUD + `aliases` |
 | graph | /graph | `stats`, `quality`, `ideas`, `paradigms`, `mechanisms` |
-| search | /search | `hybrid`, `ideas`, `bottlenecks`, `mechanisms`, `transfers` |
+| search | /search | `hybrid`, `ideas`, `bottlenecks`, `mechanisms`, `transfers`, **`query`** (意图路由), **`refresh-views`** |
+| **reviews** | /reviews | **v3.2** 队列CRUD, `approve`, `reject`, `assign`, `override`, `candidates/paradigms`, `candidates/lineage` |
 | papers | /papers | CRUD + 列表 + 过滤 |
 | import | /import | `links`, `pdf`, `parse` |
 | analyses | /analyses | `skim`, `deep`, `batch` |

@@ -10,7 +10,7 @@ Hierarchy: Paper → PaperAnalysis → DeltaCard → IdeaDelta → GraphAssertio
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Index, SmallInteger, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,20 +31,20 @@ class DeltaCard(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     paper_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
-    )  # FK → papers.id (enforced in migration)
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
     analysis_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True)
-    )  # FK → paper_analyses.id
+        UUID(as_uuid=True), ForeignKey("paper_analyses.id")
+    )
     frame_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True)
-    )  # FK → paradigm_templates.id
+        UUID(as_uuid=True), ForeignKey("paradigm_templates.id")
+    )
 
     # Paradigm alignment
     baseline_paradigm: Mapped[str | None] = mapped_column(Text)
     primary_bottleneck_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True)
-    )  # FK → project_bottlenecks.id
+        UUID(as_uuid=True), ForeignKey("project_bottlenecks.id")
+    )
     changed_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     unchanged_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     mechanism_family_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, SmallInteger, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,8 +18,12 @@ class EvidenceUnit(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    paper_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paper_analyses.id")
+    )
 
     # Graph FK links (Layer 3→4 connection)
     idea_delta_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

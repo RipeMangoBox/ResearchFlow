@@ -33,7 +33,9 @@ class ProjectBottleneck(Base):
 
     # Graph links
     domain: Mapped[str | None] = mapped_column(String(100))
-    paradigm_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    paradigm_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("paradigm_templates.id")
+    )
 
     embedding = mapped_column(Vector(1536), nullable=True)
 

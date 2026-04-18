@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    ForeignKey,
     Index,
     SmallInteger,
     String,
@@ -26,7 +27,9 @@ class PaperAnalysis(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    paper_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
     level: Mapped[AnalysisLevel] = mapped_column(
         Enum(AnalysisLevel, name="analysis_level", create_type=False,
              values_callable=lambda e: [m.value for m in e]),
