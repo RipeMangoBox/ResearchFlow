@@ -76,6 +76,14 @@ class DeltaCard(Base):
     failure_modes: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     evaluation_context: Mapped[str | None] = mapped_column(Text)
 
+    # Key equations & figures (selected by LLM during L4)
+    # Schema: [{latex, slot_affected, explanation}]
+    key_equations: Mapped[dict | None] = mapped_column(JSONB)
+    # Schema: [{fig_ref, caption, evidence_for, image_object_key?}]
+    key_figures: Mapped[dict | None] = mapped_column(JSONB)
+    # Papers using the same mechanism family
+    same_family_paper_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+
     # Evidence references
     evidence_refs: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
 

@@ -117,6 +117,8 @@ async def build_delta_card(
         mechanism_family_ids=mechanism_family_ids,
         delta_statement=delta_statement[:2000],
         key_ideas_ranked=key_ideas if key_ideas else None,
+        key_equations=analysis_data.get("key_equations"),
+        key_figures=analysis_data.get("key_figures"),
         structurality_score=structurality,
         extensionability_score=extensionability,
         transferability_score=transferability,
@@ -499,6 +501,21 @@ async def run_delta_card_pipeline(
             priority=4,
             notes=f"DeltaCard did not auto-publish (missing frame/slots/evidence)",
         )
+
+    # 7. Populate same-family paper IDs (papers sharing mechanism families)
+    if mechanism_family_ids:
+        from backend.models.paper import Paper
+        same_fam = await session.execute(
+            select(DeltaCard.paper_id).where(
+                DeltaCard.mechanism_family_ids.overlap(mechanism_family_ids),
+                DeltaCard.paper_id != paper_id,
+                DeltaCard.status != "deprecated",
+            ).limit(20)
+        )
+        same_ids = [r[0] for r in same_fam]
+        if same_ids:
+            delta_card.same_family_paper_ids = same_ids
+            await session.flush()
 
     logger.info(
         f"DeltaCard pipeline complete: paper={paper_id}, "

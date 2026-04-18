@@ -260,8 +260,10 @@ async def export_obsidian_vault(
                dc.delta_statement, dc.baseline_paradigm,
                dc.structurality_score AS dc_struct,
                dc.key_ideas_ranked, dc.assumptions, dc.failure_modes,
+               dc.key_equations, dc.key_figures, dc.same_family_paper_ids,
+               dc.changed_slot_ids, dc.unchanged_slot_ids,
                pa.problem_summary, pa.method_summary, pa.evidence_summary,
-               pa.core_intuition, pa.full_report_md
+               pa.core_intuition, pa.full_report_md, pa.changed_slots
         FROM papers p
         LEFT JOIN delta_cards dc ON dc.id = p.current_delta_card_id
         LEFT JOIN paper_analyses pa ON pa.paper_id = p.id
@@ -312,7 +314,10 @@ async def export_obsidian_vault(
         if p.mechanism_family:
             paper_mechanisms[p.title] = p.mechanism_family
 
-    # ── 2. Generate paper pages ───────────────────────────────
+    # Build id→title lookup for same_family resolution
+    id_to_title = {str(p.id): p.title for p in papers}
+
+    # ── 2. Generate paper pages (structured modification card) ─
     for p in papers:
         cat_dir = root / "papers" / (p.category or "Uncategorized")
         venue_dir = cat_dir / (f"{p.venue}_{p.year}" if p.venue and p.year else "Unknown")
@@ -320,6 +325,10 @@ async def export_obsidian_vault(
 
         safe_title = _sanitize_wikilink(p.title)
         filename = f"{p.title_sanitized or str(p.id)}.md"
+
+        # Resolve changed/unchanged slots
+        changed_slots = list(p.changed_slots) if p.changed_slots else []
+        is_structural = p.dc_struct is not None and float(p.dc_struct) >= 0.5
 
         # Frontmatter (Dataview-compatible)
         fm = {
@@ -337,50 +346,113 @@ async def export_obsidian_vault(
             "open_data": p.open_data,
             "mechanism_family": p.mechanism_family,
             "paradigm": p.baseline_paradigm,
+            "changed_slots": changed_slots,
         }
         if p.paper_link:
             fm["paper_link"] = p.paper_link
         if p.code_url:
             fm["code_url"] = p.code_url
 
-        # Body with wikilinks
         body = [f"# {p.title}\n"]
 
-        # Links section
-        links = []
-        if p.mechanism_family and p.mechanism_family in mechanism_names:
-            links.append(f"- Mechanism: [[{p.mechanism_family}]]")
-        if p.baseline_paradigm and p.baseline_paradigm in paradigm_names:
-            links.append(f"- Paradigm: [[{p.baseline_paradigm}]]")
-
-        # Lineage wikilinks
+        # ── One-line summary (callout) ──
+        slot_str = ", ".join(f"`{s}`" for s in changed_slots[:3]) if changed_slots else "unknown slots"
+        type_str = "structural" if is_structural else "plugin"
         ancestors = lineage_map.get(p.title, [])
-        for rel, parent in ancestors:
-            links.append(f"- {rel}: [[{_sanitize_wikilink(parent)}]]")
-        descendants = reverse_lineage.get(p.title, [])
-        for rel, child in descendants:
-            links.append(f"- Extended by: [[{_sanitize_wikilink(child)}]]")
+        ancestor_links = ", ".join(f"[[{_sanitize_wikilink(pt)}]]" for _, pt in ancestors[:3])
+        if ancestor_links:
+            body.append(f"> 基于 {ancestor_links}，改了 {slot_str}；类型：**{type_str}**\n")
+        elif p.baseline_paradigm:
+            body.append(f"> 基于 `{p.baseline_paradigm}` 范式，改了 {slot_str}；类型：**{type_str}**\n")
 
-        if links:
-            body.append("## Links\n")
-            body.extend(links)
+        # ── Baseline comparison table ──
+        body.append("## Baseline 对照\n")
+        body.append("| 项 | 内容 |")
+        body.append("|---|---|")
+        # Baselines
+        if ancestors:
+            body.append(f"| 基于 | {', '.join(f'[[{_sanitize_wikilink(pt)}]]' for _, pt in ancestors)} |")
+        elif p.baseline_paradigm:
+            body.append(f"| 基于 | `{p.baseline_paradigm}` (标准范式) |")
+        # Changed slots
+        if changed_slots:
+            body.append(f"| 改了 | {', '.join(changed_slots)} |")
+        # Type
+        body.append(f"| 类型 | {type_str} |")
+        # Mechanism
+        if p.mechanism_family:
+            if p.mechanism_family in mechanism_names:
+                body.append(f"| 机制 | [[{p.mechanism_family}]] |")
+            else:
+                body.append(f"| 机制 | {p.mechanism_family} |")
+        # Structurality
+        if p.dc_struct is not None:
+            body.append(f"| 结构性 | {float(p.dc_struct):.2f} |")
+        body.append("")
+
+        # ── Key equations ──
+        key_eqs = p.key_equations if isinstance(p.key_equations, list) else []
+        if key_eqs:
+            body.append("## 关键公式\n")
+            for eq in key_eqs[:4]:
+                if isinstance(eq, dict):
+                    latex = eq.get("latex", "")
+                    slot = eq.get("slot_affected", "")
+                    explanation = eq.get("explanation", "")
+                    body.append(f"- $${latex}$$")
+                    if slot or explanation:
+                        body.append(f"  - {slot}：{explanation}")
             body.append("")
 
-        # Analysis content
+        # ── Key figures ──
+        key_figs = p.key_figures if isinstance(p.key_figures, list) else []
+        if key_figs:
+            body.append("## 关键图表\n")
+            for fig in key_figs[:4]:
+                if isinstance(fig, dict):
+                    ref = fig.get("fig_ref", "")
+                    caption = fig.get("caption", "")
+                    evidence = fig.get("evidence_for", "")
+                    body.append(f"- **{ref}**: {caption}")
+                    if evidence:
+                        body.append(f"  - 证据：{evidence}")
+            body.append("")
+
+        # ── Same-family papers ──
+        same_fam_ids = p.same_family_paper_ids if p.same_family_paper_ids else []
+        same_fam_titles = [id_to_title.get(str(sid)) for sid in same_fam_ids if str(sid) in id_to_title]
+        if same_fam_titles:
+            body.append("## 同类型论文\n")
+            for t in same_fam_titles[:8]:
+                body.append(f"- [[{_sanitize_wikilink(t)}]]")
+            body.append("")
+
+        # ── Lineage position ──
+        descendants = reverse_lineage.get(p.title, [])
+        if ancestors or descendants:
+            body.append("## 演化位置\n")
+            for rel, parent in ancestors:
+                body.append(f"- 上游 ({rel}): [[{_sanitize_wikilink(parent)}]]")
+            for rel, child in descendants:
+                body.append(f"- 下游 ({rel}): [[{_sanitize_wikilink(child)}]]")
+            body.append("")
+
+        # ── Detailed analysis ──
+        body.append("## 详细分析\n")
         if p.full_report_md:
             body.append(p.full_report_md)
         else:
             if p.problem_summary:
-                body.append(f"## Part I: 问题与挑战\n\n{p.problem_summary}\n")
+                body.append(f"### Part I: 问题与挑战\n\n{p.problem_summary}\n")
             if p.method_summary:
-                body.append(f"## Part II: 方法与洞察\n\n{p.method_summary}\n")
+                body.append(f"### Part II: 方法与洞察\n\n{p.method_summary}\n")
             if p.core_intuition:
-                body.append(f"### 核心直觉\n\n{p.core_intuition}\n")
+                body.append(f"#### 核心直觉\n\n{p.core_intuition}\n")
             if p.evidence_summary:
-                body.append(f"## Part III: 证据与局限\n\n{p.evidence_summary}\n")
+                body.append(f"### Part III: 证据与局限\n\n{p.evidence_summary}\n")
 
         if p.delta_statement:
-            body.append(f"\n## Delta\n\n{p.delta_statement}\n")
+            body.append(f"\n### Delta Statement\n\n{p.delta_statement}\n")
 
         content = _render_frontmatter(fm) + "\n".join(body)
         (venue_dir / filename).write_text(content, encoding="utf-8")
@@ -566,6 +638,122 @@ Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
 - Clusters = research sub-communities
 """
     (root / "_Graph.md").write_text(graph_content, encoding="utf-8")
+
+    # ── 8. Domain Overview entry page ─────────────────────────
+    analyzed = [p for p in papers if p.state == "l4_deep"]
+    categories = {}
+    for p in papers:
+        categories.setdefault(p.category, []).append(p)
+
+    overview_body = ["# 方向总览\n"]
+    overview_body.append(f"**知识库规模**: {len(papers)} 篇论文, {len(analyzed)} 篇已深度分析\n")
+    overview_body.append("## 领域分布\n")
+    for cat, cat_papers in sorted(categories.items()):
+        overview_body.append(f"- **{cat}**: {len(cat_papers)} 篇")
+    overview_body.append("")
+
+    overview_body.append("## 范式框架\n")
+    for pt in paradigms:
+        slots_dict = pt.slots if isinstance(pt.slots, dict) else {}
+        slot_names = ", ".join(slots_dict.keys()) if slots_dict else "N/A"
+        linked = sum(1 for p in papers if p.baseline_paradigm == pt.name)
+        overview_body.append(f"- **[[{pt.name}]]** ({pt.domain}): {slot_names} — {linked} 篇论文")
+    overview_body.append("")
+
+    overview_body.append("## 核心瓶颈\n")
+    for bn in bottlenecks[:10]:
+        claim_count = len(bn_claims.get(str(bn.id), []))
+        safe_bn = bn.title.replace("/", "-").replace(":", "-")[:80]
+        overview_body.append(f"- [[{safe_bn}]] — {claim_count} 篇论文声称在解决")
+    overview_body.append("")
+
+    overview_body.append("## 建议阅读顺序\n")
+    overview_body.append("1. 先看范式定义页，理解标准框架")
+    overview_body.append("2. 看 [[_MethodEvolution]] 了解方法演化脉络")
+    overview_body.append("3. 看 [[_BottleneckMap]] 了解当前瓶颈分布")
+    overview_body.append("4. 按 structurality_score 从高到低阅读论文笔记")
+    overview_body.append("")
+
+    overview_body.append("## 按结构性排序的论文\n")
+    sorted_papers = sorted(analyzed, key=lambda x: float(x.dc_struct or 0), reverse=True)
+    for i, p in enumerate(sorted_papers[:20], 1):
+        score = f"{float(p.dc_struct):.2f}" if p.dc_struct else "?"
+        body_type = "structural" if p.dc_struct and float(p.dc_struct) >= 0.5 else "plugin"
+        overview_body.append(f"{i}. [[{_sanitize_wikilink(p.title)}]] — struct={score}, {body_type}")
+
+    (root / "_DomainOverview.md").write_text(
+        _render_frontmatter({"title": "方向总览", "type": "index"}) + "\n".join(overview_body),
+        encoding="utf-8",
+    )
+
+    # ── 9. Method Evolution entry page ────────────────────────
+    evo_body = ["# 方法演化脉络\n"]
+    evo_body.append("本页展示论文之间的方法继承和改进关系。\n")
+
+    # Group by paradigm
+    paradigm_papers: dict[str, list] = {}
+    for p in analyzed:
+        key = p.baseline_paradigm or "unknown"
+        paradigm_papers.setdefault(key, []).append(p)
+
+    for paradigm, pps in sorted(paradigm_papers.items()):
+        evo_body.append(f"## {paradigm}\n")
+
+        # Find roots (no ancestors) and build chains
+        roots = [p for p in pps if p.title not in lineage_map]
+        non_roots = [p for p in pps if p.title in lineage_map]
+
+        if roots:
+            evo_body.append("**基础方法 (Baseline)**:")
+            for p in roots:
+                dc = float(p.dc_struct) if p.dc_struct else 0
+                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] (struct={dc:.2f})")
+            evo_body.append("")
+
+        if non_roots:
+            evo_body.append("**改进方法**:")
+            for p in non_roots:
+                ancestors = lineage_map.get(p.title, [])
+                parent_str = ", ".join(f"[[{_sanitize_wikilink(pt)}]]" for _, pt in ancestors)
+                slots = list(p.changed_slots) if p.changed_slots else []
+                slot_str = ", ".join(slots[:3]) if slots else "?"
+                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] ← {parent_str} (改了: {slot_str})")
+            evo_body.append("")
+
+        # Show all papers in this paradigm if no lineage data
+        if not roots and not non_roots:
+            for p in pps:
+                slots = list(p.changed_slots) if p.changed_slots else []
+                slot_str = ", ".join(slots[:3]) if slots else "?"
+                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] — 改了: {slot_str}")
+            evo_body.append("")
+
+    (root / "_MethodEvolution.md").write_text(
+        _render_frontmatter({"title": "方法演化脉络", "type": "index"}) + "\n".join(evo_body),
+        encoding="utf-8",
+    )
+
+    # ── 10. Bottleneck Map entry page ─────────────────────────
+    bn_body = ["# 瓶颈地图\n"]
+    bn_body.append("研究方向中的核心瓶颈，以及哪些论文在攻克它们。\n")
+
+    for bn in bottlenecks:
+        claim_list = bn_claims.get(str(bn.id), [])
+        safe_bn = bn.title.replace("/", "-").replace(":", "-")[:80]
+        bn_body.append(f"## [[{safe_bn}]] ({len(claim_list)} 篇)\n")
+        if bn.description:
+            bn_body.append(f"> {bn.description[:200]}\n")
+        for title, claim in claim_list[:5]:
+            bn_body.append(f"- [[{_sanitize_wikilink(title)}]] — {claim[:80]}")
+        bn_body.append("")
+
+    if not bottlenecks:
+        bn_body.append("*暂无瓶颈数据。运行更多论文的 L4 分析后会自动提取。*")
+
+    (root / "_BottleneckMap.md").write_text(
+        _render_frontmatter({"title": "瓶颈地图", "type": "index"}) + "\n".join(bn_body),
+        encoding="utf-8",
+    )
 
     logger.info(f"Obsidian vault exported to {root}: {stats}")
     return {"vault_path": str(root), **stats}

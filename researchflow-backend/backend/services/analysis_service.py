@@ -94,6 +94,14 @@ L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON f
       "failure_modes": "known failure cases"
     }}
   ],
+  "key_equations": [
+    {{"latex": "LaTeX formula string (use standard LaTeX notation)", "slot_affected": "which component this equation defines", "explanation": "why this equation is important (1 sentence, Chinese)"}}
+  ],
+  "key_figures": [
+    {{"fig_ref": "Table 2 / Figure 3 / Algorithm 1", "caption": "what this figure shows", "evidence_for": "which claim this figure supports (1 sentence, Chinese)"}}
+  ],
+  "baseline_paper_titles": ["list of paper titles this work directly builds on or compares against"],
+  "same_family_method": "name of the broader method family this belongs to (e.g. direct_preference_optimization, group_relative_reward, constitutional_ai)",
   "confidence_notes": [
     {{"claim": "...", "confidence": 0.0-1.0, "basis": "...", "reasoning": "..."}}
   ]
