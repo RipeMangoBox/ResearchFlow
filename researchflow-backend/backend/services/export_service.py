@@ -286,7 +286,12 @@ async def export_obsidian_vault(
 
     root = Path(out_dir or settings.paper_analysis_dir).parent / "obsidian-vault"
     if root.exists():
-        shutil.rmtree(root)
+        # Clear contents without removing root (may be a Docker mount point)
+        for child in root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
     root.mkdir(parents=True, exist_ok=True)
 
     stats = {"papers": 0, "concepts": 0, "bottlenecks": 0, "lineages": 0}
