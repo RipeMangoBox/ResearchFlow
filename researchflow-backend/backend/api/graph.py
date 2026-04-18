@@ -165,6 +165,84 @@ async def get_kb_quality_report(session: AsyncSession = Depends(get_session)):
 
 # ── Visualization data ──────────────────────────────────────────
 
+@router.get("/admin-stats")
+async def get_admin_stats(session: AsyncSession = Depends(get_session)):
+    """Admin monitoring: pipeline stats, paper state distribution, analysis coverage, job health."""
+    from sqlalchemy import text
+
+    # Paper state distribution
+    states = (await session.execute(text(
+        "SELECT state, count(*) FROM papers GROUP BY state ORDER BY count(*) DESC"
+    ))).fetchall()
+
+    # Analysis coverage
+    total_papers = (await session.execute(text("SELECT count(*) FROM papers"))).scalar()
+    l4_count = (await session.execute(text(
+        "SELECT count(DISTINCT paper_id) FROM paper_analyses WHERE level = 'l4_deep' AND is_current = true"
+    ))).scalar()
+    l3_count = (await session.execute(text(
+        "SELECT count(DISTINCT paper_id) FROM paper_analyses WHERE level = 'l3_skim' AND is_current = true"
+    ))).scalar()
+    dc_count = (await session.execute(text(
+        "SELECT count(*) FROM delta_cards WHERE status = 'published'"
+    ))).scalar()
+
+    # Review queue
+    review_pending = (await session.execute(text(
+        "SELECT count(*) FROM review_tasks WHERE status = 'pending'"
+    ))).scalar()
+    review_by_type = (await session.execute(text(
+        "SELECT target_type, count(*) FROM review_tasks WHERE status = 'pending' GROUP BY target_type"
+    ))).fetchall()
+
+    # Enrichment coverage
+    with_abstract = (await session.execute(text("SELECT count(*) FROM papers WHERE abstract IS NOT NULL"))).scalar()
+    with_doi = (await session.execute(text("SELECT count(*) FROM papers WHERE doi IS NOT NULL"))).scalar()
+    with_code = (await session.execute(text("SELECT count(*) FROM papers WHERE code_url IS NOT NULL"))).scalar()
+    with_pdf = (await session.execute(text("SELECT count(*) FROM papers WHERE pdf_path_local IS NOT NULL OR pdf_object_key IS NOT NULL"))).scalar()
+
+    # Candidate counts
+    paradigm_cands = (await session.execute(text("SELECT count(*) FROM paradigm_candidates WHERE status = 'pending'"))).scalar()
+    lineage_cands = (await session.execute(text("SELECT count(*) FROM delta_card_lineage WHERE status = 'candidate'"))).scalar()
+
+    # Recent activity
+    recent_imports = (await session.execute(text(
+        "SELECT count(*) FROM papers WHERE created_at > now() - interval '7 days'"
+    ))).scalar()
+    recent_analyses = (await session.execute(text(
+        "SELECT count(*) FROM paper_analyses WHERE generated_at > now() - interval '7 days'"
+    ))).scalar()
+
+    return {
+        "paper_states": {r[0]: r[1] for r in states},
+        "total_papers": total_papers,
+        "analysis_coverage": {
+            "l3_skim": l3_count,
+            "l4_deep": l4_count,
+            "delta_cards_published": dc_count,
+            "coverage_pct": round((l4_count / total_papers * 100) if total_papers else 0, 1),
+        },
+        "enrichment": {
+            "with_abstract": with_abstract,
+            "with_doi": with_doi,
+            "with_code": with_code,
+            "with_pdf": with_pdf,
+        },
+        "review_queue": {
+            "pending": review_pending,
+            "by_type": {r[0]: r[1] for r in review_by_type},
+        },
+        "candidates": {
+            "paradigms_pending": paradigm_cands,
+            "lineage_pending": lineage_cands,
+        },
+        "recent_7d": {
+            "imports": recent_imports,
+            "analyses": recent_analyses,
+        },
+    }
+
+
 @router.get("/vis-data")
 async def get_graph_vis_data(
     limit: int = Query(default=200, ge=10, le=1000),

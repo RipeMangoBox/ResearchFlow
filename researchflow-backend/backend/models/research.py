@@ -162,3 +162,65 @@ class ReadingPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SearchBranch(Base):
+    """A named exploration branch within a search session.
+
+    Tracks branching decisions: when user rejects a solution pattern
+    and pivots to a new direction.
+    """
+    __tablename__ = "search_branches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("search_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    branch_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    hypothesis: Mapped[str | None] = mapped_column(Text)
+    rejected_patterns: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    result_paper_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    # active / exhausted / merged
+    parent_branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_search_branches_session", "session_id"),
+    )
+
+
+class RenderArtifact(Base):
+    """A rendered output artifact from the system.
+
+    Tracks generated reports, digests, reading plans, Obsidian exports,
+    and any other derived output for audit and re-generation.
+    """
+    __tablename__ = "render_artifacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    artifact_type: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )  # report / digest / reading_plan / obsidian_vault / csv_export
+    title: Mapped[str | None] = mapped_column(Text)
+    content_md: Mapped[str | None] = mapped_column(Text)
+    object_key: Mapped[str | None] = mapped_column(Text)
+    # Object storage key if stored externally
+    paper_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    parameters: Mapped[dict | None] = mapped_column(JSONB)
+    # Generation parameters for reproducibility
+    generated_by: Mapped[str | None] = mapped_column(String(50))
+    # model / user / cron
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_render_artifacts_type", "artifact_type"),
+    )

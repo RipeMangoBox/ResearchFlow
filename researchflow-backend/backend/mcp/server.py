@@ -510,6 +510,24 @@ RESOURCES = [
         description="Knowledge graph statistics: counts of ideas, cards, assertions, edges.",
         mimeType="application/json",
     ),
+    Resource(
+        uri=AnyUrl("canonical-idea://example"),
+        name="canonical-idea",
+        description="Canonical idea detail with contribution count. Use canonical-idea://{id}.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri=AnyUrl("review-task://example"),
+        name="review-task",
+        description="Review task with target object detail. Use review-task://{task_id}.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri=AnyUrl("lineage://example"),
+        name="lineage",
+        description="Method lineage DAG for a paper. Use lineage://{paper_id}.",
+        mimeType="application/json",
+    ),
 ]
 
 
@@ -611,6 +629,44 @@ async def read_resource(uri: AnyUrl) -> str:
                 "status": dc.status,
             }, ensure_ascii=False, default=str)
 
+        # ── canonical-idea://{id} ──────────────────────────────
+        if uri_str.startswith("canonical-idea://"):
+            idea_id = uri_str.replace("canonical-idea://", "")
+            from backend.models.canonical_idea import CanonicalIdea
+            ci = await session.get(CanonicalIdea, UUID(idea_id))
+            if ci:
+                return json.dumps({
+                    "id": str(ci.id), "title": ci.title, "description": ci.description,
+                    "domain": ci.domain, "status": ci.status,
+                    "contribution_count": ci.contribution_count,
+                    "aliases": ci.aliases, "tags": ci.tags,
+                }, ensure_ascii=False)
+
+        # ── review-task://{id} ────────────────────────────────
+        if uri_str.startswith("review-task://"):
+            task_id = uri_str.replace("review-task://", "")
+            from backend.services.review_service import get_review, get_review_detail
+            task = await get_review(session, UUID(task_id))
+            if task:
+                detail = await get_review_detail(session, task)
+                return json.dumps(detail, ensure_ascii=False, default=str)
+
+        # ── lineage://{paper_id} ──────────────────────────────
+        if uri_str.startswith("lineage://"):
+            paper_id_str = uri_str.replace("lineage://", "")
+            from backend.services.evolution_service import get_lineage_tree
+            from backend.models.delta_card import DeltaCard
+            dc_result = await session.execute(
+                select(DeltaCard).where(
+                    DeltaCard.paper_id == UUID(paper_id_str),
+                    DeltaCard.status != "deprecated",
+                ).order_by(DeltaCard.created_at.desc()).limit(1)
+            )
+            dc = dc_result.scalar_one_or_none()
+            if dc:
+                tree = await get_lineage_tree(session, dc.id)
+                return json.dumps(tree, ensure_ascii=False, default=str)
+
     return json.dumps({"error": f"Unknown resource URI: {uri_str}"})
 
 
@@ -647,6 +703,22 @@ PROMPTS = [
                 description="Number of top papers to highlight (default: 10)",
                 required=False,
             ),
+        ],
+    ),
+    Prompt(
+        name="lineage-review",
+        description="Review the method lineage DAG for a paper — trace how the method evolved from its ancestors and identify downstream impact.",
+        arguments=[
+            PromptArgument(name="paper_id", description="UUID of the paper to trace", required=True),
+            PromptArgument(name="depth", description="Max depth to traverse (default: 5)", required=False),
+        ],
+    ),
+    Prompt(
+        name="direction-gap-analysis",
+        description="Analyze gaps in a research direction: which bottlenecks lack structural solutions, which mechanisms are under-explored, and where are the best opportunities.",
+        arguments=[
+            PromptArgument(name="category", description="Research category to analyze", required=True),
+            PromptArgument(name="focus_bottleneck", description="Optional specific bottleneck to focus on", required=False),
         ],
     ),
 ]

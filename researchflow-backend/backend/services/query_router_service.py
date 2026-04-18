@@ -213,7 +213,7 @@ async def query_bottleneck(
         })
 
     # 2. Search paper_bottleneck_claims
-    claims = await session.execute(
+    claim_stmt = (
         select(PaperBottleneckClaim, ProjectBottleneck, Paper)
         .join(ProjectBottleneck, PaperBottleneckClaim.bottleneck_id == ProjectBottleneck.id)
         .join(Paper, PaperBottleneckClaim.paper_id == Paper.id)
@@ -226,6 +226,15 @@ async def query_bottleneck(
         .order_by(desc(PaperBottleneckClaim.confidence))
         .limit(limit)
     )
+    claim_stmt = _apply_paper_constraints(
+        claim_stmt,
+        must_not_method_categories=c.get("must_not_method_categories"),
+        min_structurality_score=c.get("min_structurality_score"),
+        must_have_open_code=c.get("must_have_open_code"),
+        year_min=c.get("year_min"), year_max=c.get("year_max"),
+        exclude_tags=c.get("exclude_tags"),
+    )
+    claims = await session.execute(claim_stmt)
     claim_results = []
     for claim, bn, paper in claims:
         claim_results.append({
@@ -342,6 +351,13 @@ async def query_mechanism(
         idea_stmt,
         min_structurality_score=c.get("min_structurality_score"),
         must_have_evidence_count=c.get("must_have_evidence_count"),
+    )
+    idea_stmt = _apply_paper_constraints(
+        idea_stmt,
+        must_not_method_categories=c.get("must_not_method_categories"),
+        must_have_open_code=c.get("must_have_open_code"),
+        year_min=c.get("year_min"), year_max=c.get("year_max"),
+        exclude_tags=c.get("exclude_tags"),
     )
     idea_result = await session.execute(idea_stmt)
     contribution_results = []

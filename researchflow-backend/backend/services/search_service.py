@@ -62,41 +62,53 @@ async def hybrid_search(
 
     filter_clause = and_(*conditions) if conditions else True
 
-    # Strategy: run keyword and semantic searches, then merge scores
+    # Strategy: use paper_search_docs materialized view for fast keyword search,
+    # fall back to raw papers table if view is empty/missing.
 
-    # 1. Keyword search with ts_rank
+    # 1. Keyword search via paper_search_docs (CQRS read path)
     ts_query = func.plainto_tsquery("english", query)
-    keyword_stmt = (
-        select(
-            Paper.id,
-            Paper.title,
-            Paper.venue,
-            Paper.year,
-            Paper.category,
-            Paper.state,
-            Paper.importance,
-            Paper.tags,
-            Paper.core_operator,
-            Paper.keep_score,
-            Paper.structurality_score,
-            func.ts_rank(
-                func.to_tsvector("english", Paper.title), ts_query
-            ).label("title_rank"),
-            func.ts_rank(
-                func.to_tsvector("english", func.coalesce(Paper.abstract, "")), ts_query
-            ).label("abstract_rank"),
+    try:
+        keyword_stmt = text("""
+            SELECT paper_id AS id, title, venue, year, category, state, importance,
+                   tags, core_operator, keep_score, structurality_score,
+                   ts_rank(to_tsvector('english', title), plainto_tsquery('english', :q)) * 2.0
+                   + ts_rank(to_tsvector('english', coalesce(abstract, '')), plainto_tsquery('english', :q)) AS text_rank
+            FROM paper_search_docs
+            WHERE (:cat IS NULL OR category = :cat)
+              AND (:ven IS NULL OR venue = :ven)
+              AND (:ymin IS NULL OR year >= :ymin)
+              AND (:ymax IS NULL OR year <= :ymax)
+              AND (:minstruct IS NULL OR structurality_score >= :minstruct)
+            ORDER BY text_rank DESC
+            LIMIT :lim
+        """)
+        keyword_result = await session.execute(keyword_stmt, {
+            "q": query, "cat": category, "ven": venue,
+            "ymin": year_min, "ymax": year_max,
+            "minstruct": min_structurality, "lim": limit * 2,
+        })
+        keyword_rows = keyword_result.fetchall()
+    except Exception:
+        # Fallback to raw table if materialized view doesn't exist
+        keyword_stmt_fallback = (
+            select(
+                Paper.id, Paper.title, Paper.venue, Paper.year, Paper.category,
+                Paper.state, Paper.importance, Paper.tags, Paper.core_operator,
+                Paper.keep_score, Paper.structurality_score,
+                (func.ts_rank(func.to_tsvector("english", Paper.title), ts_query) * 2.0
+                 + func.ts_rank(func.to_tsvector("english", func.coalesce(Paper.abstract, "")), ts_query)).label("text_rank"),
+            )
+            .where(filter_clause)
+            .order_by(text("text_rank DESC"))
+            .limit(limit * 2)
         )
-        .where(filter_clause)
-        .order_by(text("title_rank DESC, abstract_rank DESC"))
-        .limit(limit * 2)  # Over-fetch for merging
-    )
-    keyword_result = await session.execute(keyword_stmt)
-    keyword_rows = keyword_result.fetchall()
+        keyword_result = await session.execute(keyword_stmt_fallback)
+        keyword_rows = keyword_result.fetchall()
 
     # Build results dict keyed by paper_id
     results: dict[UUID, dict] = {}
     for row in keyword_rows:
-        text_score = float(row.title_rank or 0) * 2.0 + float(row.abstract_rank or 0)
+        text_score = float(row.text_rank or 0)
         results[row.id] = {
             "paper_id": str(row.id),
             "title": row.title,

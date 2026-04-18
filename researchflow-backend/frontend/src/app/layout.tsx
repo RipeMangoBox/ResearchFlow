@@ -30,6 +30,7 @@ const navItems = [
   { href: "/reports", label: "Reports" },
   { href: "/digests", label: "Digests" },
   { href: "/directions", label: "Directions" },
+  { href: "/admin", label: "Admin" },
 ];
 
 export default function RootLayout({
