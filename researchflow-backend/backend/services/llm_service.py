@@ -52,7 +52,8 @@ async def call_llm(
     if settings.anthropic_api_key:
         resp = await _call_anthropic(prompt, system, model or "claude-sonnet-4-20250514", max_tokens, temperature)
     elif settings.openai_api_key:
-        resp = await _call_openai(prompt, system, model or "gpt-4o-mini", max_tokens, temperature)
+        default_model = settings.openai_model or "gpt-4o-mini"
+        resp = await _call_openai(prompt, system, model or default_model, max_tokens, temperature)
     else:
         resp = _mock_response(prompt, system)
 
@@ -103,7 +104,10 @@ async def _call_anthropic(prompt: str, system: str, model: str,
 async def _call_openai(prompt: str, system: str, model: str,
                        max_tokens: int, temperature: float) -> LLMResponse:
     import openai
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    kwargs = {"api_key": settings.openai_api_key}
+    if settings.openai_base_url:
+        kwargs["base_url"] = settings.openai_base_url
+    client = openai.AsyncOpenAI(**kwargs)
 
     start = time.monotonic()
     messages = []
@@ -111,21 +115,43 @@ async def _call_openai(prompt: str, system: str, model: str,
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    response = await client.chat.completions.create(
-        model=model, messages=messages, max_tokens=max_tokens, temperature=temperature,
-    )
-    latency = int((time.monotonic() - start) * 1000)
-
-    text = response.choices[0].message.content or ""
-    usage = response.usage
-    return LLMResponse(
-        text=text,
-        input_tokens=usage.prompt_tokens if usage else 0,
-        output_tokens=usage.completion_tokens if usage else 0,
-        model=model,
-        provider="openai",
-        latency_ms=latency,
-    )
+    try:
+        # Try non-streaming first
+        response = await client.chat.completions.create(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, stream=False,
+        )
+        latency = int((time.monotonic() - start) * 1000)
+        text = response.choices[0].message.content or ""
+        usage = response.usage
+        return LLMResponse(
+            text=text,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            model=model,
+            provider="openai",
+            latency_ms=latency,
+        )
+    except Exception as e:
+        # Fallback: some proxies force streaming — collect chunks
+        logger.info(f"Non-streaming failed ({e}), trying streaming mode")
+        stream = await client.chat.completions.create(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=temperature, stream=True,
+        )
+        chunks = []
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                chunks.append(chunk.choices[0].delta.content)
+        latency = int((time.monotonic() - start) * 1000)
+        return LLMResponse(
+            text="".join(chunks),
+            input_tokens=len(prompt.split()),  # estimate
+            output_tokens=len("".join(chunks).split()),
+            model=model,
+            provider="openai",
+            latency_ms=latency,
+        )
 
 
 def _mock_response(prompt: str, system: str) -> LLMResponse:

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # LLM
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    openai_base_url: str = ""  # Custom base URL for OpenAI-compatible APIs
+    openai_model: str = ""     # Custom model name override
 
     # App
     debug: bool = False
