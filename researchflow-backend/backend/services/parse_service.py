@@ -65,6 +65,27 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
     if old_analysis:
         old_analysis.is_current = False
 
+    # Save figure images to object storage
+    figure_image_records = []
+    if parsed.figure_images:
+        from backend.services.object_storage import get_storage
+        storage = get_storage()
+        for i, fig in enumerate(parsed.figure_images):
+            ext = fig.get("ext", "png")
+            object_key = f"figures/{paper_id}/fig_{i+1}.{ext}"
+            try:
+                await storage.put(object_key, fig["image_bytes"])
+                figure_image_records.append({
+                    "figure_num": i + 1,
+                    "object_key": object_key,
+                    "page_num": fig["page_num"],
+                    "width": fig["width"],
+                    "height": fig["height"],
+                    "size_bytes": fig["size_bytes"],
+                })
+            except Exception as e:
+                logger.warning(f"Failed to store figure {i+1} for {paper_id}: {e}")
+
     # Create L2 analysis
     analysis = PaperAnalysis(
         paper_id=paper_id,
@@ -78,6 +99,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         extracted_formulas=parsed.formulas,
         extracted_tables=parsed.tables,
         figure_captions=parsed.figure_captions,
+        extracted_figure_images=figure_image_records if figure_image_records else None,
         is_current=True,
     )
     session.add(analysis)

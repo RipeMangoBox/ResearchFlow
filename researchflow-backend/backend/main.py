@@ -18,6 +18,7 @@ from backend.api.graph import router as graph_router
 from backend.api.pipeline import router as pipeline_router
 from backend.api.reports import router as reports_router
 from backend.api.reviews import router as reviews_router
+from backend.api.bottlenecks import router as bottlenecks_router
 from backend.api.search import router as search_router
 from backend.config import settings
 
@@ -58,6 +59,7 @@ app.include_router(assertions_router, prefix=settings.api_prefix)
 app.include_router(pipeline_router, prefix=settings.api_prefix)
 app.include_router(exploration_router, prefix=settings.api_prefix)
 app.include_router(reviews_router, prefix=settings.api_prefix)
+app.include_router(bottlenecks_router, prefix=settings.api_prefix)
 
 
 # Global exception handler

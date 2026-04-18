@@ -18,6 +18,7 @@ class ParsedPDF:
     formulas: list[str] = field(default_factory=list)
     tables: list[dict] = field(default_factory=list)
     figure_captions: list[dict] = field(default_factory=list)
+    figure_images: list[dict] = field(default_factory=list)
     references_text: str = ""
 
 
@@ -88,6 +89,9 @@ def parse_pdf(pdf_path: str | Path) -> ParsedPDF:
     for page in doc:
         pages_text.append(page.get_text("text"))
     result.full_text = "\n\n".join(pages_text)
+
+    # Extract figure images
+    result.figure_images = _extract_figure_images(doc)
 
     doc.close()
 
@@ -196,6 +200,50 @@ def _extract_table_captions(text: str) -> list[dict]:
                 "caption": caption_text[:500],
             })
     return captions
+
+
+def _extract_figure_images(doc) -> list[dict]:
+    """Extract figure images from a pymupdf Document.
+
+    Filters out tiny images (<5KB, likely icons/logos) and returns
+    metadata + raw bytes for each significant figure.
+    """
+    images = []
+    seen_xrefs = set()
+
+    for page_num, page in enumerate(doc):
+        for img_info in page.get_images(full=True):
+            xref = img_info[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+
+            try:
+                base_image = doc.extract_image(xref)
+                if not base_image:
+                    continue
+
+                image_bytes = base_image["image"]
+                if len(image_bytes) < 5000:  # Skip tiny images (<5KB)
+                    continue
+
+                ext = base_image.get("ext", "png")
+                images.append({
+                    "xref": xref,
+                    "page_num": page_num,
+                    "width": base_image.get("width", 0),
+                    "height": base_image.get("height", 0),
+                    "ext": ext,
+                    "size_bytes": len(image_bytes),
+                    "image_bytes": image_bytes,
+                })
+
+                if len(images) >= 20:  # Cap at 20 images per PDF
+                    return images
+            except Exception:
+                continue
+
+    return images
 
 
 def get_pdf_size_mb(pdf_path: str | Path) -> float:

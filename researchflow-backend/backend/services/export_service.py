@@ -263,7 +263,8 @@ async def export_obsidian_vault(
                dc.key_equations, dc.key_figures, dc.same_family_paper_ids,
                dc.changed_slot_ids, dc.unchanged_slot_ids,
                pa.problem_summary, pa.method_summary, pa.evidence_summary,
-               pa.core_intuition, pa.full_report_md, pa.changed_slots
+               pa.core_intuition, pa.full_report_md, pa.changed_slots,
+               pa.extracted_figure_images
         FROM papers p
         LEFT JOIN delta_cards dc ON dc.id = p.current_delta_card_id
         LEFT JOIN paper_analyses pa ON pa.paper_id = p.id
@@ -417,6 +418,31 @@ async def export_obsidian_vault(
                     if evidence:
                         body.append(f"  - 证据：{evidence}")
             body.append("")
+
+        # ── Extracted figure images (from PDF) ──
+        fig_images = p.extracted_figure_images if isinstance(p.extracted_figure_images, list) else []
+        if fig_images:
+            assets_dir = root / "assets" / str(p.id)
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            from backend.services.object_storage import get_storage
+            storage = get_storage()
+            if not key_figs:  # Only show extracted images if no LLM-selected key figures
+                body.append("## 论文图表\n")
+            for fig_rec in fig_images[:6]:
+                obj_key = fig_rec.get("object_key", "")
+                fig_num = fig_rec.get("figure_num", 0)
+                ext = obj_key.rsplit(".", 1)[-1] if "." in obj_key else "png"
+                local_name = f"fig_{fig_num}.{ext}"
+                try:
+                    img_data = await storage.get(obj_key)
+                    if img_data:
+                        (assets_dir / local_name).write_bytes(img_data)
+                        rel_path = f"assets/{p.id}/{local_name}"
+                        if not key_figs:
+                            body.append(f"![[{rel_path}]]")
+                            body.append("")
+                except Exception:
+                    pass
 
         # ── Same-family papers ──
         same_fam_ids = p.same_family_paper_ids if p.same_family_paper_ids else []

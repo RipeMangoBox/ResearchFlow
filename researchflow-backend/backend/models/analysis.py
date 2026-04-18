@@ -66,6 +66,10 @@ class PaperAnalysis(Base):
     # Schema: [{page, paragraph, quote, section_ref}]
     evidence_spans: Mapped[dict | None] = mapped_column(JSONB)
 
+    # Extracted figure images — stored in object storage
+    # Schema: [{figure_num, object_key, page_num, width, height, size_bytes}]
+    extracted_figure_images: Mapped[dict | None] = mapped_column(JSONB)
+
     # Per-claim confidence notes — distinguishes fact from inference
     # Schema: [{claim, confidence: 0-1, basis: "code_verified"|"experiment_backed"|
     #           "text_stated"|"inferred"|"speculative", source_anchor, reasoning}]

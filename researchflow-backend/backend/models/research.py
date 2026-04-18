@@ -60,9 +60,10 @@ class PaperBottleneckClaim(Base):
     paper_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
     )
-    bottleneck_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("project_bottlenecks.id"), nullable=False
+    bottleneck_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_bottlenecks.id"), nullable=True
     )
+    raw_title: Mapped[str | None] = mapped_column(Text)
     claim_text: Mapped[str] = mapped_column(Text, nullable=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
     is_fundamental: Mapped[bool | None] = mapped_column(Boolean)
