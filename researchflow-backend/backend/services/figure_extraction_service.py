@@ -58,7 +58,6 @@ async def extract_figures_precise(
     thumbnails = []
     for c in candidates:
         page = doc[c["page_num"]]
-        # 1x zoom thumbnail for classification (saves API tokens)
         pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), clip=fitz.Rect(*c["bbox"]))
         thumbnails.append({
             **c,
@@ -67,13 +66,52 @@ async def extract_figures_precise(
             "thumb_h": pix.height,
         })
 
-    # Step 3: ONE Claude API call to classify all candidates
+    # Step 3: ONE Claude API call — classify candidates + detect missed figures
     if settings.anthropic_api_key:
-        classifications = await _classify_candidates_vlm(
-            thumbnails, paper_title, session, paper_id
+        # Also render full-page thumbnails for missed figure detection
+        page_thumbs = []
+        page_count = min(len(doc), MAX_PAGES_TO_SCAN)
+        for i in range(page_count):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5))  # Half-res for cost
+            page_thumbs.append({
+                "page_num": i,
+                "thumb_bytes": pix.tobytes("png"),
+                "page_width": page.rect.width,
+                "page_height": page.rect.height,
+            })
+
+        classifications, missed_figures = await _classify_and_detect_missed(
+            thumbnails, page_thumbs, paper_title, session, paper_id
         )
+
+        # Step 3.5: For missed figures, add FULL PAGE as candidate
+        # Better to crop too much than to miss content
+        for missed in missed_figures:
+            page_num = missed.get("page", -1)
+            if page_num < 0 or page_num >= len(doc):
+                continue
+            page = doc[page_num]
+            # Use full page — better to include extra than miss part of figure
+            rect = page.rect
+
+            candidates.append({
+                "page_num": page_num,
+                "bbox": [round(rect.x0), round(rect.y0), round(rect.x1), round(rect.y1)],
+                "source": "vlm_missed_recovery",
+                "label": missed.get("label", ""),
+            })
+            # Add classification for this new candidate
+            classifications.append({
+                "index": len(candidates) - 1,
+                "is_figure_or_table": True,
+                "label": missed.get("label", ""),
+                "type": missed.get("type", "figure"),
+                "caption": missed.get("caption", ""),
+                "semantic_role": missed.get("semantic_role", "other"),
+                "description": missed.get("description", ""),
+            })
     else:
-        # No API key → treat all candidates as figures
         classifications = [
             {"index": i, "is_figure_or_table": True, "label": f"Figure {i+1}",
              "type": "figure", "semantic_role": "other", "description": "", "caption": ""}
@@ -437,74 +475,94 @@ def _deduplicate_candidates(candidates: list[dict]) -> list[dict]:
     return result
 
 
-# ── Step 3: VLM classification (1 API call) ──────────────────
+# ── Step 3: VLM classify + detect missed (1 API call) ────────
 
-async def _classify_candidates_vlm(
+async def _classify_and_detect_missed(
     thumbnails: list[dict],
+    page_thumbs: list[dict],
     paper_title: str,
     session,
     paper_id: UUID,
-) -> list[dict]:
-    """ONE Claude API call to classify all candidate crops.
+) -> tuple[list[dict], list[dict]]:
+    """ONE Claude API call to:
+    1. Classify each candidate crop (figure/table/noise)
+    2. Scan all pages for figures that the deterministic method MISSED
 
-    Claude sees each thumbnail and judges:
-    - Is this a figure or table? (or just text/noise)
-    - What label does it have? (Figure 1, Table 2, etc.)
-    - What semantic role? (motivation, pipeline, result, etc.)
-    - Brief description (Chinese)
-
-    Claude does NOT return coordinates — those come from PyMuPDF.
+    Returns: (classifications, missed_figures)
+    - classifications: [{index, is_figure_or_table, label, type, ...}]
+    - missed_figures: [{page, label, type, semantic_role, description}]
     """
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     content = []
-    for i, thumb in enumerate(thumbnails):
+
+    # Part A: candidate crops
+    detected_labels = set()
+    if thumbnails:
+        content.append({"type": "text", "text": f"=== PART A: {len(thumbnails)} candidate crops ==="})
+        for i, thumb in enumerate(thumbnails):
+            content.append({
+                "type": "text",
+                "text": f"--- Candidate {i} (page {thumb['page_num']}) ---",
+            })
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(thumb["thumb_bytes"]).decode("utf-8"),
+                },
+            })
+            if thumb.get("label"):
+                detected_labels.add(thumb["label"])
+
+    # Part B: full page thumbnails for missed detection
+    content.append({"type": "text", "text": f"\n=== PART B: {len(page_thumbs)} full page thumbnails ==="})
+    for pt in page_thumbs:
         content.append({
             "type": "text",
-            "text": f"--- Candidate {i} (page {thumb['page_num']}) ---",
+            "text": f"--- Page {pt['page_num']} ---",
         })
         content.append({
             "type": "image",
             "source": {
                 "type": "base64",
                 "media_type": "image/png",
-                "data": base64.b64encode(thumb["thumb_bytes"]).decode("utf-8"),
+                "data": base64.b64encode(pt["thumb_bytes"]).decode("utf-8"),
             },
         })
 
-    prompt = f"""You are analyzing {len(thumbnails)} cropped regions from the paper "{paper_title}".
+    detected_str = ", ".join(sorted(detected_labels)) if detected_labels else "none yet"
 
-For each candidate, determine if it is a figure, table, or neither (just text/equation/noise).
+    prompt = f"""You are analyzing the paper "{paper_title}".
 
-Return a JSON array with one entry per candidate:
-[
-  {{
-    "index": 0,
-    "is_figure_or_table": true,
-    "label": "Figure 1",
-    "type": "figure",
-    "caption": "first sentence of visible caption",
-    "semantic_role": "pipeline",
-    "description": "整体框架图"
-  }},
-  {{
-    "index": 1,
-    "is_figure_or_table": false,
-    "label": "",
-    "type": "",
-    "caption": "",
-    "semantic_role": "",
-    "description": "纯文本段落，不是图表"
-  }}
-]
+TASK 1: For each candidate crop in PART A, classify it:
+- Is it a figure or table? Or just text/equation/noise?
+- What label? (Figure 1, Table 2, etc.)
+- Semantic role and Chinese description
 
-semantic_role must be one of: motivation, pipeline, architecture, result, ablation, comparison, qualitative, quantitative, example, other
+TASK 2: Look at ALL pages in PART B. The deterministic method already detected: [{detected_str}].
+Find any figures or tables that were MISSED (not in the detected list above).
+
+Return JSON with two keys:
+{{
+  "classifications": [
+    {{"index": 0, "is_figure_or_table": true, "label": "Figure 1", "type": "figure", "caption": "...", "semantic_role": "pipeline", "description": "整体框架图"}},
+    {{"index": 1, "is_figure_or_table": false, "label": "", "type": "", "caption": "", "semantic_role": "", "description": "纯文本"}}
+  ],
+  "missed": [
+    {{"page": 5, "label": "Figure 5", "type": "figure", "caption": "first sentence of caption", "semantic_role": "result", "description": "推理时间对比散点图和用户偏好柱状图"}}
+  ]
+}}
+
+semantic_role: motivation / pipeline / architecture / result / ablation / comparison / qualitative / quantitative / example / other
+description: Chinese, 1 sentence
 
 Rules:
-- description in Chinese, 1 sentence
-- If you can see a label like "Figure 1" or "Table 2" in the image, use it
-- Return ONLY the JSON array"""
+- For TASK 1: return one entry per candidate, same order
+- For TASK 2: only report GENUINELY MISSED figures/tables — not ones already in PART A
+- Return ONLY the JSON object"""
 
     content.append({"type": "text", "text": prompt})
 
@@ -512,27 +570,26 @@ Rules:
     try:
         response = await client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=3000,
+            max_tokens=4000,
             temperature=0.1,
             messages=[{"role": "user", "content": content}],
         )
         latency = int((time.monotonic() - start) * 1000)
 
-        text = response.content[0].text if response.content else "[]"
+        text = response.content[0].text if response.content else "{}"
         logger.info(
-            f"VLM figure classification: {len(thumbnails)} candidates, "
+            f"VLM classify+detect: {len(thumbnails)} candidates + {len(page_thumbs)} pages, "
             f"{response.usage.input_tokens}→{response.usage.output_tokens} tokens, "
             f"{latency}ms"
         )
 
-        # Track cost
         if session:
             from backend.models.system import ModelRun
             run = ModelRun(
                 paper_id=paper_id,
                 model_provider="anthropic",
                 model_name="claude-sonnet-4-20250514",
-                prompt_version="figure_classify_v1",
+                prompt_version="figure_classify_detect_v1",
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 cost_usd=(response.usage.input_tokens * 3.0 + response.usage.output_tokens * 15.0) / 1_000_000,
@@ -548,14 +605,23 @@ Rules:
                 text = text[4:]
             text = text.strip()
 
-        results = json.loads(text)
-        return results if isinstance(results, list) else []
+        result = json.loads(text)
+        classifications = result.get("classifications", [])
+        missed = result.get("missed", [])
+
+        if not isinstance(classifications, list):
+            classifications = []
+        if not isinstance(missed, list):
+            missed = []
+
+        logger.info(f"VLM result: {len(classifications)} classified, {len(missed)} missed recovered")
+        return classifications, missed
 
     except Exception as e:
-        logger.error(f"VLM figure classification failed: {e}")
-        # Fallback: treat all candidates as figures
+        logger.error(f"VLM classify+detect failed: {e}")
+        # Fallback: treat all candidates as figures, no missed detection
         return [
             {"index": i, "is_figure_or_table": True, "label": f"Figure {i+1}",
              "type": "figure", "semantic_role": "other", "description": "", "caption": ""}
             for i in range(len(thumbnails))
-        ]
+        ], []
