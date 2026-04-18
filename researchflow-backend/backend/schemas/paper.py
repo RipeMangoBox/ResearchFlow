@@ -75,7 +75,7 @@ class PaperResponse(PaperBase):
     extensionability_score: float | None = None
 
     # Metadata
-    authors: dict | None = None
+    authors: list[dict] | dict | None = None
     keywords: list[str] | None = None
     claims: list[str] | None = None
     open_code: bool = False
