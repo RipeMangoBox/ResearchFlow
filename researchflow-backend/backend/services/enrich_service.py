@@ -112,6 +112,7 @@ async def _fetch_arxiv(client: httpx.AsyncClient, arxiv_id: str) -> dict | None:
             "keywords": categories if categories else None,
             "comment": comment.strip() if comment else None,
             "journal_ref": journal_ref.strip() if journal_ref else None,
+            "_arxiv_id": base_id,  # For verification
         }
     except ET.ParseError as e:
         logger.warning(f"arXiv XML parse error for {arxiv_id}: {e}")
@@ -314,7 +315,23 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
         if not items:
             return None
 
-        best = items[0]
+        # Verify the repo is actually for THIS paper (not a generic framework)
+        best = None
+        for item in items:
+            repo_name = item.get("name", "").lower()
+            repo_desc = (item.get("description") or "").lower()
+            title_words = set(title.lower().split()[:5])  # First 5 words of title
+
+            # Skip repos that are clearly generic frameworks (too many stars, generic name)
+            if item.get("stargazers_count", 0) > 10000 and len(title_words & set(repo_name.split("-"))) < 2:
+                continue
+
+            best = item
+            break
+
+        if not best:
+            best = items[0]  # Fallback to first result
+
         result = {
             "code_url": best.get("html_url"),
             "open_code": True,
@@ -537,19 +554,45 @@ def _parse_acceptance_from_comment(comment: str) -> dict | None:
 
     comment_lower = comment.lower()
 
-    # Patterns for acceptance
-    import re
+    # Reject patterns — these mean NOT accepted
+    reject_patterns = [
+        r'under\s+review',
+        r'submitted\s+to',
+        r'in\s+submission',
+        r'preprint',
+        r'work\s+in\s+progress',
+        r'rejected',
+        r'withdrawn',
+    ]
+    import re as _re
+    for rp in reject_patterns:
+        if _re.search(rp, comment_lower):
+            return None
+
+    # Positive acceptance patterns — must contain an acceptance verb
     acceptance_patterns = [
-        r'(?:accepted|published|to appear|appeared)\s+(?:at|in|by)\s+([A-Za-z]+)\s*(\d{4})',
-        r'(ICLR|NeurIPS|ICML|CVPR|ICCV|ECCV|AAAI|IJCAI|ACL|EMNLP|NAACL|SIGGRAPH|CHI|KDD|WWW)\s*[\'"]?(\d{4})',
+        # "Published as a conference paper at ICLR 2026"
+        r'(?:accepted|published|to appear|appeared)\s+(?:as\s+)?(?:a\s+)?(?:\w+\s+)?(?:paper\s+)?(?:at|in|by|to)\s+([A-Za-z]+)\s*[\'"]?(\d{4})',
+        # "Accepted to NeurIPS 2025", "Accepted at ECCV 2024"
+        r'(?:accepted|published|to appear|appeared)\s+(?:at|in|by|to)\s+([A-Za-z]+)\s*[\'"]?(\d{4})',
     ]
 
     for pattern in acceptance_patterns:
-        m = re.search(pattern, comment, re.IGNORECASE)
+        m = _re.search(pattern, comment, _re.IGNORECASE)
         if m:
             venue = m.group(1).upper()
             year = int(m.group(2))
-            # Check for acceptance type
+
+            # Validate venue name is a known conference/journal
+            known_venues = {
+                "ICLR", "NEURIPS", "NIPS", "ICML", "CVPR", "ICCV", "ECCV",
+                "AAAI", "IJCAI", "ACL", "EMNLP", "NAACL", "COLING",
+                "SIGGRAPH", "CHI", "KDD", "WWW", "SIGIR", "ICRA", "IROS",
+                "INTERSPEECH", "MICCAI", "WACV", "BMVC", "ACCV",
+            }
+            if venue not in known_venues:
+                continue
+
             acc_type = ""
             if "oral" in comment_lower:
                 acc_type = "oral"
@@ -584,6 +627,16 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
     # ── 1. arXiv ──────────────────────────────────────────────
     if paper.arxiv_id:
         arxiv_data = await _fetch_arxiv(client, paper.arxiv_id)
+        if arxiv_data:
+            # VERIFY title match — arXiv API may return wrong paper for wrong ID
+            if arxiv_data.get("title") and paper.title:
+                if not _titles_similar(paper.title, arxiv_data["title"]):
+                    logger.warning(
+                        f"arXiv title mismatch for {paper.arxiv_id}: "
+                        f"expected '{paper.title[:40]}', got '{arxiv_data['title'][:40]}'"
+                    )
+                    arxiv_data = None  # Discard mismatched data
+
         if arxiv_data:
             # Record observations
             if arxiv_data.get("abstract"):
@@ -789,7 +842,39 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                     field_name="dataset_urls", value=page_data["dataset_urls"],
                     source="official_conf", source_url=paper.project_link)
 
-    # ── 9. Update state ──────────────────────────────────────
+    # ── 9. PDF first-page acceptance detection ──────────────
+    # Many accepted papers have "Published as a conference paper at ICLR 2026"
+    # or "Accepted at CVPR 2025" on the first page of the PDF itself
+    if not paper.acceptance_type and paper.pdf_path_local:
+        try:
+            import fitz
+            import os
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            pdf_full_path = os.path.join(project_root, paper.pdf_path_local)
+            if os.path.exists(pdf_full_path):
+                doc = fitz.open(pdf_full_path)
+                first_page_text = doc[0].get_text()[:500] if len(doc) > 0 else ""
+                doc.close()
+                if first_page_text:
+                    pdf_acceptance = _parse_acceptance_from_comment(first_page_text)
+                    if pdf_acceptance:
+                        await record_observation(session, entity_type="paper", entity_id=paper.id,
+                            field_name="acceptance_status", value=pdf_acceptance["acceptance_status"],
+                            source="pdf_grobid", confidence=0.9)  # PDF text is very reliable
+                        if pdf_acceptance.get("venue"):
+                            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                                field_name="venue", value=pdf_acceptance["venue"],
+                                source="pdf_grobid", confidence=0.9)
+                            if not paper.venue:
+                                paper.venue = pdf_acceptance["venue"][:100]
+                                updated["venue"] = True
+                        paper.acceptance_type = pdf_acceptance.get("acceptance_type") or pdf_acceptance["acceptance_status"]
+                        updated["acceptance_from_pdf"] = True
+                        logger.info(f"PDF first-page acceptance for {paper.id}: {pdf_acceptance}")
+        except Exception as e:
+            logger.debug(f"PDF acceptance detection failed for {paper.id}: {e}")
+
+    # ── 10. Update state ──────────────────────────────────────
     if updated and paper.state == PaperState.CANONICALIZED:
         paper.state = PaperState.ENRICHED
 
