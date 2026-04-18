@@ -241,7 +241,7 @@ async def run_full_pipeline(
     try:
         from backend.services import discovery_service
         disc_result = await discovery_service.discover_related_papers(
-            session, paper_id, max_refs=20, max_citations=10
+            session, paper_id, max_references=20, max_citations=10
         )
         progress["steps"]["discover_citations"] = {
             "refs_found": disc_result.get("references_found", 0) if isinstance(disc_result, dict) else 0,

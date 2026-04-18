@@ -629,13 +629,20 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
         arxiv_data = await _fetch_arxiv(client, paper.arxiv_id)
         if arxiv_data:
             # VERIFY title match — arXiv API may return wrong paper for wrong ID
-            if arxiv_data.get("title") and paper.title:
+            # BUT skip verification if paper.title is just an arxiv ID placeholder
+            title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
+            if not title_is_placeholder and arxiv_data.get("title") and paper.title:
                 if not _titles_similar(paper.title, arxiv_data["title"]):
                     logger.warning(
                         f"arXiv title mismatch for {paper.arxiv_id}: "
                         f"expected '{paper.title[:40]}', got '{arxiv_data['title'][:40]}'"
                     )
                     arxiv_data = None  # Discard mismatched data
+
+            # If title is placeholder, always update with arXiv title
+            if title_is_placeholder and arxiv_data and arxiv_data.get("title"):
+                paper.title = arxiv_data["title"]
+                paper.title_sanitized = re.sub(r'[^a-zA-Z0-9]+', '_', arxiv_data["title"])[:80]
 
         if arxiv_data:
             # Record observations
