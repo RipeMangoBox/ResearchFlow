@@ -1,4 +1,4 @@
-# ResearchFlow Architecture v3.2
+# ResearchFlow Architecture v4.0
 
 ## 1. 一句话定义
 
@@ -14,7 +14,7 @@
 │                        Core Backend                                 │
 │                                                                     │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │ 96 API 路由  │  │ 18 MCP 工具  │  │ 30 Service 模块            │ │
+│  │ 99 API 路由  │  │ 22 MCP 工具  │  │ 34 Service 模块            │ │
 │  └─────────────┘  └──────────────┘  └────────────────────────────┘ │
 │                                                                     │
 │  PostgreSQL (42 表 + 4 物化视图) + pgvector + Redis + 对象存储       │
@@ -123,15 +123,33 @@ improvement/component_replacement — 替换核心组件
          └── 范式: 如果领域没有现成��式，LLM 动态发现并创建
 ```
 
-### 3.2 单篇论文完整管线 (16 步)
+### 3.2 单篇论文完整管线 (v4.0: 6 步 L4 管线)
 
 ```
 ingest → triage → download_pdf → enrich (arXiv/Crossref)
-→ parse_L2 (pymupdf) → skim_L3 (LLM) → deep_L4 (LLM)
-→ delta_card_build → link_to_parent_baselines
-→ entity_resolution → assertion_propose → evidence_audit
-→ review → publish → index → export
+→ parse_L2 (pymupdf) → skim_L3 (LLM)
+→ deep_L4 (6-step pipeline):
+    Step 1: extract_evidence   — 公式/图表/证据锚点 (先读 method，不先听 abstract)
+    Step 2: build_delta_card   — 基线/slot/机制/瓶颈 (用 Step 1 证据 grounding)
+    Step 3: build_compare_set  — 从 DB 自动补齐比较集 (不靠论文自述)
+    Step 4: propose_lineage    — builds_on/extends/replaces DAG 边
+    Step 5: synthesize_concept — 跨论文更新 CanonicalIdea + MechanismFamily
+    Step 6: reconcile_neighbors — 反向更新旧论文的 same_family/comparison
+→ review → publish → export
 ```
+
+**三道防线**:
+1. **先看改动不先听故事**: Step 1 prompt 要求 FIRST read Method → THEN Experiments → ONLY THEN Abstract
+2. **比较集不是论文自己说了算**: Step 3 从 DB 查 domain baseline + same mechanism + same-period strong peers
+3. **高价值结论必须有证据锚点**: publish gate 要求 evidence_refs ≥ 2
+
+**每步独立重试**: 失败只重试该步，不重跑全部。Step 1+2 各自有独立 prompt/schema。
+
+**新增 Service 模块** (v4.0):
+- `analysis_steps.py` — Step 1+2 聚焦 prompt + merge 逻辑
+- `baseline_comparator_service.py` — Step 3: 4 源比较集 (domain baseline / same mechanism / strong peer / self-reported)
+- `concept_synthesizer_service.py` — Step 5: MechanismFamily + CanonicalIdea 解析与关联
+- `incremental_reconciler_service.py` — Step 6: 反向更新邻居 DeltaCard
 
 ### 3.3 研究探索: 多跳认知迭代
 
@@ -256,7 +274,7 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 
 ---
 
-## 7. API 路由总览 (96 路由, 13 Router)
+## 7. API 路由总览 (99 路由, 14 Router)
 
 | Router | 前缀 | 关键端点 |
 |--------|------|---------|
@@ -277,7 +295,47 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 
 ---
 
-## 8. 技术栈
+## 8. Obsidian Vault 导出 (v4.0)
+
+### 5 类笔记
+
+| 类型 | 前缀 | 目录 | 正文 wikilinks |
+|------|------|------|---------------|
+| Paper | `P__` | `40_Papers/{A/B/C/D}__*/` | 6-8 个 (1-2 baseline + 1 concept + 1 bottleneck + 1 lineage + 2 same-family) |
+| Concept | `C__` | `20_Concepts/` | 不限 (代表论文对比表) |
+| Bottleneck | `B__` | `30_Bottlenecks/` | 不限 (结构性/插件型解法分层) |
+| Lineage | `L__` | `10_Lineages/` | 不限 (ASCII 演化树) |
+| Overview | — | `00_Home/` | 纯导航 |
+
+### 关键规则
+
+- Paper Note **不链接** Domain Overview / Paradigm → 只放 frontmatter `frame` 属性
+- Concept = MechanismFamily + CanonicalIdea **合并** → 单一信息密集页
+- Bottleneck = **跨论文综合** insight → 不是每篇论文各建一个
+- Lineage = **人类可读**的演化链 → 含 ASCII 树 + 每步 diff + 分叉点
+- 导出前 `shutil.rmtree` 清理旧 vault → 确保无残留
+
+### 目录结构
+
+```
+00_Home/
+  00_方向总览.md        # 方法主线 + 核心概念 + 研究瓶颈 + 论文分布
+  01_阅读顺序.md        # 分层: 框架 → baseline → 结构性 → 按需
+10_Lineages/
+20_Concepts/
+30_Bottlenecks/
+40_Papers/
+  A__Baselines/         # ring=baseline 或 struct ≥ 0.7
+  B__Structural/        # ring=structural 或 struct ≥ 0.5
+  C__Plugins/           # ring=plugin 或 struct ≥ 0.3
+  D__Peripheral/        # 其余
+80_Assets/figures/      # PDF 提取的图表 (按 paper_sanitized 分目录)
+90_Views/               # Dataview 查询页 (按结构性/年份/概念/瓶颈)
+```
+
+---
+
+## 9. 技术栈
 
 | 组件 | 选型 |
 |------|------|

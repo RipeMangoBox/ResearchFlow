@@ -1,12 +1,15 @@
 {
   "mcpServers": {
-    "researchflow": {
+    "researchflow-local": {
       "command": "python",
       "args": ["-m", "backend.mcp.server"],
       "cwd": "researchflow-backend",
       "env": {
         "PYTHONPATH": "."
       }
+    },
+    "researchflow-remote": {
+      "url": "http://47.101.167.55:8001/sse"
     }
   }
 }

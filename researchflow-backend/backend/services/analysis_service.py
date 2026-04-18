@@ -241,23 +241,36 @@ async def skim_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | N
     return analysis
 
 
-# ── L4 Deep ─────────────────────────────────────────────────────
+# ── L4 Deep (6-step pipeline) ──────────────────────────────────
 
 async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | None:
-    """Run L4 deep analysis on a paper.
+    """Run L4 deep analysis — 6-step pipeline with independent retry.
 
-    Uses full extracted text from L2 parse + all metadata.
-    Produces full report + delta card + evidence units.
+    Pipeline:
+      Step 1: extract_evidence  (equations/figures/evidence_spans)
+      Step 2: build_delta_card  (baseline/slots/mechanisms/bottleneck)
+      Step 3: build_compare_set (auto-fill comparison set from DB)
+      Step 4: propose_lineage   (builds_on/extends/replaces)
+      Step 5: synthesize_concept(multi-paper → update Concept)
+      Step 6: reconcile_neighbors(reverse-update old papers)
+
+    Defense lines:
+      #1 Step 1 reads method/experiments FIRST, then cross-checks abstract.
+      #2 Step 3 auto-fills comparison set from DB, not just paper self-report.
+      #3 High-value claims require ≥2 evidence refs (enforced by publish gate).
     """
+    from backend.services.analysis_steps import (
+        _gather_text,
+        merge_step_outputs,
+        run_step1_extract_evidence,
+        run_step2_build_delta,
+    )
+
     paper = await session.get(Paper, paper_id)
     if not paper:
         return None
 
-    # Gather full text from L2
-    text_parts = []
-    if paper.abstract:
-        text_parts.append(f"Abstract:\n{paper.abstract}")
-
+    # ── Gather text from L2 parse ─────────────────────────────
     l2_result = await session.execute(
         select(PaperAnalysis).where(
             PaperAnalysis.paper_id == paper_id,
@@ -266,40 +279,20 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         )
     )
     l2 = l2_result.scalar_one_or_none()
-    if l2 and l2.extracted_sections:
-        for key, val in l2.extracted_sections.items():
-            if key != "references":
-                text_parts.append(f"\n## {key.title()}\n{val}")
+    text_content = _gather_text(paper, l2)
 
-    text_content = "\n\n".join(text_parts)
+    # ── Step 1: Extract evidence ──────────────────────────────
+    logger.info(f"[L4 Step 1/6] extract_evidence for {paper_id}")
+    step1_data = await run_step1_extract_evidence(session, paper, text_content)
 
-    prompt = L4_PROMPT_TEMPLATE.format(
-        title=paper.title,
-        venue=paper.venue or "",
-        year=paper.year or "",
-        category=paper.category,
-        tags=", ".join(paper.tags or []),
-        core_operator=paper.core_operator or "N/A",
-        primary_logic=paper.primary_logic or "N/A",
-        text_content=text_content[:30000],  # Larger cap for L4
-    )
+    # ── Step 2: Build delta card ──────────────────────────────
+    logger.info(f"[L4 Step 2/6] build_delta for {paper_id}")
+    step2_data = await run_step2_build_delta(session, paper, text_content, step1_data)
 
-    resp = await call_llm(
-        prompt=prompt,
-        system=L4_SYSTEM,
-        max_tokens=4096,
-        session=session,
-        paper_id=paper_id,
-        prompt_version="l4_v1",
-    )
+    # Merge into unified analysis_data (backward-compatible shape)
+    analysis_data = merge_step_outputs(step1_data, step2_data)
 
-    analysis_data = _parse_json_response(
-        resp.text,
-        required_fields=["problem_summary", "method_summary", "evidence_summary",
-                         "changed_slots", "delta_card", "evidence_units"],
-    )
-
-    # Adjust confidence based on input quality
+    # ── Confidence based on input quality ─────────────────────
     input_length = len(text_content)
     if input_length < 500:
         analysis_data["_input_quality"] = "title_only"
@@ -311,7 +304,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         analysis_data["_input_quality"] = "full_text"
         analysis_confidence = 0.8
 
-    # Mark old L4 as superseded
+    # ── Supersede old L4 ──────────────────────────────────────
     old_l4 = await session.execute(
         select(PaperAnalysis).where(
             PaperAnalysis.paper_id == paper_id,
@@ -323,17 +316,19 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     if old:
         old.is_current = False
 
-    # Build full report markdown
+    # ── Build report and persist PaperAnalysis ────────────────
     full_report = _build_report_md(paper, analysis_data)
 
-    # Create L4 analysis
+    model_provider = analysis_data.get("_model_provider", "unknown")
+    model_name = analysis_data.get("_model_name", "unknown")
+
     analysis = PaperAnalysis(
         paper_id=paper_id,
         level=AnalysisLevel.L4_DEEP,
-        model_provider=resp.provider,
-        model_name=resp.model,
-        prompt_version="l4_v1",
-        schema_version="v1",
+        model_provider=model_provider,
+        model_name=model_name,
+        prompt_version="l4_step_v1",
+        schema_version="v2",
         confidence=analysis_confidence,
         problem_summary=analysis_data.get("problem_summary"),
         method_summary=analysis_data.get("method_summary"),
@@ -349,7 +344,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     )
     session.add(analysis)
 
-    # Legacy: Create method delta if provided (backward compat)
+    # Legacy MethodDelta (backward compat)
     delta_data = analysis_data.get("delta_card")
     if delta_data and isinstance(delta_data, dict):
         delta = MethodDelta(
@@ -362,11 +357,10 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         )
         session.add(delta)
 
-    # Update state
+    # Update state + tags
     if paper.state != PaperState.CHECKED:
         paper.state = PaperState.L4_DEEP
 
-    # Save method_category and improvement_type as tags
     method_cat = analysis_data.get("method_category")
     improvement_type = analysis_data.get("improvement_type")
     new_tags = list(paper.tags or [])
@@ -386,20 +380,47 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
     await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
 
-    # ── Auto-refresh connections (incremental cross-update) ────
+    # ── Step 3: Build comparison set (defense line #2) ────────
+    logger.info(f"[L4 Step 3/6] build_compare_set for {paper_id}")
     try:
-        from backend.services.evolution_service import refresh_connections
-        await refresh_connections(session, paper.id)
+        from backend.services.baseline_comparator_service import build_compare_set
+        await build_compare_set(session, paper.id, analysis_data)
     except Exception as e:
-        logger.warning(f"Connection refresh failed for {paper.id}: {e}")
+        logger.warning(f"Step 3 (compare_set) failed for {paper.id}: {e}")
 
-    # ── Auto-export to paperAnalysis/ Markdown ───────────────
+    # ── Step 4: Propose lineage ───────────────────────────────
+    logger.info(f"[L4 Step 4/6] propose_lineage for {paper_id}")
+    try:
+        from backend.services.evolution_service import link_to_parent_baselines
+        if paper.current_delta_card_id:
+            await link_to_parent_baselines(session, paper.current_delta_card_id, analysis_data)
+    except Exception as e:
+        logger.warning(f"Step 4 (lineage) failed for {paper.id}: {e}")
+
+    # ── Step 5: Synthesize concepts ───────────────────────────
+    logger.info(f"[L4 Step 5/6] synthesize_concept for {paper_id}")
+    try:
+        from backend.services.concept_synthesizer_service import synthesize_concepts
+        await synthesize_concepts(session, paper.id, analysis_data)
+    except Exception as e:
+        logger.warning(f"Step 5 (concept) failed for {paper.id}: {e}")
+
+    # ── Step 6: Reconcile neighbors ───────────────────────────
+    logger.info(f"[L4 Step 6/6] reconcile_neighbors for {paper_id}")
+    try:
+        from backend.services.incremental_reconciler_service import reconcile_neighbors
+        await reconcile_neighbors(session, paper.id, analysis_data)
+    except Exception as e:
+        logger.warning(f"Step 6 (reconcile) failed for {paper.id}: {e}")
+
+    # ── Auto-export to paperAnalysis/ Markdown ────────────────
     try:
         from backend.services.export_service import export_paper_analysis
         await export_paper_analysis(session, paper.id)
     except Exception as e:
         logger.warning(f"Auto-export to paperAnalysis/ failed for {paper.id}: {e}")
 
+    logger.info(f"[L4 complete] 6-step pipeline done for {paper_id}")
     return analysis
 
 

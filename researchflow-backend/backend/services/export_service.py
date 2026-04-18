@@ -222,53 +222,98 @@ async def build_collection_index(
     }
 
 
-# ── Obsidian Vault Export (Karpathy-style) ───────────────────────
+# ── Obsidian Vault Export v4.0 ────────────────────────────────────
+#
+# 5 note types: Paper (P__) / Concept (C__) / Bottleneck (B__) /
+#               Lineage (L__) / Overview (00_Home)
+#
+# Paper Note wikilink budget: 6-8 in body.
+# Paradigm / Domain Overview are NOT linked — only in frontmatter.
+# ─────────────────────────────────────────────────────────────────
 
-def _sanitize_wikilink(title: str) -> str:
-    """Sanitize a title for use as Obsidian wikilink target."""
-    return title.replace("|", "-").replace("[", "(").replace("]", ")").replace("#", "")
+
+def _safe_name(raw: str, max_len: int = 80) -> str:
+    """Turn an arbitrary string into a filesystem + wikilink-safe slug."""
+    return (
+        raw.replace(" ", "_").replace("/", "-").replace(":", "-")
+        .replace("|", "-").replace("[", "(").replace("]", ")")
+        .replace("#", "")[:max_len]
+    )
+
+
+def _paper_level(p) -> str:
+    """Assign A/B/C/D level from ring or structurality_score."""
+    ring = getattr(p, "ring", None)
+    if ring == "baseline":
+        return "A"
+    if ring == "structural":
+        return "B"
+    if ring == "plugin":
+        return "C"
+    if p.dc_struct is not None:
+        s = float(p.dc_struct)
+        if s >= 0.7:
+            return "A"
+        if s >= 0.5:
+            return "B"
+        if s >= 0.3:
+            return "C"
+    return "D"
+
+
+_LEVEL_DIRS = {
+    "A": "A__Baselines",
+    "B": "B__Structural",
+    "C": "C__Plugins",
+    "D": "D__Peripheral",
+}
 
 
 async def export_obsidian_vault(
     session: AsyncSession,
     out_dir: str | None = None,
 ) -> dict:
-    """Export full knowledge base as Obsidian-ready vault with wikilinks + concept pages.
+    """Export knowledge base as Obsidian vault — v4.0 redesign.
 
-    Generates:
-    - papers/{Category}/{Venue_Year}/{title}.md — per-paper pages with [[wikilinks]]
-    - concepts/mechanisms/{name}.md — hub page per mechanism family
-    - concepts/bottlenecks/{title}.md — hub page per bottleneck
-    - concepts/paradigms/{name}.md — hub page per paradigm
-    - _Index.md — vault root with Dataview queries
-    - _Graph.md — Obsidian graph view instructions
-
-    All pages use Dataview-compatible YAML frontmatter and [[wikilinks]].
+    Only 5 note types:
+        P__ Paper / C__ Concept / B__ Bottleneck / L__ Lineage / Overview
+    Directory layout:
+        00_Home / 10_Lineages / 20_Concepts / 30_Bottlenecks /
+        40_Papers / 80_Assets / 90_Views
+    Paper body wikilinks capped at 6-8; no links to Domain Overview or Paradigm.
     """
+    import shutil
+
     root = Path(out_dir or settings.paper_analysis_dir).parent / "obsidian-vault"
+    if root.exists():
+        shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
 
-    stats = {"papers": 0, "mechanisms": 0, "bottlenecks": 0, "paradigms": 0, "lineage_edges": 0}
+    stats = {"papers": 0, "concepts": 0, "bottlenecks": 0, "lineages": 0}
 
-    # ── 1. Fetch all data ─────────────────────────────────────
+    # ── 1. Fetch all data ─────────────────────────────────────────
     papers = (await session.execute(text("""
         SELECT p.id, p.title, p.title_sanitized, p.venue, p.year, p.category,
                p.tags, p.core_operator, p.primary_logic, p.abstract,
-               p.paper_link, p.code_url, p.mechanism_family,
-               p.structurality_score, p.extensionability_score, p.keep_score,
+               p.paper_link, p.code_url, p.mechanism_family, p.ring,
+               p.structurality_score, p.keep_score,
                p.open_code, p.open_data, p.importance, p.state,
                dc.delta_statement, dc.baseline_paradigm,
                dc.structurality_score AS dc_struct,
+               dc.transferability_score AS dc_transfer,
                dc.key_ideas_ranked, dc.assumptions, dc.failure_modes,
                dc.key_equations, dc.key_figures, dc.same_family_paper_ids,
                dc.changed_slot_ids, dc.unchanged_slot_ids,
+               dc.baseline_paper_ids,
                pa.problem_summary, pa.method_summary, pa.evidence_summary,
                pa.core_intuition, pa.full_report_md, pa.changed_slots,
                pa.extracted_figure_images
         FROM papers p
         LEFT JOIN delta_cards dc ON dc.id = COALESCE(
             p.current_delta_card_id,
-            (SELECT id FROM delta_cards dc2 WHERE dc2.paper_id = p.id AND dc2.status != 'deprecated' ORDER BY dc2.created_at DESC LIMIT 1)
+            (SELECT id FROM delta_cards dc2
+             WHERE dc2.paper_id = p.id AND dc2.status != 'deprecated'
+             ORDER BY dc2.created_at DESC LIMIT 1)
         )
         LEFT JOIN paper_analyses pa ON pa.paper_id = p.id
             AND pa.is_current = true AND pa.level = 'l4_deep'
@@ -277,517 +322,634 @@ async def export_obsidian_vault(
     """))).fetchall()
 
     mechanisms = (await session.execute(text(
-        "SELECT id, name, domain, description, aliases FROM mechanism_families ORDER BY name"
+        "SELECT id, name, domain, description, aliases "
+        "FROM mechanism_families ORDER BY name"
+    ))).fetchall()
+
+    canonical_ideas = (await session.execute(text("""
+        SELECT ci.id, ci.title, ci.description, ci.domain,
+               ci.mechanism_family_id, ci.aliases, ci.tags,
+               ci.contribution_count
+        FROM canonical_ideas ci
+        WHERE ci.status IN ('candidate', 'established')
+        ORDER BY ci.title
+    """))).fetchall()
+
+    paper_idea_links = (await session.execute(text(
+        "SELECT canonical_idea_id, paper_id, contribution_type "
+        "FROM contribution_to_canonical_idea"
     ))).fetchall()
 
     bottlenecks = (await session.execute(text(
-        "SELECT id, title, description, domain FROM project_bottlenecks WHERE status = 'active' ORDER BY title"
+        "SELECT id, title, description, domain, symptom_query, latent_need "
+        "FROM project_bottlenecks WHERE status = 'active' ORDER BY title"
     ))).fetchall()
 
-    paradigms = (await session.execute(text(
-        "SELECT id, name, version, domain, slots FROM paradigm_templates ORDER BY name"
-    ))).fetchall()
+    claims = (await session.execute(text("""
+        SELECT pbc.bottleneck_id, pbc.claim_text, pbc.is_primary,
+               p.title AS paper_title, p.title_sanitized
+        FROM paper_bottleneck_claims pbc
+        JOIN papers p ON p.id = pbc.paper_id
+    """))).fetchall()
 
-    lineage = (await session.execute(text("""
-        SELECT dcl.relation_type, dcl.confidence, dcl.status,
-               child_p.title AS child_title, parent_p.title AS parent_title
+    lineage_rows = (await session.execute(text("""
+        SELECT dcl.relation_type, dcl.confidence,
+               child_p.title AS child_title,
+               child_p.title_sanitized AS child_sanitized,
+               child_p.mechanism_family AS child_mech,
+               parent_p.title AS parent_title,
+               parent_p.title_sanitized AS parent_sanitized
         FROM delta_card_lineage dcl
         JOIN delta_cards child_dc ON child_dc.id = dcl.child_delta_card_id
         JOIN papers child_p ON child_p.id = child_dc.paper_id
         JOIN delta_cards parent_dc ON parent_dc.id = dcl.parent_delta_card_id
         JOIN papers parent_p ON parent_p.id = parent_dc.paper_id
+        WHERE dcl.status != 'rejected'
     """))).fetchall()
 
-    # Build lookup maps
-    paper_title_set = {r.title for r in papers}
-    mechanism_names = {r.name for r in mechanisms}
-    bottleneck_titles = {r.title for r in bottlenecks}
-    paradigm_names = {r.name for r in paradigms}
+    # ── 2. Build lookup maps ──────────────────────────────────────
+    id_to_san: dict[str, str] = {str(p.id): p.title_sanitized for p in papers}
+    san_to_title: dict[str, str] = {p.title_sanitized: p.title for p in papers}
+    title_to_san: dict[str, str] = {p.title: p.title_sanitized for p in papers}
 
-    # Lineage lookup: child_title → [(relation, parent_title), ...]
-    lineage_map: dict[str, list] = {}
-    reverse_lineage: dict[str, list] = {}
-    for ln in lineage:
-        lineage_map.setdefault(ln.child_title, []).append((ln.relation_type, ln.parent_title))
-        reverse_lineage.setdefault(ln.parent_title, []).append((ln.relation_type, ln.child_title))
-        stats["lineage_edges"] += 1
+    # Lineage maps  (keyed by title_sanitized)
+    lineage_map: dict[str, list[tuple[str, str]]] = {}   # child_san → [(rel, parent_san)]
+    reverse_lineage: dict[str, list[tuple[str, str]]] = {}  # parent_san → [(rel, child_san)]
+    for ln in lineage_rows:
+        lineage_map.setdefault(ln.child_sanitized, []).append(
+            (ln.relation_type, ln.parent_sanitized))
+        reverse_lineage.setdefault(ln.parent_sanitized, []).append(
+            (ln.relation_type, ln.child_sanitized))
 
-    # Paper → mechanism mapping
-    paper_mechanisms: dict[str, str] = {}
+    # Mechanism → papers
+    mech_papers: dict[str, list] = {}
     for p in papers:
         if p.mechanism_family:
-            paper_mechanisms[p.title] = p.mechanism_family
+            mech_papers.setdefault(p.mechanism_family, []).append(p)
 
-    # Build id→title lookup for same_family resolution
-    id_to_title = {str(p.id): p.title for p in papers}
+    mech_id_to_name = {str(m.id): m.name for m in mechanisms}
 
-    # ── 2. Generate paper pages (structured modification card) ─
-    # Directory by ring: 10_Baselines/ 20_Structural/ 30_Plugins/
-    ring_dirs = {"baseline": "10_Baselines", "structural": "20_Structural", "plugin": "30_Plugins"}
+    # Canonical‑idea ↔ paper mapping
+    idea_to_paper_sans: dict[str, list[str]] = {}
+    for link in paper_idea_links:
+        san = id_to_san.get(str(link.paper_id))
+        if san:
+            idea_to_paper_sans.setdefault(str(link.canonical_idea_id), []).append(san)
+
+    # Bottleneck helpers
+    bn_safe_name: dict[str, str] = {}  # bn.title → safe slug
+    for bn in bottlenecks:
+        bn_safe_name[bn.title] = _safe_name(bn.title, 60)
+
+    bn_claims_map: dict[str, list[tuple[str, str, str, bool]]] = {}
+    for c in claims:
+        bn_claims_map.setdefault(str(c.bottleneck_id), []).append(
+            (c.paper_title, c.title_sanitized, c.claim_text,
+             getattr(c, "is_primary", False)))
+
+    # Paper → primary bottleneck slug
+    paper_to_bn: dict[str, str] = {}  # san → bn slug
+    for bn in bottlenecks:
+        for _title, _san, _claim, _primary in bn_claims_map.get(str(bn.id), []):
+            if _primary and _san:
+                paper_to_bn.setdefault(_san, bn_safe_name[bn.title])
+
+    # ── Build Concept list (merge Mechanism + CanonicalIdea) ──────
+    concepts: list[dict] = []
+    used_idea_ids: set[str] = set()
+
+    for mf in mechanisms:
+        slug = _safe_name(mf.name)
+        linked_ideas = [ci for ci in canonical_ideas
+                        if ci.mechanism_family_id
+                        and str(ci.mechanism_family_id) == str(mf.id)]
+        used_idea_ids.update(str(ci.id) for ci in linked_ideas)
+
+        concepts.append({
+            "slug": slug,
+            "display": mf.name,
+            "desc": mf.description,
+            "domain": mf.domain,
+            "aliases": list(mf.aliases) if mf.aliases else [],
+            "papers": mech_papers.get(mf.name, []),
+            "ideas": linked_ideas,
+        })
+
+    # Standalone canonical ideas (not linked to any mechanism)
+    for ci in canonical_ideas:
+        if str(ci.id) in used_idea_ids:
+            continue
+        slug = _safe_name(ci.title)
+        idea_sans = idea_to_paper_sans.get(str(ci.id), [])
+        idea_papers = [p for p in papers if p.title_sanitized in idea_sans]
+        concepts.append({
+            "slug": slug,
+            "display": ci.title,
+            "desc": ci.description,
+            "domain": ci.domain,
+            "aliases": list(ci.aliases) if ci.aliases else [],
+            "papers": idea_papers,
+            "ideas": [ci],
+        })
+
+    # Paper → concept slug
+    paper_to_concept: dict[str, str] = {}  # san → concept slug
+    for c in concepts:
+        for p in c["papers"]:
+            paper_to_concept.setdefault(p.title_sanitized, c["slug"])
+
+    # ── Build Lineage groups (by mechanism family) ────────────────
+    lineage_groups: dict[str, dict] = {}  # group_key → {papers, edges}
     for p in papers:
-        ring = getattr(p, "ring", None) or "plugin"
-        ring_dir_name = ring_dirs.get(ring, "30_Plugins")
-        paper_dir = root / ring_dir_name / (p.category or "Uncategorized")
+        san = p.title_sanitized
+        if san in lineage_map or san in reverse_lineage:
+            group = p.mechanism_family or "Mixed"
+            grp = lineage_groups.setdefault(group, {"papers": set(), "edges": []})
+            grp["papers"].add(san)
+            for rel, parent_san in lineage_map.get(san, []):
+                grp["papers"].add(parent_san)
+                grp["edges"].append((parent_san, san, rel))
+
+    lineage_slug: dict[str, str] = {}  # group_key → safe slug
+    for gk in lineage_groups:
+        lineage_slug[gk] = _safe_name(gk)
+
+    paper_to_lineage: dict[str, str] = {}  # san → lineage slug
+    for gk, gd in lineage_groups.items():
+        for san in gd["papers"]:
+            paper_to_lineage.setdefault(san, lineage_slug[gk])
+
+    # ── 3. Generate Paper Notes (40_Papers/) ──────────────────────
+    for p in papers:
+        level = _paper_level(p)
+        paper_dir = root / "40_Papers" / _LEVEL_DIRS[level]
         paper_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_title = _sanitize_wikilink(p.title)
-        filename = f"{p.title_sanitized or str(p.id)}.md"
-
-        # Resolve changed/unchanged slots
+        san = p.title_sanitized or str(p.id)
+        filename = f"P__{san}.md"
         changed_slots = list(p.changed_slots) if p.changed_slots else []
-        is_structural = p.dc_struct is not None and float(p.dc_struct) >= 0.5
 
-        # Frontmatter (Dataview-compatible)
-        fm = {
+        # Resolve wikilink targets  (budget: 6-8)
+        ancestors = lineage_map.get(san, [])
+        baseline_links = [f"[[P__{psan}]]" for _, psan in ancestors[:2]]
+
+        same_fam_ids = p.same_family_paper_ids or []
+        same_fam = [id_to_san[str(s)] for s in same_fam_ids
+                     if str(s) in id_to_san][:2]
+
+        concept_slug = paper_to_concept.get(san)
+        bn_slug = paper_to_bn.get(san)
+        lin_slug = paper_to_lineage.get(san)
+
+        concept_link = f"[[C__{concept_slug}]]" if concept_slug else None
+        bn_link = f"[[B__{bn_slug}]]" if bn_slug else None
+        lin_link = f"[[L__{lin_slug}]]" if lin_slug else None
+
+        # ── Frontmatter ──
+        fm: dict = {
             "title": p.title,
             "type": "paper",
-            "venue": p.venue,
+            "paper_id": f"P__{san}",
+            "aliases": [san],
             "year": p.year,
-            "category": p.category,
-            "tags": list(p.tags) if p.tags else [],
-            "importance": p.importance,
-            "state": p.state,
+            "venue": p.venue,
+            "paper_level": level,
+            "frame": p.baseline_paradigm,          # property only, never wikilink
+            "changed_slots": changed_slots,
             "structurality_score": round(float(p.dc_struct), 3) if p.dc_struct else None,
             "keep_score": round(float(p.keep_score), 3) if p.keep_score else None,
             "open_code": p.open_code,
-            "open_data": p.open_data,
-            "mechanism_family": p.mechanism_family,
-            "paradigm": p.baseline_paradigm,
-            "changed_slots": changed_slots,
+            "baseline_papers": baseline_links or None,
+            "concepts": [concept_link] if concept_link else [],
+            "bottleneck": [bn_link] if bn_link else [],
+            "lineage": [lin_link] if lin_link else [],
+            "same_family_papers": [f"[[P__{s}]]" for s in same_fam] or [],
         }
+        fm = {k: v for k, v in fm.items() if v is not None}
         if p.paper_link:
             fm["paper_link"] = p.paper_link
         if p.code_url:
             fm["code_url"] = p.code_url
 
-        body = [f"# {p.title}\n"]
+        # ── Body ──
+        body: list[str] = [f"# {p.title}\n"]
 
-        # ── One-line summary (callout) ──
-        slot_str = ", ".join(f"`{s}`" for s in changed_slots[:3]) if changed_slots else "unknown slots"
-        type_str = "structural" if is_structural else "plugin"
-        ancestors = lineage_map.get(p.title, [])
-        ancestor_links = ", ".join(f"[[{_sanitize_wikilink(pt)}]]" for _, pt in ancestors[:3])
-        if ancestor_links:
-            body.append(f"> 基于 {ancestor_links}，改了 {slot_str}；类型：**{type_str}**\n")
-        elif p.baseline_paradigm:
-            body.append(f"> 基于 `{p.baseline_paradigm}` 范式，改了 {slot_str}；类型：**{type_str}**\n")
+        # 一眼看懂 callout
+        slot_str = ", ".join(f"`{s}`" for s in changed_slots[:3]) if changed_slots else "?"
+        base_str = (", ".join(baseline_links[:2])
+                    if baseline_links
+                    else (f"`{p.baseline_paradigm}`" if p.baseline_paradigm else "?"))
+        callout = [f"> 基于 {base_str}，改了 {slot_str}"]
+        if concept_link:
+            callout.append(f"> 属于 {concept_link}")
+        if bn_link:
+            callout.append(f"> 目标是缓解 {bn_link}")
+        body.append(",\n".join(callout) + "\n")
 
-        # ── Baseline comparison table ──
-        body.append("## Baseline 对照\n")
-        body.append("| 项 | 内容 |")
-        body.append("|---|---|")
-        # Baselines
-        if ancestors:
-            body.append(f"| 基于 | {', '.join(f'[[{_sanitize_wikilink(pt)}]]' for _, pt in ancestors)} |")
-        elif p.baseline_paradigm:
-            body.append(f"| 基于 | `{p.baseline_paradigm}` (标准范式) |")
-        # Changed slots
-        if changed_slots:
-            body.append(f"| 改了 | {', '.join(changed_slots)} |")
-        # Type
-        body.append(f"| 类型 | {type_str} |")
-        # Mechanism
-        if p.mechanism_family:
-            if p.mechanism_family in mechanism_names:
-                body.append(f"| 机制 | [[{p.mechanism_family}]] |")
-            else:
-                body.append(f"| 机制 | {p.mechanism_family} |")
-        # Structurality
-        if p.dc_struct is not None:
-            body.append(f"| 结构性 | {float(p.dc_struct):.2f} |")
+        # 相对 baseline 改了什么
+        body.append("## 相对 baseline 改了什么\n")
+        if ancestors and changed_slots:
+            body.append("| 相比 | 改动 slot | 收益 | 代价 |")
+            body.append("|------|---------|------|------|")
+            parent_ref = f"[[P__{ancestors[0][1]}]]"
+            for slot in changed_slots[:4]:
+                body.append(f"| {parent_ref} | {slot} | — | — |")
+        elif p.delta_statement:
+            body.append(f"> {p.delta_statement[:300]}\n")
         body.append("")
 
-        # ── Key equations ──
+        # 关键公式
         key_eqs = p.key_equations if isinstance(p.key_equations, list) else []
         if key_eqs:
             body.append("## 关键公式\n")
             for eq in key_eqs[:4]:
                 if isinstance(eq, dict):
-                    latex = eq.get("latex", "")
+                    body.append(f"- $${eq.get('latex', '')}$$")
                     slot = eq.get("slot_affected", "")
-                    explanation = eq.get("explanation", "")
-                    body.append(f"- $${latex}$$")
-                    if slot or explanation:
-                        body.append(f"  - {slot}：{explanation}")
+                    expl = eq.get("explanation", "")
+                    if slot or expl:
+                        body.append(f"  - {slot}：{expl}")
             body.append("")
 
-        # ── Key figures ──
+        # 关键图表
         key_figs = p.key_figures if isinstance(p.key_figures, list) else []
         if key_figs:
             body.append("## 关键图表\n")
             for fig in key_figs[:4]:
                 if isinstance(fig, dict):
-                    ref = fig.get("fig_ref", "")
-                    caption = fig.get("caption", "")
-                    evidence = fig.get("evidence_for", "")
-                    body.append(f"- **{ref}**: {caption}")
-                    if evidence:
-                        body.append(f"  - 证据：{evidence}")
+                    body.append(f"- **{fig.get('fig_ref', '')}**: {fig.get('caption', '')}")
+                    ev = fig.get("evidence_for", "")
+                    if ev:
+                        body.append(f"  - 证据：{ev}")
             body.append("")
 
-        # ── Extracted figure images (from PDF) ──
-        fig_images = p.extracted_figure_images if isinstance(p.extracted_figure_images, list) else []
-        if fig_images:
-            assets_dir = root / "assets" / str(p.id)
-            assets_dir.mkdir(parents=True, exist_ok=True)
-            from backend.services.object_storage import get_storage
-            storage = get_storage()
-            if not key_figs:  # Only show extracted images if no LLM-selected key figures
-                body.append("## 论文图表\n")
-            for fig_rec in fig_images[:6]:
-                obj_key = fig_rec.get("object_key", "")
-                fig_num = fig_rec.get("figure_num", 0)
-                ext = obj_key.rsplit(".", 1)[-1] if "." in obj_key else "png"
-                local_name = f"fig_{fig_num}.{ext}"
-                try:
-                    img_data = await storage.get(obj_key)
-                    if img_data:
-                        (assets_dir / local_name).write_bytes(img_data)
-                        rel_path = f"assets/{p.id}/{local_name}"
-                        if not key_figs:
-                            body.append(f"![[{rel_path}]]")
-                            body.append("")
-                except Exception:
-                    pass
-
-        # ── Same-family papers ──
-        same_fam_ids = p.same_family_paper_ids if p.same_family_paper_ids else []
-        same_fam_titles = [id_to_title.get(str(sid)) for sid in same_fam_ids if str(sid) in id_to_title]
-        if same_fam_titles:
-            body.append("## 同类型论文\n")
-            for t in same_fam_titles[:8]:
-                body.append(f"- [[{_sanitize_wikilink(t)}]]")
+        # 同类型工作 (max 2 links)
+        if same_fam:
+            body.append("## 同类型工作\n")
+            for s in same_fam[:2]:
+                body.append(f"- [[P__{s}]]")
             body.append("")
 
-        # ── Lineage position ──
-        descendants = reverse_lineage.get(p.title, [])
-        if ancestors or descendants:
-            body.append("## 演化位置\n")
-            for rel, parent in ancestors:
-                body.append(f"- 上游 ({rel}): [[{_sanitize_wikilink(parent)}]]")
-            for rel, child in descendants:
-                body.append(f"- 下游 ({rel}): [[{_sanitize_wikilink(child)}]]")
+        # 在主线中的位置 (1 lineage link + immediate neighbors)
+        if lin_link:
+            body.append("## 在主线中的位置\n")
+            body.append(f"→ 见 {lin_link}\n")
+            for rel, psan in ancestors[:2]:
+                body.append(f"- 上游 ({rel}): [[P__{psan}]]")
+            for rel, csan in reverse_lineage.get(san, [])[:2]:
+                body.append(f"- 下游 ({rel}): [[P__{csan}]]")
             body.append("")
 
-        # ── Detailed analysis ──
+        # 阅读建议
+        body.append("## 阅读建议\n")
+        advice = {
+            "A": "> **必读 baseline**。先理解此论文建立的标准框架，再看后续改进。\n",
+            "B": "> **结构性改进**。建议先读 baseline，再看本文如何修改核心 slot。\n",
+            "C": "> **插件型改进**。可快速浏览，重点看改了哪个 slot 和实验对比。\n",
+            "D": "> **外围参考**。按需阅读。\n",
+        }
+        body.append(advice[level])
+
+        # 详细分析
         body.append("## 详细分析\n")
         if p.full_report_md:
             body.append(p.full_report_md)
         else:
             if p.problem_summary:
-                body.append(f"### Part I: 问题与挑战\n\n{p.problem_summary}\n")
+                body.append(f"### 问题与挑战\n\n{p.problem_summary}\n")
             if p.method_summary:
-                body.append(f"### Part II: 方法与洞察\n\n{p.method_summary}\n")
+                body.append(f"### 方法与洞察\n\n{p.method_summary}\n")
             if p.core_intuition:
                 body.append(f"#### 核心直觉\n\n{p.core_intuition}\n")
             if p.evidence_summary:
-                body.append(f"### Part III: 证据与局限\n\n{p.evidence_summary}\n")
-
+                body.append(f"### 证据与局限\n\n{p.evidence_summary}\n")
         if p.delta_statement:
             body.append(f"\n### Delta Statement\n\n{p.delta_statement}\n")
 
         content = _render_frontmatter(fm) + "\n".join(body)
         (paper_dir / filename).write_text(content, encoding="utf-8")
+
+        # Export figure images to 80_Assets/
+        fig_images = p.extracted_figure_images if isinstance(p.extracted_figure_images, list) else []
+        if fig_images:
+            fig_dir = root / "80_Assets" / "figures" / san
+            fig_dir.mkdir(parents=True, exist_ok=True)
+            from backend.services.object_storage import get_storage
+            storage = get_storage()
+            for fig_rec in fig_images[:6]:
+                obj_key = fig_rec.get("object_key", "")
+                fig_num = fig_rec.get("figure_num", 0)
+                ext = obj_key.rsplit(".", 1)[-1] if "." in obj_key else "png"
+                try:
+                    img_data = await storage.get(obj_key)
+                    if img_data:
+                        (fig_dir / f"fig_{fig_num}.{ext}").write_bytes(img_data)
+                except Exception:
+                    pass
+
         stats["papers"] += 1
 
-    # ── 3. Generate mechanism hub pages ───────────────────────
-    mech_dir = root / "40_Mechanisms"
-    mech_dir.mkdir(parents=True, exist_ok=True)
+    # ── 4. Generate Concept Notes (20_Concepts/) ─────────────────
+    concept_dir = root / "20_Concepts"
+    concept_dir.mkdir(parents=True, exist_ok=True)
 
-    for mf in mechanisms:
+    for c in concepts:
+        filename = f"C__{c['slug']}.md"
         fm = {
-            "title": mf.name,
-            "type": "mechanism",
-            "domain": mf.domain,
-            "aliases": list(mf.aliases) if mf.aliases else [],
+            "title": c["display"],
+            "type": "concept",
+            "concept_id": f"C__{c['slug']}",
+            "aliases": c["aliases"],
+            "domain": c["domain"],
         }
-        linked_papers = [p.title for p in papers if p.mechanism_family == mf.name]
-        body = [f"# {mf.name}\n"]
-        if mf.description:
-            body.append(f"{mf.description}\n")
-        if mf.aliases:
-            body.append(f"**Aliases:** {', '.join(mf.aliases)}\n")
-        if linked_papers:
-            body.append(f"## Papers ({len(linked_papers)})\n")
-            for t in linked_papers:
-                body.append(f"- [[{_sanitize_wikilink(t)}]]")
+
+        body = [f"# {c['display']}\n"]
+
+        if c["desc"]:
+            body.append(f"{c['desc']}\n")
+
+        # Sub-concepts from canonical ideas
+        for ci in c["ideas"]:
+            if ci.description and ci.description != c["desc"]:
+                body.append(f"### {ci.title}\n\n{ci.description}\n")
+
+        # Which slots does this concept change?
+        all_slots: set[str] = set()
+        for p in c["papers"]:
+            if p.changed_slots:
+                all_slots.update(p.changed_slots)
+        if all_slots:
+            body.append("## 改动的 Slot\n")
+            body.append(", ".join(f"`{s}`" for s in sorted(all_slots)) + "\n")
+
+        # Representative papers comparison table
+        if c["papers"]:
+            body.append(f"## 代表论文 ({len(c['papers'])})\n")
+            body.append("| 论文 | Year | Venue | 结构性 | 改动 |")
+            body.append("|------|------|-------|--------|------|")
+            sorted_cp = sorted(c["papers"],
+                               key=lambda x: float(x.dc_struct or 0), reverse=True)
+            for p in sorted_cp[:10]:
+                psan = p.title_sanitized or str(p.id)
+                score = f"{float(p.dc_struct):.2f}" if p.dc_struct else "?"
+                slots = ", ".join(list(p.changed_slots)[:2]) if p.changed_slots else "—"
+                body.append(f"| [[P__{psan}]] | {p.year} | {p.venue} | {score} | {slots} |")
             body.append("")
 
         content = _render_frontmatter(fm) + "\n".join(body)
-        (mech_dir / f"{mf.name}.md").write_text(content, encoding="utf-8")
-        stats["mechanisms"] += 1
+        (concept_dir / filename).write_text(content, encoding="utf-8")
+        stats["concepts"] += 1
 
-    # ── 4. Generate bottleneck hub pages ──────────────────────
-    bn_dir = root / "50_Bottlenecks"
+    # ── 5. Generate Bottleneck Notes (30_Bottlenecks/) ────────────
+    bn_dir = root / "30_Bottlenecks"
     bn_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get paper-bottleneck claims
-    claims = (await session.execute(text("""
-        SELECT pbc.bottleneck_id, pbc.claim_text, p.title AS paper_title
-        FROM paper_bottleneck_claims pbc
-        JOIN papers p ON p.id = pbc.paper_id
-    """))).fetchall()
-
-    bn_claims: dict[str, list] = {}
-    for c in claims:
-        bn_claims.setdefault(str(c.bottleneck_id), []).append((c.paper_title, c.claim_text))
-
     for bn in bottlenecks:
+        slug = bn_safe_name[bn.title]
+        filename = f"B__{slug}.md"
+        paper_claims = bn_claims_map.get(str(bn.id), [])
+
+        # Classify solutions: structural vs plugin
+        structural_sols: list[tuple[str, str]] = []
+        plugin_sols: list[tuple[str, str]] = []
+        for _title, _san, _claim, _ in paper_claims:
+            p_obj = next((p for p in papers if p.title == _title), None)
+            if p_obj and _paper_level(p_obj) in ("A", "B"):
+                structural_sols.append((_san, _claim))
+            else:
+                plugin_sols.append((_san, _claim))
+
         fm = {
             "title": bn.title,
             "type": "bottleneck",
+            "bottleneck_id": f"B__{slug}",
             "domain": bn.domain,
+            "paper_count": len(paper_claims),
         }
         body = [f"# {bn.title}\n"]
-        if bn.description:
+
+        if bn.symptom_query or bn.description:
+            body.append("## 症状\n")
+            body.append(f"{bn.symptom_query or bn.description}\n")
+
+        if bn.latent_need:
+            body.append("## 根因\n")
+            body.append(f"{bn.latent_need}\n")
+
+        if structural_sols:
+            body.append("## 结构性解法\n")
+            for _san, _claim in structural_sols[:5]:
+                body.append(f"- [[P__{_san}]] — {_claim[:100]}")
+            body.append("")
+
+        if plugin_sols:
+            body.append("## 插件型解法\n")
+            for _san, _claim in plugin_sols[:5]:
+                body.append(f"- [[P__{_san}]] — {_claim[:100]}")
+            body.append("")
+
+        if bn.description and not bn.symptom_query:
+            pass  # already shown above
+        elif bn.description:
+            body.append("## 当前判断\n")
             body.append(f"{bn.description}\n")
 
-        paper_claims = bn_claims.get(str(bn.id), [])
-        if paper_claims:
-            body.append(f"## Papers addressing this ({len(paper_claims)})\n")
-            for title, claim in paper_claims:
-                body.append(f"- [[{_sanitize_wikilink(title)}]] — {claim[:100]}")
-            body.append("")
-
         content = _render_frontmatter(fm) + "\n".join(body)
-        safe_name = bn.title.replace("/", "-").replace(":", "-")[:80]
-        (bn_dir / f"{safe_name}.md").write_text(content, encoding="utf-8")
+        (bn_dir / filename).write_text(content, encoding="utf-8")
         stats["bottlenecks"] += 1
 
-    # ── 5. Generate paradigm hub pages ────────────────────────
-    para_dir = root / "60_Paradigms"
-    para_dir.mkdir(parents=True, exist_ok=True)
+    # ── 6. Generate Lineage Notes (10_Lineages/) ─────────────────
+    lin_dir = root / "10_Lineages"
+    lin_dir.mkdir(parents=True, exist_ok=True)
 
-    for pt in paradigms:
+    for gk, gd in lineage_groups.items():
+        slug = lineage_slug[gk]
+        filename = f"L__{slug}.md"
+        edges = gd["edges"]
+        all_sans = gd["papers"]
+
+        # Build parent→children map for tree rendering
+        parent_children: dict[str, list[tuple[str, str]]] = {}
+        child_set: set[str] = set()
+        for par, chi, rel in edges:
+            parent_children.setdefault(par, []).append((chi, rel))
+            child_set.add(chi)
+        roots = [s for s in all_sans if s not in child_set]
+        if not roots:
+            roots = sorted(all_sans)
+
         fm = {
-            "title": pt.name,
-            "type": "paradigm",
-            "version": pt.version,
-            "domain": pt.domain,
+            "title": f"{gk} 方法演化",
+            "type": "lineage",
+            "lineage_id": f"L__{slug}",
+            "paper_count": len(all_sans),
         }
-        slots = pt.slots if isinstance(pt.slots, dict) else {}
-        linked_papers = [p.title for p in papers if p.baseline_paradigm == pt.name]
+        body = [f"# {gk} 方法演化\n"]
 
-        body = [f"# {pt.name} ({pt.version})\n"]
-        if pt.domain:
-            body.append(f"**Domain:** {pt.domain}\n")
-        if slots:
-            body.append("## Slots\n")
-            for name, desc in slots.items():
-                body.append(f"- **{name}**: {desc if isinstance(desc, str) else ''}")
-            body.append("")
-        if linked_papers:
-            body.append(f"## Papers ({len(linked_papers)})\n")
-            for t in linked_papers:
-                body.append(f"- [[{_sanitize_wikilink(t)}]]")
+        # ASCII evolution tree
+        body.append("## 演化链\n")
+        body.append("```")
+        visited: set[str] = set()
+
+        def _tree(san: str, depth: int = 0) -> None:
+            if san in visited:
+                return
+            visited.add(san)
+            prefix = "  " * depth + ("└─ " if depth else "")
+            title = san_to_title.get(san, san)
+            body.append(f"{prefix}{title}")
+            for ch, _rel in parent_children.get(san, []):
+                _tree(ch, depth + 1)
+
+        for r in sorted(roots):
+            _tree(r)
+        for san in sorted(all_sans - visited):
+            body.append(f"{san_to_title.get(san, san)} (独立)")
+        body.append("```\n")
+
+        # Per-step diff
+        body.append("## 每步改了什么\n")
+        for par, chi, rel in sorted(edges, key=lambda x: x[0]):
+            child_p = next((p for p in papers if p.title_sanitized == chi), None)
+            slots = (", ".join(list(child_p.changed_slots)[:3])
+                     if child_p and child_p.changed_slots else "?")
+            body.append(f"- [[P__{par}]] → [[P__{chi}]] ({rel})")
+            body.append(f"  - 改了: {slots}")
+        body.append("")
+
+        # Fork points
+        forks = {p: cs for p, cs in parent_children.items() if len(cs) > 1}
+        if forks:
+            body.append("## 分叉点\n")
+            for par, children in forks.items():
+                body.append(f"- [[P__{par}]] 分叉为:")
+                for chi, rel in children:
+                    body.append(f"  - [[P__{chi}]] ({rel})")
             body.append("")
 
         content = _render_frontmatter(fm) + "\n".join(body)
-        (para_dir / f"{pt.name}.md").write_text(content, encoding="utf-8")
-        stats["paradigms"] += 1
+        (lin_dir / filename).write_text(content, encoding="utf-8")
+        stats["lineages"] += 1
 
-    # ── 6. Generate vault index page ──────────────────────────
-    index_content = """---
-title: ResearchFlow Knowledge Base
-type: index
----
-
-# ResearchFlow Knowledge Base
-
-## Quick Stats
-
-```dataview
-TABLE length(rows) AS Count
-FROM ""
-GROUP BY type
-```
-
-## Recent Papers
-
-```dataview
-TABLE venue, year, structurality_score, mechanism_family
-FROM "papers"
-SORT year DESC
-LIMIT 20
-```
-
-## Bottlenecks
-
-```dataview
-TABLE domain
-FROM "concepts/bottlenecks"
-SORT title ASC
-```
-
-## Mechanisms
-
-```dataview
-TABLE domain, length(file.inlinks) AS "Paper Count"
-FROM "concepts/mechanisms"
-SORT title ASC
-```
-
-## Paradigms
-
-```dataview
-TABLE version, domain
-FROM "concepts/paradigms"
-SORT title ASC
-```
-"""
+    # ── 7. Generate 00_Home (navigation only, not in main graph) ─
     home_dir = root / "00_Home"
     home_dir.mkdir(parents=True, exist_ok=True)
-    (home_dir / "_Index.md").write_text(index_content, encoding="utf-8")
 
-    # ── 7. Graph view instructions ────────────────────────────
-    graph_content = """---
-title: Graph View Guide
-type: meta
----
-
-# Knowledge Graph
-
-Open Obsidian's **Graph View** (Ctrl/Cmd + G) to see the full knowledge network.
-
-## Filters
-
-- **Papers**: `path:papers`
-- **Mechanisms**: `path:concepts/mechanisms`
-- **Bottlenecks**: `path:concepts/bottlenecks`
-- **Paradigms**: `path:concepts/paradigms`
-
-## Color Groups (Graph Settings → Groups)
-
-| Query | Color | Meaning |
-|-------|-------|---------|
-| `path:concepts/mechanisms` | Green | Mechanism families |
-| `path:concepts/bottlenecks` | Red | Research bottlenecks |
-| `path:concepts/paradigms` | Blue | Paradigm templates |
-| `tag:#structural` | Orange | Structural changes |
-
-## Tips
-
-- Orphan nodes (no links) = papers not yet analyzed or categorized
-- Hub nodes = important mechanisms or bottlenecks many papers reference
-- Clusters = research sub-communities
-"""
-    (home_dir / "_Graph.md").write_text(graph_content, encoding="utf-8")
-
-    # ── 8. Domain Overview entry page ─────────────────────────
     analyzed = [p for p in papers if p.state == "l4_deep"]
-    categories = {}
+    level_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
     for p in papers:
-        categories.setdefault(p.category, []).append(p)
+        level_counts[_paper_level(p)] += 1
 
-    overview_body = ["# 方向总览\n"]
-    overview_body.append(f"**知识库规模**: {len(papers)} 篇论文, {len(analyzed)} 篇已深度分析\n")
-    overview_body.append("## 领域分布\n")
-    for cat, cat_papers in sorted(categories.items()):
-        overview_body.append(f"- **{cat}**: {len(cat_papers)} 篇")
-    overview_body.append("")
+    ov = ["# 方向总览\n"]
+    ov.append(f"**知识库规模**: {len(papers)} 篇论文, {len(analyzed)} 篇已深度分析\n")
 
-    overview_body.append("## 范式框架\n")
-    for pt in paradigms:
-        slots_dict = pt.slots if isinstance(pt.slots, dict) else {}
-        slot_names = ", ".join(slots_dict.keys()) if slots_dict else "N/A"
-        linked = sum(1 for p in papers if p.baseline_paradigm == pt.name)
-        overview_body.append(f"- **[[{pt.name}]]** ({pt.domain}): {slot_names} — {linked} 篇论文")
-    overview_body.append("")
+    if lineage_groups:
+        ov.append("## 方法主线\n")
+        for gk in sorted(lineage_groups):
+            cnt = len(lineage_groups[gk]["papers"])
+            ov.append(f"- [[L__{lineage_slug[gk]}]] — {cnt} 篇论文")
+        ov.append("")
 
-    overview_body.append("## 核心瓶颈\n")
-    for bn in bottlenecks[:10]:
-        claim_count = len(bn_claims.get(str(bn.id), []))
-        safe_bn = bn.title.replace("/", "-").replace(":", "-")[:80]
-        overview_body.append(f"- [[{safe_bn}]] — {claim_count} 篇论文声称在解决")
-    overview_body.append("")
+    if concepts:
+        ov.append("## 核心概念\n")
+        for c in sorted(concepts, key=lambda x: len(x["papers"]), reverse=True)[:10]:
+            ov.append(f"- [[C__{c['slug']}]] — {len(c['papers'])} 篇论文")
+        ov.append("")
 
-    overview_body.append("## 建议阅读顺序\n")
-    overview_body.append("1. 先看范式定义页，理解标准框架")
-    overview_body.append("2. 看 [[_MethodEvolution]] 了解方法演化脉络")
-    overview_body.append("3. 看 [[_BottleneckMap]] 了解当前瓶颈分布")
-    overview_body.append("4. 按 structurality_score 从高到低阅读论文笔记")
-    overview_body.append("")
+    if bottlenecks:
+        ov.append("## 研究瓶颈\n")
+        for bn in bottlenecks[:10]:
+            cnt = len(bn_claims_map.get(str(bn.id), []))
+            ov.append(f"- [[B__{bn_safe_name[bn.title]}]] — {cnt} 篇论文在解决")
+        ov.append("")
 
-    overview_body.append("## 按结构性排序的论文\n")
-    sorted_papers = sorted(analyzed, key=lambda x: float(x.dc_struct or 0), reverse=True)
-    for i, p in enumerate(sorted_papers[:20], 1):
+    ov.append("## 论文分布\n")
+    ov.append(f"- **A** (必读 baseline): {level_counts['A']}")
+    ov.append(f"- **B** (结构性改进): {level_counts['B']}")
+    ov.append(f"- **C** (插件型): {level_counts['C']}")
+    ov.append(f"- **D** (外围): {level_counts['D']}")
+    ov.append("")
+
+    (home_dir / "00_方向总览.md").write_text(
+        _render_frontmatter({"title": "方向总览", "type": "overview"}) + "\n".join(ov),
+        encoding="utf-8",
+    )
+
+    # 阅读顺序
+    rd = ["# 阅读顺序建议\n"]
+    rd.append("## 第一层：理解框架\n")
+    rd.append("1. 读 [[00_方向总览]]，了解方向全貌")
+    if lineage_groups:
+        first_slug = list(lineage_slug.values())[0]
+        rd.append(f"2. 读任一 Lineage 笔记（如 [[L__{first_slug}]]），理解方法演化主线")
+    rd.append("")
+
+    rd.append("## 第二层：读 Baseline\n")
+    for p in [p for p in papers if _paper_level(p) == "A"][:5]:
+        rd.append(f"- [[P__{p.title_sanitized}]]")
+    rd.append("")
+
+    rd.append("## 第三层：读结构性改进\n")
+    struct_papers = sorted(
+        [p for p in papers if _paper_level(p) == "B"],
+        key=lambda x: float(x.dc_struct or 0), reverse=True)
+    for p in struct_papers[:8]:
         score = f"{float(p.dc_struct):.2f}" if p.dc_struct else "?"
-        body_type = "structural" if p.dc_struct and float(p.dc_struct) >= 0.5 else "plugin"
-        overview_body.append(f"{i}. [[{_sanitize_wikilink(p.title)}]] — struct={score}, {body_type}")
+        rd.append(f"- [[P__{p.title_sanitized}]] (struct={score})")
+    rd.append("")
 
-    (home_dir / "_DomainOverview.md").write_text(
-        _render_frontmatter({"title": "方向总览", "type": "index"}) + "\n".join(overview_body),
+    rd.append("## 第四层：按需查阅\n")
+    rd.append("- C/D 类论文按需查阅")
+    rd.append("- 关注 Concept 和 Bottleneck 笔记中的综合判断\n")
+
+    (home_dir / "01_阅读顺序.md").write_text(
+        _render_frontmatter({"title": "阅读顺序", "type": "overview"}) + "\n".join(rd),
         encoding="utf-8",
     )
 
-    # ── 9. Method Evolution entry page ────────────────────────
-    evo_body = ["# 方法演化脉络\n"]
-    evo_body.append("本页展示论文之间的方法继承和改进关系。\n")
+    # ── 8. Generate 90_Views (Dataview queries) ──────────────────
+    views_dir = root / "90_Views"
+    views_dir.mkdir(parents=True, exist_ok=True)
 
-    # Group by paradigm
-    paradigm_papers: dict[str, list] = {}
-    for p in analyzed:
-        key = p.baseline_paradigm or "unknown"
-        paradigm_papers.setdefault(key, []).append(p)
+    (views_dir / "papers_by_structurality.md").write_text("\n".join([
+        "# 论文 — 按结构性排序\n",
+        "```dataview",
+        'TABLE year, venue, paper_level, structurality_score, concepts, bottleneck',
+        'FROM "40_Papers"',
+        'WHERE type = "paper"',
+        'SORT structurality_score DESC',
+        "```",
+    ]), encoding="utf-8")
 
-    for paradigm, pps in sorted(paradigm_papers.items()):
-        evo_body.append(f"## {paradigm}\n")
+    (views_dir / "papers_by_year.md").write_text("\n".join([
+        "# 论文 — 按年份\n",
+        "```dataview",
+        'TABLE venue, paper_level, structurality_score, concepts',
+        'FROM "40_Papers"',
+        'WHERE type = "paper"',
+        'SORT year DESC',
+        "```",
+    ]), encoding="utf-8")
 
-        # Find roots (no ancestors) and build chains
-        roots = [p for p in pps if p.title not in lineage_map]
-        non_roots = [p for p in pps if p.title in lineage_map]
+    (views_dir / "concept_map.md").write_text("\n".join([
+        "# 概念地图\n",
+        "```dataview",
+        'TABLE domain, length(file.inlinks) AS "引用数"',
+        'FROM "20_Concepts"',
+        'WHERE type = "concept"',
+        'SORT length(file.inlinks) DESC',
+        "```",
+    ]), encoding="utf-8")
 
-        if roots:
-            evo_body.append("**基础方法 (Baseline)**:")
-            for p in roots:
-                dc = float(p.dc_struct) if p.dc_struct else 0
-                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] (struct={dc:.2f})")
-            evo_body.append("")
+    (views_dir / "bottleneck_overview.md").write_text("\n".join([
+        "# 瓶颈一览\n",
+        "```dataview",
+        'TABLE domain, paper_count',
+        'FROM "30_Bottlenecks"',
+        'WHERE type = "bottleneck"',
+        'SORT paper_count DESC',
+        "```",
+    ]), encoding="utf-8")
 
-        if non_roots:
-            evo_body.append("**改进方法**:")
-            for p in non_roots:
-                ancestors = lineage_map.get(p.title, [])
-                parent_str = ", ".join(f"[[{_sanitize_wikilink(pt)}]]" for _, pt in ancestors)
-                slots = list(p.changed_slots) if p.changed_slots else []
-                slot_str = ", ".join(slots[:3]) if slots else "?"
-                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] ← {parent_str} (改了: {slot_str})")
-            evo_body.append("")
-
-        # Show all papers in this paradigm if no lineage data
-        if not roots and not non_roots:
-            for p in pps:
-                slots = list(p.changed_slots) if p.changed_slots else []
-                slot_str = ", ".join(slots[:3]) if slots else "?"
-                evo_body.append(f"- [[{_sanitize_wikilink(p.title)}]] — 改了: {slot_str}")
-            evo_body.append("")
-
-    (home_dir / "_MethodEvolution.md").write_text(
-        _render_frontmatter({"title": "方法演化脉络", "type": "index"}) + "\n".join(evo_body),
-        encoding="utf-8",
-    )
-
-    # ── 10. Bottleneck Map entry page ─────────────────────────
-    bn_body = ["# 瓶颈地图\n"]
-    bn_body.append("研究方向中的核心瓶颈，以及哪些论文在攻克它们。\n")
-
-    for bn in bottlenecks:
-        claim_list = bn_claims.get(str(bn.id), [])
-        safe_bn = bn.title.replace("/", "-").replace(":", "-")[:80]
-        bn_body.append(f"## [[{safe_bn}]] ({len(claim_list)} 篇)\n")
-        if bn.description:
-            bn_body.append(f"> {bn.description[:200]}\n")
-        for title, claim in claim_list[:5]:
-            bn_body.append(f"- [[{_sanitize_wikilink(title)}]] — {claim[:80]}")
-        bn_body.append("")
-
-    if not bottlenecks:
-        bn_body.append("*暂无瓶颈数据。运行更多论文的 L4 分析后会自动提取。*")
-
-    (home_dir / "_BottleneckMap.md").write_text(
-        _render_frontmatter({"title": "瓶颈地图", "type": "index"}) + "\n".join(bn_body),
-        encoding="utf-8",
-    )
-
-    logger.info(f"Obsidian vault exported to {root}: {stats}")
+    logger.info(f"Obsidian vault v4.0 exported to {root}: {stats}")
     return {"vault_path": str(root), **stats}
