@@ -1,11 +1,11 @@
-"""Search + embedding + reading plan API router."""
+"""Search + embedding + reading plan + intent-based query router API."""
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_session
-from backend.services import embedding_service, reading_planner, search_service
+from backend.services import embedding_service, reading_planner, search_service, query_router_service
 
 router = APIRouter(tags=["search"])
 
@@ -179,3 +179,69 @@ async def create_reading_plan(
         max_papers=max_papers,
     )
     return plan
+
+
+# ── Intent-based query router ────────────────────────────────────
+
+class QueryRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    intent: str | None = Field(
+        default=None,
+        description="Force intent: bottleneck | mechanism | lineage | evidence. Auto-detected if omitted.",
+    )
+    constraints: dict | None = Field(
+        default=None,
+        description="Negative/positive constraints: min_structurality_score, must_have_open_code, "
+                    "must_have_evidence_count, must_not_method_categories, exclude_tags, year_min, year_max",
+    )
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/search/query")
+async def intent_query(
+    data: QueryRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Intent-based query router — auto-routes to the best retrieval path.
+
+    Four intents:
+    - **bottleneck**: What's blocking progress? (project focus → paper claims → delta cards)
+    - **mechanism**: What approaches exist? (canonical ideas → mechanism families → contributions)
+    - **lineage**: How did this method evolve? (lineage DAG → ancestors/descendants)
+    - **evidence**: Where's the proof/code? (evidence units → implementations → delta cards)
+
+    Supports negative constraints: `must_not_method_categories`, `min_structurality_score`,
+    `must_have_open_code`, `must_have_evidence_count`, `exclude_tags`.
+    """
+    return await query_router_service.route_query(
+        session,
+        query=data.query,
+        intent=data.intent,
+        constraints=data.constraints,
+        limit=data.limit,
+    )
+
+
+# ── Materialized view refresh ────────────────────────────────────
+
+@router.post("/search/refresh-views")
+async def refresh_materialized_views(
+    session: AsyncSession = Depends(get_session),
+):
+    """Refresh all CQRS-lite materialized views (paper_search_docs, idea_search_docs, lineage_view, review_queue_view)."""
+    from sqlalchemy import text
+    views = ["paper_search_docs", "idea_search_docs", "lineage_view", "review_queue_view"]
+    refreshed = []
+    for view in views:
+        try:
+            await session.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}"))
+            refreshed.append(view)
+        except Exception as e:
+            # Fallback to non-concurrent refresh if no unique index or first time
+            try:
+                await session.execute(text(f"REFRESH MATERIALIZED VIEW {view}"))
+                refreshed.append(view)
+            except Exception as e2:
+                refreshed.append(f"{view}: FAILED ({str(e2)[:80]})")
+    await session.commit()
+    return {"refreshed": refreshed}
