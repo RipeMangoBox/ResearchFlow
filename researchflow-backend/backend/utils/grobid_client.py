@@ -45,6 +45,16 @@ class GrobidReference:
 
 
 @dataclass
+class GrobidFormula:
+    """A formula detected by GROBID."""
+    text: str = ""           # Raw text content from GROBID
+    label: str = ""          # e.g., "(1)", "(2)"
+    coords: str = ""         # GROBID coordinates: "page,x,y,w,h" format
+    page: int = -1
+    bbox: list[float] = field(default_factory=list)  # [x0, y0, x1, y1] in PDF points
+
+
+@dataclass
 class GrobidResult:
     """Result of GROBID fulltext parsing."""
     title: str = ""
@@ -54,6 +64,7 @@ class GrobidResult:
     references: list[GrobidReference] = field(default_factory=list)
     figure_captions: list[dict] = field(default_factory=list)
     table_captions: list[dict] = field(default_factory=list)
+    formulas: list[GrobidFormula] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     raw_tei_xml: str = ""
 
@@ -99,6 +110,7 @@ class GrobidClient:
                         "consolidateCitations": "1",
                         "includeRawAffiliations": "1",
                         "includeRawCitations": "1",
+                        "teiCoordinates": "formula",  # Request formula coordinates
                     },
                 )
 
@@ -185,6 +197,9 @@ class GrobidClient:
         if back is not None:
             result.references = self._parse_references(back)
 
+        # Formulas with coordinates
+        result.formulas = self._parse_formulas(root)
+
         # Figure captions
         for fig in root.findall(f".//{TEI_NS}figure"):
             fig_type = fig.get("type", "figure")
@@ -251,6 +266,40 @@ class GrobidClient:
                 authors.append(author)
 
         return authors
+
+    def _parse_formulas(self, root: ET.Element) -> list[GrobidFormula]:
+        """Parse formula elements from TEI, including coordinates."""
+        formulas = []
+        for formula_el in root.findall(f".//{TEI_NS}formula"):
+            formula = GrobidFormula()
+            formula.text = _get_all_text(formula_el).strip()
+
+            # Label: e.g., "(1)", "(2)"
+            label_el = formula_el.find(f"{TEI_NS}label")
+            if label_el is not None and label_el.text:
+                formula.label = label_el.text.strip()
+
+            # Coordinates: GROBID outputs coords="page,x,y,w,h" attribute
+            coords = formula_el.get("coords", "")
+            if coords:
+                formula.coords = coords
+                try:
+                    parts = coords.split(",")
+                    if len(parts) >= 5:
+                        page = int(parts[0])
+                        x = float(parts[1])
+                        y = float(parts[2])
+                        w = float(parts[3])
+                        h = float(parts[4])
+                        formula.page = page - 1  # GROBID uses 1-based pages
+                        formula.bbox = [x, y, x + w, y + h]
+                except (ValueError, IndexError):
+                    pass
+
+            if formula.text and len(formula.text) > 3:
+                formulas.append(formula)
+
+        return formulas
 
     def _parse_body_sections(self, body: ET.Element) -> dict[str, str]:
         """Parse body divisions into named sections."""

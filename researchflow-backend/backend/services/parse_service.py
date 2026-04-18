@@ -155,6 +155,33 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             paper_id, pymupdf_result.figure_images, figure_captions
         )
 
+    # ── Formula extraction (GROBID coords + VLM OCR) ────────
+    extracted_formulas = pymupdf_result.formulas  # PyMuPDF regex as baseline
+    grobid_formula_data = []
+
+    if grobid_result and grobid_result.formulas:
+        grobid_formula_data = [
+            {"text": f.text, "label": f.label, "page": f.page, "bbox": f.bbox}
+            for f in grobid_result.formulas
+            if f.text
+        ]
+
+    if pdf_path and (grobid_formula_data or not extracted_formulas):
+        try:
+            from backend.services.formula_extraction_service import extract_formulas
+            vlm_formulas = await extract_formulas(
+                pdf_path=pdf_path,
+                paper_id=paper_id,
+                grobid_formulas=grobid_formula_data if grobid_formula_data else None,
+                session=session,
+            )
+            if vlm_formulas:
+                # VLM LaTeX is better than PyMuPDF regex
+                extracted_formulas = [f["latex"] for f in vlm_formulas if f.get("latex")]
+                logger.info(f"Formula extraction: {len(vlm_formulas)} formulas via VLM/GROBID for {paper_id}")
+        except Exception as e:
+            logger.warning(f"Formula extraction failed for {paper_id}: {e}")
+
     # ── Build parse metadata ─────────────────────────────────────
     parse_metadata = {
         "parsers_used": ["pymupdf"],
@@ -163,6 +190,8 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         "grobid_author_count": len(grobid_authors),
         "pymupdf_section_count": len(pymupdf_result.sections),
         "pymupdf_formula_count": len(pymupdf_result.formulas),
+        "grobid_formula_count": len(grobid_formula_data),
+        "final_formula_count": len(extracted_formulas),
         "pymupdf_figure_count": len(pymupdf_result.figure_captions),
         "vlm_available": True,  # Claude API always available (no GPU needed)
     }
@@ -179,7 +208,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         schema_version="v2",
         confidence=1.0,
         extracted_sections=merged_sections,
-        extracted_formulas=pymupdf_result.formulas,
+        extracted_formulas=extracted_formulas,
         extracted_tables=table_captions,
         figure_captions=figure_captions,
         extracted_figure_images=figure_image_records if figure_image_records else None,
