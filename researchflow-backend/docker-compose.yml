@@ -47,6 +47,9 @@ services:
     env_file: .env
     volumes:
       - ./exports:/app/exports
+      - ./storage:/app/storage
+      - ./obsidian-vault:/obsidian-vault
+      - ./paperAnalysis:/paperAnalysis
     ports:
       - "127.0.0.1:8000:8000"
     deploy:
