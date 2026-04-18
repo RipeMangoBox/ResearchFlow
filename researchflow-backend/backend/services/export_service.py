@@ -242,7 +242,10 @@ def _safe_name(raw: str, max_len: int = 80) -> str:
 
 
 def _paper_level(p) -> str:
-    """Assign A/B/C/D level from ring or structurality_score."""
+    """Assign A/B/C/D level from ring or structurality_score.
+
+    Priority: ring field → dc.structurality_score → paper.structurality_score.
+    """
     ring = getattr(p, "ring", None)
     if ring == "baseline":
         return "A"
@@ -250,8 +253,13 @@ def _paper_level(p) -> str:
         return "B"
     if ring == "plugin":
         return "C"
-    if p.dc_struct is not None:
+    # Try delta_card score first, fall back to paper-level score
+    s = None
+    if getattr(p, "dc_struct", None) is not None:
         s = float(p.dc_struct)
+    elif getattr(p, "structurality_score", None) is not None:
+        s = float(p.structurality_score)
+    if s is not None:
         if s >= 0.7:
             return "A"
         if s >= 0.5:
