@@ -109,49 +109,219 @@ improvement/component_replacement — 替换核心组件
          │  GitHub API 搜 awesome 仓库 → 解析 README → 提取论文链接
          │  → 导入 72 篇 → triage 评分 → 按优先级排队
          ▼
-[Step 2] POST /pipeline/batch?limit=10
-         │  对最高优先��的 10 篇依次:
-         │  下载PDF → 元数据补全 → L2解析 → L3速读 → L4深度分析
-         │  → DeltaCard构建 → IdeaDelta派生 → GraphAssertion提议
+[Step 2] POST /pipeline/batch?limit=15
+         │  对所有待处理论文依次:
+         │  triage → download → enrich → L2 → L3 → L4 (6步) → graph
          ▼
-[Step 3] 自动产出:
-         ├── 10 张 DeltaCard (每篇论文的结构化改动)
-         ├── 10 个 IdeaDelta (可复用知识原子)
-         ├── 30+ 条 GraphAssertion (图谱边)
-         ├── 方法分类: 3 structural + 5 plugin + 2 reward
-         ├── 3 个 ProjectBottleneck (自动从 L4 提取)
-         └── 范式: 如果领域没有现成��式，LLM 动态发现并创建
+[Step 3] POST /pipeline/export/obsidian-vault
+         │  → 生成 5 类笔记的 Obsidian vault
+         ▼
+[Step 4] rsync 同步到本地 Obsidian
 ```
 
-### 3.2 单篇论文完整管线 (v4.0: 6 步 L4 管线)
+### 3.2 外层管线: 单篇论文从入库到图谱
+
+入口: `pipeline_service.run_full_pipeline(paper_id)`
+
+每步已完成则自动跳过，任何一步失败不阻断后续步骤:
 
 ```
-ingest → triage → download_pdf → enrich (arXiv/Crossref)
-→ parse_L2 (pymupdf) → skim_L3 (LLM)
-→ deep_L4 (6-step pipeline):
-    Step 1: extract_evidence   — 公式/图表/证据锚点 (先读 method，不先听 abstract)
-    Step 2: build_delta_card   — 基线/slot/机制/瓶颈 (用 Step 1 证据 grounding)
-    Step 3: build_compare_set  — 从 DB 自动补齐比较集 (不靠论文自述)
-    Step 4: propose_lineage    — builds_on/extends/replaces DAG 边
-    Step 5: synthesize_concept — 跨论文更新 CanonicalIdea + MechanismFamily
-    Step 6: reconcile_neighbors — 反向更新旧论文的 same_family/comparison
-→ review → publish → export
+POST /pipeline/{paper_id}/run  (或 /pipeline/batch?limit=N)
+ │
+ ├─ Step 0: triage_paper()                          [triage_service]
+ │    计算 keep_score / analysis_priority / tier
+ │    基于: venue + open_code + open_data + 时间衰减
+ │
+ ├─ Step 1: download_arxiv_pdf()                    [pipeline_service]
+ │    有 arxiv_id 且没下过 → 下载 PDF 到本地 + 对象存储
+ │
+ ├─ Step 2: enrich_paper()                          [enrich_service]
+ │    缺 abstract/authors → 查 arXiv API / Crossref 补全
+ │
+ ├─ Step 3: parse_paper_pdf()                       [parse_service]
+ │    pymupdf 提取 PDF 章节文本 → paper_analyses (level=l2_parse)
+ │    产出: extracted_sections {intro, method, results, conclusion, ...}
+ │
+ ├─ Step 4: skim_paper()                            [analysis_service]
+ │    1 次 LLM 调用 (abstract + 关键章节, ≤8K tokens)
+ │    产出: problem_summary, changed_slots, is_plugin_patch, worth_deep_read
+ │    → paper.state = l3_skimmed
+ │
+ └─ Step 5: deep_analyze_paper()                    [analysis_service]
+      L4 深度分析 — 6 步管线 (见下方详解)
+      → paper.state = l4_deep
 ```
 
-**三道防线**:
-1. **先看改动不先听故事**: Step 1 prompt 要求 FIRST read Method → THEN Experiments → ONLY THEN Abstract
-2. **比较集不是论文自己说了算**: Step 3 从 DB 查 domain baseline + same mechanism + same-period strong peers
-3. **高价值结论必须有证据锚点**: publish gate 要求 evidence_refs ≥ 2
+### 3.3 L4 深度分析: 6 步管线 (核心)
 
-**每步独立重试**: 失败只重试该步，不重跑全部。Step 1+2 各自有独立 prompt/schema。
+入口: `analysis_service.deep_analyze_paper(paper_id)`
 
-**新增 Service 模块** (v4.0):
-- `analysis_steps.py` — Step 1+2 聚焦 prompt + merge 逻辑
-- `baseline_comparator_service.py` — Step 3: 4 源比较集 (domain baseline / same mechanism / strong peer / self-reported)
-- `concept_synthesizer_service.py` — Step 5: MechanismFamily + CanonicalIdea 解析与关联
-- `incremental_reconciler_service.py` — Step 6: 反向更新邻居 DeltaCard
+旧版用 1 次 LLM 调用输出 23 个字段；v4.0 拆成 6 个独立步骤，各自可重试:
 
-### 3.3 研究探索: 多跳认知迭代
+```
+deep_analyze_paper(paper_id)
+ │
+ │  从 L2 提取的章节文本拼接全文 (≤25K tokens)
+ │
+ ▼
+┌─ Step 1: extract_evidence ──────────────────────────────────────┐
+│  文件: analysis_steps.py → run_step1_extract_evidence()          │
+│  LLM 调用 #1 (独立 prompt, ≤3000 output tokens)                  │
+│                                                                  │
+│  ★ 防线 #1: 强制阅读顺序                                         │
+│    Prompt: "FIRST read Method → THEN Experiments → ONLY THEN     │
+│    Abstract. Do NOT take the abstract at face value."             │
+│                                                                  │
+│  输出 JSON:                                                      │
+│    key_equations[]:    核心公式 (≤4), 含 slot_affected            │
+│    key_figures[]:      关键图表 (≤4), 含 evidence_for             │
+│    evidence_units[]:   证据锚点 (3-8个), 每个含:                   │
+│      atom_type, claim, confidence, basis, source_section          │
+│    narrative_vs_substance: abstract 是否与实验吻合                  │
+│    baseline_fairness:  baseline 是否最强? 是否故意漏比?             │
+│    paper_type:         method/survey/benchmark/position/...       │
+│                                                                  │
+│  失败 → 自动重试 (最多 2 次), 检查 required_fields                │
+└──────────────────────────────────────────────────────────────────┘
+ │ step1_data
+ ▼
+┌─ Step 2: build_delta_card ──────────────────────────────────────┐
+│  文件: analysis_steps.py → run_step2_build_delta()               │
+│  LLM 调用 #2 (独立 prompt, ≤4096 output tokens)                  │
+│  输入: 全文 + Step 1 证据 JSON 作为 grounding                      │
+│                                                                  │
+│  ★ 关键: Step 1 的证据防止 Step 2 hallucinate                     │
+│                                                                  │
+│  输出 JSON:                                                      │
+│    problem_summary:    问题与挑战 (200-400 字, 中文)               │
+│    method_summary:     方法与洞察 (400-600 字, 中文)               │
+│    evidence_summary:   证据与局限 (200-400 字, 中文)               │
+│    core_intuition:     核心直觉 (100-200 字)                      │
+│    changed_slots[]:    改了哪些 slot                              │
+│    unchanged_slots[]:  没改的 slot                                │
+│    structurality_score: 0.0-1.0  ← ★ 决定 A/B/C/D 分级           │
+│    delta_card:         {paradigm, slots, is_structural}           │
+│    bottleneck_addressed: {title, description, is_fundamental}     │
+│    same_family_method: 方法族名称                                  │
+│    confidence_notes[]: 逐条置信度分析                               │
+│                                                                  │
+│  失败 → 自动重试 (最多 2 次)                                       │
+└──────────────────────────────────────────────────────────────────┘
+ │ merge_step_outputs(step1, step2) → analysis_data
+ ▼
+┌─ 持久化 ────────────────────────────────────────────────────────┐
+│  保存 PaperAnalysis (level=l4_deep, schema_version=v2)           │
+│  保存 MethodDelta (legacy 兼容)                                   │
+│  更新 paper.state → l4_deep                                      │
+│  更新 paper.structurality_score ← LLM 输出 (决定 A/B/C/D)        │
+│  更新 paper.tags ← method/*, improvement/*                       │
+│                                                                  │
+│  _maybe_create_bottleneck()                                      │
+│    → 查 DB 是否已有同名瓶颈 → 有则关联, 无则创建                    │
+│    → 创建 PaperBottleneckClaim (论文声称解决此瓶颈)                  │
+│                                                                  │
+│  _build_idea_graph()                                             │
+│    → assign_paradigm(): 匹配范式 (静态→模糊→LLM发现)               │
+│    → run_delta_card_pipeline():                                  │
+│       build_delta_card → persist_evidence → derive_idea_delta     │
+│       → propose_assertions → check_and_publish                   │
+│       门控: evidence_refs ≥ 2 → DeltaCard 发布                    │
+│       门控: min(confidence) ≥ 0.85 → IdeaDelta 自动发布            │
+│    → 更新 paper.current_delta_card_id                             │
+└──────────────────────────────────────────────────────────────────┘
+ │ 以下每步独立 try/except + session.rollback(), 互不阻断
+ ▼
+┌─ Step 3: build_compare_set ─────────────────────────────────────┐
+│  文件: baseline_comparator_service.py                             │
+│  纯 DB 查询, 无 LLM 调用                                          │
+│                                                                  │
+│  ★ 防线 #2: "比较集不是论文自己说了算"                               │
+│  4 个来源:                                                        │
+│    ① domain_baseline:  同范式已确立基线 (is_established_baseline)   │
+│    ② same_mechanism:   同 mechanism_family 的论文                  │
+│    ③ strong_peer:      同 category 同时期高 structurality 论文      │
+│    ④ self_reported:    论文自述的 baseline_paper_titles             │
+│                                                                  │
+│  → 更新 DeltaCard.baseline_paper_ids                               │
+└──────────────────────────────────────────────────────────────────┘
+ │
+ ▼
+┌─ Step 4: propose_lineage ───────────────────────────────────────┐
+│  文件: evolution_service.py → link_to_parent_baselines()          │
+│  纯 DB 查询 + 写入                                                │
+│                                                                  │
+│  查找父节点策略:                                                    │
+│    ① 同 paradigm name 已发布的 DeltaCard                           │
+│    ② 同 mechanism_family 的 DeltaCard                              │
+│    ③ 同 frame 已确立基线                                            │
+│                                                                  │
+│  → 创建 DeltaCardLineage (status=candidate, relation=builds_on)   │
+│  → 创建 builds_on GraphAssertion (candidate, 需审核)                │
+│  → 更新 parent.downstream_count += 1                               │
+│  → downstream ≥ 3 → parent.is_established_baseline = true          │
+│  → 创建 ReviewTask (自动审核任务)                                    │
+└──────────────────────────────────────────────────────────────────┘
+ │
+ ▼
+┌─ Step 5: synthesize_concept ────────────────────────────────────┐
+│  文件: concept_synthesizer_service.py                             │
+│  纯 DB 查询 + 写入                                                │
+│                                                                  │
+│  ① same_family_method → 找/建 MechanismFamily                     │
+│     精确匹配 → 别名匹配 → 新建                                      │
+│  ② core_intuition → 找/建 CanonicalIdea                           │
+│     精确匹配 → 同 mechanism 匹配 → 新建                              │
+│  ③ 创建 ContributionToCanonicalIdea 链接                           │
+│     contribution_type: origin(≥0.7) / extension(≥0.4) / instance  │
+│  → paper.mechanism_family = 方法族名称                               │
+└──────────────────────────────────────────────────────────────────┘
+ │
+ ▼
+┌─ Step 6: reconcile_neighbors ───────────────────────────────────┐
+│  文件: incremental_reconciler_service.py                          │
+│                                                                  │
+│  ① refresh_connections(): 更新 same_family_paper_ids               │
+│  ② 将新论文加入邻居 DeltaCard 的 same_family 列表                    │
+│  ③ structurality ≥ 0.6 → 检查 baseline 候选                       │
+└──────────────────────────────────────────────────────────────────┘
+ │
+ ▼
+┌─ 自动导出 ──────────────────────────────────────────────────────┐
+│  export_paper_analysis() → paperAnalysis/{category}/{venue}/X.md  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 3.4 三道防线
+
+| # | 防线 | 机制 | 对应步骤 |
+|---|------|------|---------|
+| 1 | **先看改动不先听故事** | Step 1 prompt 强制: FIRST Method → THEN Experiments → ONLY THEN Abstract | Step 1 |
+| 2 | **比较集不是论文自己说了算** | 从 DB 查 4 个来源自动补齐比较集, 不只用论文自述 | Step 3 |
+| 3 | **高价值结论必须有证据锚点** | DeltaCard 发布门控: evidence_refs ≥ 2 | 持久化阶段 |
+
+### 3.5 容错机制
+
+- **Step 1+2 (LLM)**: 缺 required_fields → 自动重试 (最多 2 次), 仍缺则用 partial data 继续
+- **Step 3-6 (DB)**: 每步独立 `try/except + session.rollback()`, 单步失败不阻断后续步骤
+- **LLM 返回非 JSON**: 自动去 markdown fence → 找 `{...}` → retry
+- **Session 级容错**: DB 错误后 rollback 恢复 session, 后续步骤可继续
+
+### 3.6 Service 文件对照
+
+| 文件 | 职责 | 调用方 |
+|------|------|--------|
+| `pipeline_service.py` | 外层编排 (triage→download→enrich→L2→L3→L4) | API `/pipeline/*` |
+| `analysis_service.py` | L3 skim + L4 deep 6步编排器 | pipeline_service |
+| `analysis_steps.py` | Step 1+2 的 prompt + JSON 解析 + retry + merge | analysis_service |
+| `baseline_comparator_service.py` | Step 3: 4源比较集 | analysis_service |
+| `evolution_service.py` | Step 4: 方法演化 DAG + baseline 晋升 | analysis_service |
+| `concept_synthesizer_service.py` | Step 5: MechanismFamily + CanonicalIdea | analysis_service |
+| `incremental_reconciler_service.py` | Step 6: 反向更新邻居 | analysis_service |
+| `delta_card_service.py` | DeltaCard → Evidence → IdeaDelta → Assertions | analysis_service |
+| `frame_assign_service.py` | 范式匹配 (静态→模糊→LLM发现) | delta_card_service |
+| `export_service.py` | Obsidian vault 导出 (5类笔记) | API `/pipeline/export/*` |
+
+### 3.7 研究探索: 多跳认知迭代
 
 ```
 POST /explore/start {"query": "RL advantage disappearance"}
@@ -297,6 +467,10 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 
 ## 8. Obsidian Vault 导出 (v4.0)
 
+触发: `POST /pipeline/export/obsidian-vault`
+
+导出前自动清理旧文件 (清理子项, 不删根目录 — 兼容 Docker 挂载)。
+
 ### 5 类笔记
 
 | 类型 | 前缀 | 目录 | 正文 wikilinks |
@@ -307,13 +481,76 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 | Lineage | `L__` | `10_Lineages/` | 不限 (ASCII 演化树) |
 | Overview | — | `00_Home/` | 纯导航 |
 
+### 论文分级 A/B/C/D
+
+分级由 `_paper_level(p)` 函数决定，优先级: **ring 字段 → dc.structurality_score → paper.structurality_score**
+
+| 等级 | 目录 | 分数条件 | 含义 | 示例 |
+|------|------|---------|------|------|
+| **A** | `A__Baselines` | ring=baseline 或 score ≥ 0.7 | 必读 baseline，建立标准框架 | DPO, InstructGPT, KTO |
+| **B** | `B__Structural` | ring=structural 或 score ≥ 0.5 | 结构性改进，改了核心 slot | GRPO, ORPO, SPIN |
+| **C** | `C__Plugins` | ring=plugin 或 score ≥ 0.3 | 插件型改进，加模块/改 loss | SimPO, RAFT, RRHF |
+| **D** | `D__Peripheral` | 其余 (score < 0.3 或无分析) | 外围参考 | — |
+
+**分数来源**: `structurality_score` 由 L4 Step 2 的 LLM 输出。Prompt 明确要求:
+> "structurality_score: 0.0 (pure plugin/trick) to 1.0 (fundamental rethink).
+> Most papers should be 0.2-0.5. Reserve 0.7+ for truly structural work."
+
+**在 Obsidian 中查看分级**:
+1. **目录结构** — `40_Papers/A__Baselines/`、`B__Structural/`、`C__Plugins/`
+2. **Paper frontmatter** — `paper_level: A`
+3. **90_Views/papers_by_structurality.md** — 按结构性降序的完整表格
+4. **00_Home/01_阅读顺序.md** — 按 A→B→C 分层推荐阅读
+5. **00_Home/00_方向总览.md** — 论文分布统计 (A: 5, B: 5, C: 5)
+
+### Paper Note 模板
+
+每篇论文的 Obsidian 页面结构:
+
+```yaml
+---
+title: "Direct Preference Optimization..."
+type: paper
+paper_id: P__DPO
+paper_level: A                    # ← A/B/C/D 分级
+frame: rl_standard                # ← 范式 (仅属性, 不做 wikilink)
+changed_slots: [loss_function, training_pipeline]
+structurality_score: 0.8
+concepts: ["[[C__direct_preference_optimization]]"]
+bottleneck: ["[[B__RLHF训练的复杂性...]]"]
+lineage: ["[[L__DPO_Family]]"]    # ← 如有 lineage
+same_family_papers: ["[[P__SimPO]]", "[[P__KTO]]"]
+---
+
+# 一眼看懂
+> 基于 [[P__InstructGPT]]，改了 `loss_function`, `training_pipeline`，
+> 属于 [[C__direct_preference_optimization]]，
+> 目标是缓解 [[B__RLHF训练的复杂性...]]
+
+## 相对 baseline 改了什么
+| 相比 | 改动 slot | 收益 | 代价 |
+|------|---------|------|------|
+| [[P__InstructGPT]] | loss_function | ... | ... |
+
+## 关键公式
+## 关键图表
+## 同类型工作 (max 2 links)
+## 在主线中的位置 (1 lineage link)
+## 阅读建议           ← 按 A/B/C/D 等级给不同建议
+## 详细分析
+```
+
+**正文 wikilink 预算**: 1-2 baseline + 1 concept + 1 bottleneck + 1 lineage + 2 same-family = **6-8 个**
+
+**不链接**: Domain Overview, Paradigm, System Index → 这些只放 frontmatter 属性
+
 ### 关键规则
 
 - Paper Note **不链接** Domain Overview / Paradigm → 只放 frontmatter `frame` 属性
 - Concept = MechanismFamily + CanonicalIdea **合并** → 单一信息密集页
 - Bottleneck = **跨论文综合** insight → 不是每篇论文各建一个
 - Lineage = **人类可读**的演化链 → 含 ASCII 树 + 每步 diff + 分叉点
-- 导出前 `shutil.rmtree` 清理旧 vault → 确保无残留
+- 90_Views/ 是**静态 Markdown 表格** → 不依赖 Dataview 插件
 
 ### 目录结构
 
@@ -321,16 +558,34 @@ user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evi
 00_Home/
   00_方向总览.md        # 方法主线 + 核心概念 + 研究瓶颈 + 论文分布
   01_阅读顺序.md        # 分层: 框架 → baseline → 结构性 → 按需
-10_Lineages/
-20_Concepts/
-30_Bottlenecks/
+10_Lineages/            # L__ 方法演化链 (需 delta_card_lineage 数据)
+20_Concepts/            # C__ 概念 = Mechanism + CanonicalIdea
+30_Bottlenecks/         # B__ 跨论文瓶颈 (症状 + 根因 + 解法分层)
 40_Papers/
-  A__Baselines/         # ring=baseline 或 struct ≥ 0.7
-  B__Structural/        # ring=structural 或 struct ≥ 0.5
-  C__Plugins/           # ring=plugin 或 struct ≥ 0.3
-  D__Peripheral/        # 其余
+  A__Baselines/         # struct ≥ 0.7 (必读)
+  B__Structural/        # struct ≥ 0.5 (结构性改进)
+  C__Plugins/           # struct ≥ 0.3 (插件型)
+  D__Peripheral/        # < 0.3 或无数据 (外围)
 80_Assets/figures/      # PDF 提取的图表 (按 paper_sanitized 分目录)
-90_Views/               # Dataview 查询页 (按结构性/年份/概念/瓶颈)
+90_Views/               # 静态 Markdown 表格 (按结构性/年份/概念/瓶颈)
+```
+
+### Obsidian 同步
+
+```bash
+# 1. 服务器上导出
+curl -X POST localhost:8000/api/v1/pipeline/export/obsidian-vault
+
+# 2. rsync 到本地
+rsync -avz --delete \
+  -e "ssh -i ~/.ssh/autoresearch.pem" \
+  root@47.101.167.55:/opt/researchflow/researchflow-backend/obsidian-vault/ \
+  ./obsidian-vault/
+
+# 3. Obsidian 打开 → Graph View (Cmd+G)
+#    推荐 Graph 颜色:
+#    path:40_Papers → 蓝    path:20_Concepts → 绿
+#    path:30_Bottlenecks → 红   path:10_Lineages → 橙
 ```
 
 ---
