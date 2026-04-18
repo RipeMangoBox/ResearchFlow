@@ -920,49 +920,92 @@ async def export_obsidian_vault(
         encoding="utf-8",
     )
 
-    # ── 8. Generate 90_Views (Dataview queries) ──────────────────
+    # ── 8. Generate 90_Views (static tables + optional Dataview) ──
     views_dir = root / "90_Views"
     views_dir.mkdir(parents=True, exist_ok=True)
 
-    (views_dir / "papers_by_structurality.md").write_text("\n".join([
-        "# 论文 — 按结构性排序\n",
-        "```dataview",
-        'TABLE year, venue, paper_level, structurality_score, concepts, bottleneck',
-        'FROM "40_Papers"',
-        'WHERE type = "paper"',
-        'SORT structurality_score DESC',
-        "```",
-    ]), encoding="utf-8")
+    # Papers by structurality
+    ps_lines = ["# 论文 — 按结构性排序\n"]
+    ps_lines.append("| 论文 | Year | Venue | 等级 | 结构性 | 概念 | 瓶颈 |")
+    ps_lines.append("|------|------|-------|------|--------|------|------|")
+    sorted_by_struct = sorted(
+        papers,
+        key=lambda x: float(x.structurality_score or x.dc_struct or 0),
+        reverse=True,
+    )
+    for p in sorted_by_struct:
+        san = p.title_sanitized or str(p.id)
+        lvl = _paper_level(p)
+        s = float(x) if (x := (p.dc_struct or p.structurality_score)) else None
+        score = f"{s:.2f}" if s else "?"
+        c_slug = paper_to_concept.get(san)
+        c_link = f"[[C__{c_slug}]]" if c_slug else "—"
+        b_slug = paper_to_bn.get(san)
+        b_link = f"[[B__{b_slug}]]" if b_slug else "—"
+        ps_lines.append(
+            f"| [[P__{san}]] | {p.year} | {p.venue or ''} | {lvl} | {score} | {c_link} | {b_link} |"
+        )
+    ps_lines.append("")
+    (views_dir / "papers_by_structurality.md").write_text(
+        "\n".join(ps_lines), encoding="utf-8")
 
-    (views_dir / "papers_by_year.md").write_text("\n".join([
-        "# 论文 — 按年份\n",
-        "```dataview",
-        'TABLE venue, paper_level, structurality_score, concepts',
-        'FROM "40_Papers"',
-        'WHERE type = "paper"',
-        'SORT year DESC',
-        "```",
-    ]), encoding="utf-8")
+    # Papers by year
+    py_lines = ["# 论文 — 按年份\n"]
+    py_lines.append("| 论文 | Year | Venue | 等级 | 结构性 | 概念 |")
+    py_lines.append("|------|------|-------|------|--------|------|")
+    sorted_by_year = sorted(papers, key=lambda x: x.year or 0, reverse=True)
+    for p in sorted_by_year:
+        san = p.title_sanitized or str(p.id)
+        lvl = _paper_level(p)
+        s = float(x) if (x := (p.dc_struct or p.structurality_score)) else None
+        score = f"{s:.2f}" if s else "?"
+        c_slug = paper_to_concept.get(san)
+        c_link = f"[[C__{c_slug}]]" if c_slug else "—"
+        py_lines.append(
+            f"| [[P__{san}]] | {p.year} | {p.venue or ''} | {lvl} | {score} | {c_link} |"
+        )
+    py_lines.append("")
+    (views_dir / "papers_by_year.md").write_text(
+        "\n".join(py_lines), encoding="utf-8")
 
-    (views_dir / "concept_map.md").write_text("\n".join([
-        "# 概念地图\n",
-        "```dataview",
-        'TABLE domain, length(file.inlinks) AS "引用数"',
-        'FROM "20_Concepts"',
-        'WHERE type = "concept"',
-        'SORT length(file.inlinks) DESC',
-        "```",
-    ]), encoding="utf-8")
+    # Concept map
+    cm_lines = ["# 概念地图\n"]
+    cm_lines.append("| 概念 | 领域 | 论文数 | 代表论文 |")
+    cm_lines.append("|------|------|--------|---------|")
+    for c in sorted(concepts, key=lambda x: len(x["papers"]), reverse=True):
+        top_paper = ""
+        if c["papers"]:
+            tp = c["papers"][0]
+            top_paper = f"[[P__{tp.title_sanitized}]]"
+        cm_lines.append(
+            f"| [[C__{c['slug']}]] | {c['domain'] or ''} | {len(c['papers'])} | {top_paper} |"
+        )
+    cm_lines.append("")
+    (views_dir / "concept_map.md").write_text(
+        "\n".join(cm_lines), encoding="utf-8")
 
-    (views_dir / "bottleneck_overview.md").write_text("\n".join([
-        "# 瓶颈一览\n",
-        "```dataview",
-        'TABLE domain, paper_count',
-        'FROM "30_Bottlenecks"',
-        'WHERE type = "bottleneck"',
-        'SORT paper_count DESC',
-        "```",
-    ]), encoding="utf-8")
+    # Bottleneck overview
+    bo_lines = ["# 瓶颈一览\n"]
+    bo_lines.append("| 瓶颈 | 领域 | 论文数 | 解法类型 |")
+    bo_lines.append("|------|------|--------|---------|")
+    for bn in bottlenecks:
+        slug = bn_safe_name[bn.title]
+        claims_list = bn_claims_map.get(str(bn.id), [])
+        n_struct = sum(1 for t, s, c, _ in claims_list
+                       if any(_paper_level(p) in ("A", "B")
+                              for p in papers if p.title == t))
+        n_plugin = len(claims_list) - n_struct
+        sol_type = []
+        if n_struct:
+            sol_type.append(f"{n_struct} 结构性")
+        if n_plugin:
+            sol_type.append(f"{n_plugin} 插件型")
+        bo_lines.append(
+            f"| [[B__{slug}]] | {bn.domain or ''} | {len(claims_list)} | {', '.join(sol_type) or '—'} |"
+        )
+    bo_lines.append("")
+    (views_dir / "bottleneck_overview.md").write_text(
+        "\n".join(bo_lines), encoding="utf-8")
 
     logger.info(f"Obsidian vault v4.0 exported to {root}: {stats}")
     return {"vault_path": str(root), **stats}
