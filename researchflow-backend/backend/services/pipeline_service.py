@@ -61,8 +61,8 @@ async def download_arxiv_pdf(session: AsyncSession, paper_id: UUID) -> bool:
         logger.error(f"PDF download failed for {paper.arxiv_id}: {e}")
         return False
 
-    # Update paper record
-    paper.pdf_path_local = str(local_path)
+    # Update paper record — store relative path for portability across environments
+    paper.pdf_path_local = rel_path
     paper.state = PaperState.DOWNLOADED
 
     # Create asset record

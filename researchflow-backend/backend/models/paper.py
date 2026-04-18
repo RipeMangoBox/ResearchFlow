@@ -106,6 +106,9 @@ class Paper(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # Current published DeltaCard (append-only: papers point to latest)
+    current_delta_card_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
     # Source tracking
     source: Mapped[str | None] = mapped_column(String(50))
     source_ref: Mapped[str | None] = mapped_column(Text)

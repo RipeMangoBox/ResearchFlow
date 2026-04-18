@@ -1,10 +1,10 @@
-"""ProjectBottleneck, SearchSession, ReadingPlan models."""
+"""ProjectBottleneck, PaperBottleneckClaim, ProjectFocusBottleneck, SearchSession, ReadingPlan models."""
 
 import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, SmallInteger, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +12,10 @@ from backend.database import Base
 
 
 class ProjectBottleneck(Base):
+    """Global bottleneck ontology — shared across all domains.
+
+    This is the canonical registry. Paper claims and project focus both reference this.
+    """
     __tablename__ = "project_bottlenecks"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -38,6 +42,73 @@ class ProjectBottleneck(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PaperBottleneckClaim(Base):
+    """What a paper claims it is solving — paper-level fact, not project judgment.
+
+    Extracted from L4 analysis. Multiple papers can claim the same bottleneck.
+    """
+    __tablename__ = "paper_bottleneck_claims"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    paper_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    bottleneck_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_bottlenecks.id"), nullable=False
+    )
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_fundamental: Mapped[bool | None] = mapped_column(Boolean)
+    confidence: Mapped[float | None] = mapped_column()
+    source: Mapped[str] = mapped_column(
+        String(30), default="system_inferred"
+    )  # system_inferred / human_verified
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_pbc_paper", "paper_id"),
+        Index("idx_pbc_bottleneck", "bottleneck_id"),
+    )
+
+
+class ProjectFocusBottleneck(Base):
+    """What a specific project/user currently cares about — decision-layer object.
+
+    This is NOT derived from papers. This is what the researcher is actually stuck on.
+    """
+    __tablename__ = "project_focus_bottlenecks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    bottleneck_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_bottlenecks.id"), nullable=False
+    )
+    project_name: Mapped[str | None] = mapped_column(String(200))
+    user_description: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[int] = mapped_column(SmallInteger, default=3)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    # active / resolved / parked
+    constraints: Mapped[dict | None] = mapped_column(JSONB)
+    negative_constraints: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    # e.g. ["no plugin-only", "must have open code"]
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_pfb_bottleneck", "bottleneck_id"),
+        Index("idx_pfb_status", "status"),
     )
 
 

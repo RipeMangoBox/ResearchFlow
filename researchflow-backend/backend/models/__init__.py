@@ -12,7 +12,7 @@ from backend.models.enums import (
 from backend.models.paper import Paper, PaperAsset, PaperVersion
 from backend.models.analysis import PaperAnalysis, MethodDelta, ParadigmTemplate
 from backend.models.evidence import EvidenceUnit, TransferAtom
-from backend.models.research import ProjectBottleneck, SearchSession, ReadingPlan
+from backend.models.research import ProjectBottleneck, PaperBottleneckClaim, ProjectFocusBottleneck, SearchSession, ReadingPlan
 from backend.models.digest import Digest
 from backend.models.system import Job, ModelRun, ExecutionMemory, UserFeedback
 from backend.models.direction import DirectionCard, UserBookmark, UserEvent
@@ -20,6 +20,9 @@ from backend.models.graph import IdeaDelta, Slot, MechanismFamily, GraphEdge, Im
 from backend.models.delta_card import DeltaCard
 from backend.models.assertion import GraphNode, GraphAssertion, GraphAssertionEvidence
 from backend.models.review import ReviewTask, HumanOverride, Alias
+from backend.models.canonical_idea import CanonicalIdea, ContributionToCanonicalIdea
+from backend.models.lineage import DeltaCardLineage
+from backend.models.candidates import ParadigmCandidate, SlotCandidate, MechanismCandidate
 
 __all__ = [
     "AnalysisLevel", "AssetType", "EvidenceBasis", "FeedbackType",
@@ -27,7 +30,8 @@ __all__ = [
     "Paper", "PaperAsset", "PaperVersion",
     "PaperAnalysis", "MethodDelta", "ParadigmTemplate",
     "EvidenceUnit", "TransferAtom",
-    "ProjectBottleneck", "SearchSession", "ReadingPlan",
+    "ProjectBottleneck", "PaperBottleneckClaim", "ProjectFocusBottleneck",
+    "SearchSession", "ReadingPlan",
     "Digest",
     "Job", "ModelRun", "ExecutionMemory", "UserFeedback",
     "DirectionCard", "UserBookmark", "UserEvent",
@@ -35,4 +39,7 @@ __all__ = [
     "DeltaCard",
     "GraphNode", "GraphAssertion", "GraphAssertionEvidence",
     "ReviewTask", "HumanOverride", "Alias",
+    "CanonicalIdea", "ContributionToCanonicalIdea",
+    "DeltaCardLineage",
+    "ParadigmCandidate", "SlotCandidate", "MechanismCandidate",
 ]

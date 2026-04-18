@@ -120,6 +120,19 @@ async def link_to_parent_baselines(
 
     await session.flush()
 
+    # Create lineage records in independent table
+    from backend.models.lineage import DeltaCardLineage
+    for pid in parent_ids:
+        lineage = DeltaCardLineage(
+            child_delta_card_id=card.id,
+            parent_delta_card_id=pid,
+            relation_type="builds_on",
+            confidence=0.8,
+            status="candidate",
+            source="system_inferred",
+        )
+        session.add(lineage)
+
     # Create "builds_on" graph assertions
     from backend.services.delta_card_service import get_or_create_node
     from backend.models.assertion import GraphAssertion
@@ -134,7 +147,7 @@ async def link_to_parent_baselines(
             edge_type="builds_on",
             assertion_source="system_inferred",
             confidence=0.8,
-            status="published",
+            status="candidate",  # builds_on needs review before publishing
         )
         session.add(assertion)
         assertions_created += 1

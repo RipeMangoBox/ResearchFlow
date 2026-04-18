@@ -89,9 +89,12 @@ class DeltaCard(Base):
         String(20), default="draft"
     )  # draft / published / deprecated
 
-    # Provenance
+    # Provenance (append-only: each card is an immutable snapshot)
+    analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    source_asset_hash: Mapped[str | None] = mapped_column(String(64))
     model_provider: Mapped[str | None] = mapped_column(String(50))
     model_name: Mapped[str | None] = mapped_column(String(100))
+    model_run_id: Mapped[str | None] = mapped_column(String(100))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
     schema_version: Mapped[str | None] = mapped_column(String(20))
 

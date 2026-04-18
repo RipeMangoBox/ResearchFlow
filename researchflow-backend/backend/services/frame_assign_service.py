@@ -180,9 +180,12 @@ async def _discover_paradigm_via_llm(
 ) -> tuple[ParadigmTemplate | None, list[dict]]:
     """Use LLM to discover a new paradigm for an unknown domain.
 
-    Creates ParadigmTemplate + Slots + optional Bottleneck in DB.
+    v3.2: Creates a ParadigmCandidate instead of directly creating a live
+    ParadigmTemplate. Candidates must be reviewed before promotion.
+    Returns (None, []) — the paper will proceed without a paradigm frame.
     """
     from backend.services.llm_service import call_llm
+    from backend.models.candidates import ParadigmCandidate, SlotCandidate
 
     prompt = DISCOVER_PROMPT.format(
         title=title[:500],
@@ -207,67 +210,60 @@ async def _discover_paradigm_via_llm(
         paradigm_name = data["paradigm_name"]
         domain = data.get("domain", category)
 
-        # Check if this paradigm was already discovered
+        # Check if this paradigm already exists as live
         existing, existing_slots = await _fetch_paradigm(session, paradigm_name)
         if existing:
             return existing, existing_slots
 
-        # Create new paradigm
-        raw_slots = data.get("slots", [])
-        slots_dict = {s["name"]: s.get("description", "") for s in raw_slots if isinstance(s, dict)}
-
-        paradigm = ParadigmTemplate(
-            name=paradigm_name,
-            version="v1",
-            domain=domain,
-            slots=slots_dict,
+        # Check if a candidate already exists — increment trigger_count
+        from sqlalchemy import func as sa_func
+        existing_cand = await session.execute(
+            select(ParadigmCandidate).where(
+                sa_func.lower(ParadigmCandidate.name) == paradigm_name.lower()
+            ).limit(1)
         )
-        session.add(paradigm)
-        await session.flush()
+        cand = existing_cand.scalar_one_or_none()
 
-        # Create slot records
-        slot_records = []
-        for i, s in enumerate(raw_slots):
-            if not isinstance(s, dict) or not s.get("name"):
-                continue
-            slot = Slot(
-                paradigm_id=paradigm.id,
-                name=s["name"],
-                description=s.get("description"),
-                slot_type=s.get("slot_type", "architecture"),
-                is_required=s.get("is_required", True),
-                sort_order=i,
-            )
-            session.add(slot)
-            slot_records.append(slot)
+        raw_slots = data.get("slots", [])
 
-        await session.flush()
-
-        # Create bottleneck if provided
-        bn_data = data.get("bottleneck")
-        if bn_data and isinstance(bn_data, dict) and bn_data.get("title"):
-            from backend.models.research import ProjectBottleneck
-            bottleneck = ProjectBottleneck(
-                title=bn_data["title"],
-                description=bn_data.get("description"),
+        if cand:
+            cand.trigger_count = (cand.trigger_count or 1) + 1
+            logger.info(f"Paradigm candidate '{paradigm_name}' triggered again (count={cand.trigger_count})")
+        else:
+            # Create candidate (NOT live paradigm)
+            slots_json = [
+                {"name": s["name"], "slot_type": s.get("slot_type", "architecture"),
+                 "description": s.get("description", ""), "is_required": s.get("is_required", True)}
+                for s in raw_slots if isinstance(s, dict) and s.get("name")
+            ]
+            cand = ParadigmCandidate(
+                name=paradigm_name,
                 domain=domain,
-                paradigm_id=paradigm.id,
-                status="active",
+                description=data.get("paradigm_description"),
+                slots_json=slots_json,
+                trigger_count=1,
+                status="pending",
             )
-            session.add(bottleneck)
+            session.add(cand)
             await session.flush()
 
-        # Add category mapping for future use
-        CATEGORY_PARADIGM_MAP[category] = paradigm_name
+            # Create slot candidates
+            for s_data in slots_json:
+                sc = SlotCandidate(
+                    paradigm_candidate_id=cand.id,
+                    name=s_data["name"],
+                    description=s_data.get("description"),
+                    slot_type=s_data.get("slot_type"),
+                    status="pending",
+                )
+                session.add(sc)
 
-        logger.info(f"Discovered new paradigm: {paradigm_name} with {len(slot_records)} slots for domain={domain}")
+            logger.info(f"Created paradigm candidate: {paradigm_name} with {len(slots_json)} slot candidates for domain={domain}")
 
-        slots = [
-            {"id": s.id, "name": s.name, "description": s.description,
-             "slot_type": s.slot_type, "is_required": s.is_required}
-            for s in slot_records
-        ]
-        return paradigm, slots
+        await session.flush()
+
+        # Return None — paper proceeds without paradigm frame until candidate is promoted
+        return None, []
 
     except Exception as e:
         logger.error(f"LLM paradigm discovery failed: {e}")

@@ -86,6 +86,26 @@ async def build_delta_card(
         if ev.get("failure_modes"):
             failure_modes_list.append(ev["failure_modes"])
 
+    # Compute scores — fall back to delta_card.is_structural boolean if numeric score missing
+    structurality = analysis_data.get("structurality_score")
+    if structurality is None:
+        is_structural = delta_card_data.get("is_structural")
+        if is_structural is not None:
+            structurality = 0.8 if is_structural else 0.3
+    extensionability = analysis_data.get("extensionability_score")
+    transferability = analysis_data.get("transferability_score")
+
+    # Compute linkage_confidence based on how well we matched ontology
+    linkage_conf = 0.5  # base
+    if paradigm_id:
+        linkage_conf += 0.2
+    if changed_slot_ids:
+        linkage_conf += 0.15
+    if bottleneck_id:
+        linkage_conf += 0.1
+    if mechanism_family_ids:
+        linkage_conf += 0.05
+
     card = DeltaCard(
         paper_id=paper_id,
         analysis_id=analysis_id,
@@ -97,13 +117,14 @@ async def build_delta_card(
         mechanism_family_ids=mechanism_family_ids,
         delta_statement=delta_statement[:2000],
         key_ideas_ranked=key_ideas if key_ideas else None,
-        structurality_score=analysis_data.get("structurality_score"),
-        extensionability_score=analysis_data.get("extensionability_score"),
-        transferability_score=analysis_data.get("transferability_score"),
+        structurality_score=structurality,
+        extensionability_score=extensionability,
+        transferability_score=transferability,
         assumptions=assumptions if assumptions else None,
         failure_modes=failure_modes_list if failure_modes_list else None,
         evaluation_context=analysis_data.get("evidence_summary"),
-        extraction_confidence=analysis_data.get("confidence", 0.7),
+        extraction_confidence=analysis_data.get("confidence") or 0.7,
+        linkage_confidence=linkage_conf,
         model_provider=model_provider,
         model_name=model_name,
         prompt_version="l4_v1",
@@ -376,6 +397,11 @@ async def check_and_publish(
     )
     if dc_ready:
         delta_card.status = "published"
+        # Update paper's current_delta_card_id pointer (append-only model)
+        from backend.models.paper import Paper
+        paper = await session.get(Paper, delta_card.paper_id)
+        if paper:
+            paper.current_delta_card_id = delta_card.id
 
     # IdeaDelta publish check
     if evidence_count >= MIN_EVIDENCE_FOR_PUBLISH:

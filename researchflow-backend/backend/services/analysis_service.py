@@ -72,6 +72,9 @@ L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON f
     "description": "Why this bottleneck matters and what makes it hard (2-3 sentences)",
     "is_fundamental": true/false
   }},
+  "structurality_score": 0.0-1.0,
+  "extensionability_score": 0.0-1.0,
+  "transferability_score": 0.0-1.0,
   "delta_card": {{
     "paradigm": "inferred standard paradigm name",
     "slots": {{
@@ -345,12 +348,12 @@ async def _maybe_create_bottleneck(
     paper: Paper,
     analysis_data: dict,
 ) -> UUID | None:
-    """Auto-create a ProjectBottleneck from L4 analysis output if provided."""
+    """Auto-create a ProjectBottleneck + PaperBottleneckClaim from L4 output."""
     bn_data = analysis_data.get("bottleneck_addressed")
     if not bn_data or not isinstance(bn_data, dict) or not bn_data.get("title"):
         return None
 
-    from backend.models.research import ProjectBottleneck
+    from backend.models.research import ProjectBottleneck, PaperBottleneckClaim
     from sqlalchemy import func
 
     # Dedup: check if similar bottleneck already exists
@@ -366,20 +369,31 @@ async def _maybe_create_bottleneck(
             bn.related_paper_ids = list(bn.related_paper_ids) + [paper.id]
         elif not bn.related_paper_ids:
             bn.related_paper_ids = [paper.id]
+    else:
+        # Create new bottleneck in global ontology
+        bn = ProjectBottleneck(
+            title=bn_data["title"],
+            description=bn_data.get("description", ""),
+            domain=paper.category,
+            related_paper_ids=[paper.id],
+            status="active",
+        )
+        session.add(bn)
         await session.flush()
-        return bn.id
+        logger.info(f"Auto-created bottleneck: {bn.title} (paper={paper.id})")
 
-    # Create new bottleneck
-    bn = ProjectBottleneck(
-        title=bn_data["title"],
-        description=bn_data.get("description", ""),
-        domain=paper.category,
-        related_paper_ids=[paper.id],
-        status="active",
+    # Always create a paper-level claim (paper says it solves this)
+    claim = PaperBottleneckClaim(
+        paper_id=paper.id,
+        bottleneck_id=bn.id,
+        claim_text=bn_data.get("description", bn_data["title"]),
+        is_primary=True,
+        is_fundamental=bn_data.get("is_fundamental"),
+        confidence=0.7,
+        source="system_inferred",
     )
-    session.add(bn)
+    session.add(claim)
     await session.flush()
-    logger.info(f"Auto-created bottleneck: {bn.title} (paper={paper.id})")
     return bn.id
 
 
@@ -409,10 +423,23 @@ async def _build_idea_graph(
         delta_card_data = analysis_data.get("delta_card", {})
         changed_slots_graph = []
         raw_slots = analysis_data.get("changed_slots", [])
-        if isinstance(raw_slots, list):
+        # Build a lookup from delta_card.slots for change_type enrichment
+        dc_slot_info = {}
+        if isinstance(delta_card_data, dict) and "slots" in delta_card_data:
+            for name, info in delta_card_data["slots"].items():
+                if isinstance(info, dict):
+                    dc_slot_info[name] = info
+
+        if isinstance(raw_slots, list) and raw_slots:
             for s in raw_slots:
                 if isinstance(s, str):
-                    changed_slots_graph.append({"slot_name": s, "change_type": "unknown"})
+                    info = dc_slot_info.get(s, {})
+                    changed_slots_graph.append({
+                        "slot_name": s,
+                        "from": info.get("from"),
+                        "to": info.get("to"),
+                        "change_type": info.get("change_type", "structural" if analysis_data.get("structurality_score", 0) >= 0.5 else "plugin"),
+                    })
                 elif isinstance(s, dict):
                     changed_slots_graph.append(s)
         elif isinstance(delta_card_data, dict) and "slots" in delta_card_data:
@@ -442,6 +469,13 @@ async def _build_idea_graph(
 
         dc = result["delta_card"]
         idea = result["idea_delta"]
+
+        # Propagate L4-derived scores back to paper (more accurate than triage heuristics)
+        if dc.structurality_score is not None:
+            paper.structurality_score = dc.structurality_score
+        if dc.extensionability_score is not None:
+            paper.extensionability_score = dc.extensionability_score
+
         logger.info(
             f"Graph built for paper {paper.id}: "
             f"DeltaCard={dc.id}({dc.status}), "
