@@ -294,9 +294,12 @@ def _parse_openalex_work(work: dict) -> dict:
 # ── GitHub code discovery ──────────────────────────────────────
 
 async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict | None:
-    """Search GitHub for paper implementation repos."""
+    """Search GitHub for paper implementation repos.
+
+    Also fetches README to check for acceptance info like
+    "Accepted at CVPR 2025" or "NeurIPS 2024 Oral".
+    """
     try:
-        # Search for repos mentioning the paper title
         query = f'"{title[:80]}" in:readme'
         resp = await client.get(
             "https://api.github.com/search/repositories",
@@ -312,19 +315,139 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
             return None
 
         best = items[0]
-        return {
+        result = {
             "code_url": best.get("html_url"),
             "open_code": True,
+            "stars": best.get("stargazers_count", 0),
         }
+
+        # Fetch README to check for acceptance info + dataset links
+        owner_repo = best.get("full_name", "")
+        if owner_repo:
+            readme_data = await _fetch_github_readme(client, owner_repo)
+            if readme_data:
+                result.update(readme_data)
+
+        return result
     except Exception as e:
         logger.debug(f"GitHub search failed for '{title[:40]}': {e}")
     return None
 
 
+async def _fetch_github_readme(client: httpx.AsyncClient, owner_repo: str) -> dict | None:
+    """Fetch GitHub repo README and extract acceptance info + dataset links.
+
+    Checks for patterns like:
+      - "Accepted at ICLR 2025"
+      - "This paper has been accepted by NeurIPS"
+      - Dataset download links (HuggingFace datasets, Google Drive, etc.)
+    """
+    try:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner_repo}/readme",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        import base64
+        content_b64 = resp.json().get("content", "")
+        if not content_b64:
+            return None
+
+        readme_text = base64.b64decode(content_b64).decode("utf-8", errors="ignore")
+        result = {}
+
+        # Check for acceptance info
+        acceptance = _parse_acceptance_from_comment(readme_text)
+        if acceptance:
+            result["acceptance_from_readme"] = acceptance
+
+        # Extract dataset links
+        dataset_urls = _extract_dataset_links(readme_text)
+        if dataset_urls:
+            result["dataset_urls"] = dataset_urls
+
+        # Extract project page link
+        import re
+        project_patterns = [
+            r'(?:project\s*page|demo|homepage)[:\s]*\[?[^\]]*\]?\(?(https?://[^\s\)]+)',
+            r'\[(?:Project Page|Demo|Homepage)\]\((https?://[^\)]+)\)',
+        ]
+        for pat in project_patterns:
+            m = re.search(pat, readme_text, re.IGNORECASE)
+            if m:
+                result["project_url"] = m.group(1)
+                break
+
+        return result if result else None
+
+    except Exception as e:
+        logger.debug(f"README fetch failed for {owner_repo}: {e}")
+        return None
+
+
+def _extract_dataset_links(text: str) -> list[str]:
+    """Extract dataset download links from text (README, project page, etc.)."""
+    import re
+    urls = set()
+
+    # HuggingFace datasets
+    for m in re.finditer(r'https?://huggingface\.co/datasets/[\w\-\.\/]+', text):
+        urls.add(m.group(0))
+
+    # Google Drive links
+    for m in re.finditer(r'https?://drive\.google\.com/[^\s\)\"\']+', text):
+        urls.add(m.group(0))
+
+    # Zenodo
+    for m in re.finditer(r'https?://zenodo\.org/record[s]?/\d+', text):
+        urls.add(m.group(0))
+
+    # Direct download patterns with "dataset" in context
+    for m in re.finditer(r'(?:dataset|data|benchmark)[\s\S]{0,100}?(https?://[^\s\)\"\']+(?:\.zip|\.tar|\.gz|\.json|\.csv))', text, re.IGNORECASE):
+        urls.add(m.group(1))
+
+    return list(urls)[:10]
+
+
+async def _check_project_page_acceptance(client: httpx.AsyncClient, project_url: str) -> dict | None:
+    """Fetch a paper's project page and check for acceptance info.
+
+    Many papers have project pages like xxx.github.io that mention
+    "Accepted at CVPR 2025" in the page content.
+    """
+    if not project_url:
+        return None
+    try:
+        resp = await client.get(project_url, follow_redirects=True, timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        text = resp.text[:5000]  # Only check first 5KB
+        acceptance = _parse_acceptance_from_comment(text)
+        if acceptance:
+            return {"acceptance_from_project_page": acceptance, "source_url": project_url}
+
+        # Also extract dataset links from project page
+        dataset_urls = _extract_dataset_links(text)
+        if dataset_urls:
+            return {"dataset_urls": dataset_urls, "source_url": project_url}
+
+        return None
+    except Exception as e:
+        logger.debug(f"Project page fetch failed for {project_url}: {e}")
+        return None
+
+
 # ── HuggingFace discovery ──────────────────────────────────────
 
 async def _discover_huggingface(client: httpx.AsyncClient, title: str) -> dict | None:
-    """Search HuggingFace for models/datasets related to a paper."""
+    """Search HuggingFace for models AND datasets related to a paper."""
+    result = {}
+
+    # Search models
     try:
         resp = await client.get(
             "https://huggingface.co/api/models",
@@ -334,10 +457,29 @@ async def _discover_huggingface(client: httpx.AsyncClient, title: str) -> dict |
         if resp.status_code == 200:
             models = resp.json()
             if models:
-                return {"huggingface_url": f"https://huggingface.co/{models[0].get('id', '')}"}
+                result["huggingface_model_url"] = f"https://huggingface.co/{models[0].get('id', '')}"
     except Exception:
         pass
-    return None
+
+    # Search datasets
+    try:
+        resp = await client.get(
+            "https://huggingface.co/api/datasets",
+            params={"search": title[:100], "limit": "3", "sort": "downloads"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            datasets = resp.json()
+            if datasets:
+                result["huggingface_dataset_url"] = f"https://huggingface.co/datasets/{datasets[0].get('id', '')}"
+    except Exception:
+        pass
+
+    # Backward compat: keep huggingface_url
+    if result.get("huggingface_model_url"):
+        result["huggingface_url"] = result["huggingface_model_url"]
+
+    return result if result else None
 
 
 # ── Semantic Scholar enrichment ───────────────────────────────
@@ -580,13 +722,74 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
     if paper.title:
         await asyncio.sleep(0.3)
         hf_data = await _discover_huggingface(client, paper.title)
-        if hf_data and hf_data.get("huggingface_url"):
-            await record_observation(session, entity_type="paper", entity_id=paper.id,
-                field_name="huggingface_url", value=hf_data["huggingface_url"],
-                source="github")  # recording as a data link
-            updated["huggingface_url"] = True
+        if hf_data:
+            if hf_data.get("huggingface_model_url"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="huggingface_model_url", value=hf_data["huggingface_model_url"],
+                    source="huggingface")
+                updated["huggingface_model_url"] = True
+            if hf_data.get("huggingface_dataset_url"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="huggingface_dataset_url", value=hf_data["huggingface_dataset_url"],
+                    source="huggingface")
+                if not paper.data_url:
+                    paper.data_url = hf_data["huggingface_dataset_url"]
+                updated["huggingface_dataset_url"] = True
 
-    # ── 7. Update state ──────────────────────────────────────
+    # ── 7. GitHub README acceptance + dataset links ──────────
+    # If GitHub discovered, check README for acceptance info
+    if paper.code_url and not paper.acceptance_type:
+        gh_readme = gh_data if 'gh_data' in dir() and gh_data else None
+        if gh_readme and gh_readme.get("acceptance_from_readme"):
+            acc = gh_readme["acceptance_from_readme"]
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="acceptance_status", value=acc["acceptance_status"],
+                source="github", source_url=paper.code_url, confidence=0.75)
+            if acc.get("venue"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="venue", value=acc["venue"],
+                    source="github", source_url=paper.code_url, confidence=0.75)
+                if not paper.venue:
+                    paper.venue = acc["venue"][:100]
+                    updated["venue"] = True
+            updated["acceptance_from_github"] = True
+
+        # Dataset links from README
+        if gh_readme and gh_readme.get("dataset_urls"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="dataset_urls", value=gh_readme["dataset_urls"],
+                source="github", source_url=paper.code_url)
+            if not paper.data_url and gh_readme["dataset_urls"]:
+                paper.data_url = gh_readme["dataset_urls"][0]
+                updated["data_url"] = True
+
+        # Project page URL from README
+        if gh_readme and gh_readme.get("project_url"):
+            paper.project_link = gh_readme["project_url"]
+            updated["project_link"] = True
+
+    # ── 8. Project page acceptance check ─────────────────────
+    if paper.project_link and not paper.acceptance_type:
+        await asyncio.sleep(0.3)
+        page_data = await _check_project_page_acceptance(client, paper.project_link)
+        if page_data:
+            if page_data.get("acceptance_from_project_page"):
+                acc = page_data["acceptance_from_project_page"]
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="acceptance_status", value=acc["acceptance_status"],
+                    source="official_conf", source_url=paper.project_link, confidence=0.8)
+                if acc.get("venue"):
+                    await record_observation(session, entity_type="paper", entity_id=paper.id,
+                        field_name="venue", value=acc["venue"],
+                        source="official_conf", source_url=paper.project_link, confidence=0.8)
+                updated["acceptance_from_project_page"] = True
+
+            if page_data.get("dataset_urls"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="dataset_urls", value=page_data["dataset_urls"],
+                    source="official_conf", source_url=paper.project_link)
+
+    # ── 9. Update state ──────────────────────────────────────
     if updated and paper.state == PaperState.CANONICALIZED:
         paper.state = PaperState.ENRICHED
 

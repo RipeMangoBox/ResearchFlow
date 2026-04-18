@@ -48,6 +48,37 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
     # 1. PyMuPDF (always available, fast fallback)
     pymupdf_result = parse_pdf(pdf_path)
 
+    # 1.5. MinerU (if available — better formulas, tables, reading order)
+    mineru_result = None
+    from backend.utils.mineru_adapter import is_available as mineru_available
+    if mineru_available():
+        try:
+            from backend.utils.mineru_adapter import parse_pdf as mineru_parse, extract_formulas_from_markdown
+            mineru_result = mineru_parse(pdf_path)
+            if mineru_result and mineru_result.success:
+                logger.info(f"MinerU parsed {paper_id}: {mineru_result.metadata}")
+                # MinerU formulas are better than PyMuPDF regex
+                if mineru_result.formulas:
+                    pymupdf_result.formulas = [
+                        f.get("latex", "") for f in mineru_result.formulas if f.get("latex")
+                    ][:30]
+                elif mineru_result.markdown_text:
+                    # Extract from markdown as fallback
+                    md_formulas = extract_formulas_from_markdown(mineru_result.markdown_text)
+                    if md_formulas:
+                        pymupdf_result.formulas = [f["latex"] for f in md_formulas][:30]
+                # MinerU tables are better (markdown format, cross-page merged)
+                if mineru_result.tables:
+                    pymupdf_result.tables = [
+                        {"table_num": i+1, "caption": t.get("caption", ""), "markdown": t.get("markdown", "")}
+                        for i, t in enumerate(mineru_result.tables)
+                    ]
+            else:
+                mineru_result = None
+        except Exception as e:
+            logger.warning(f"MinerU parse failed for {paper_id}: {e}")
+            mineru_result = None
+
     # 2. GROBID (structured metadata + references)
     grobid_result = None
     grobid_refs = []
@@ -140,12 +171,18 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         "grobid_available": grobid_result is not None,
         "grobid_ref_count": len(grobid_refs),
         "grobid_author_count": len(grobid_authors),
+        "mineru_available": mineru_result is not None,
         "pymupdf_section_count": len(pymupdf_result.sections),
         "pymupdf_formula_count": len(pymupdf_result.formulas),
         "pymupdf_figure_count": len(pymupdf_result.figure_captions),
     }
     if grobid_result:
         parse_metadata["parsers_used"].append("grobid")
+    if mineru_result:
+        parse_metadata["parsers_used"].append("mineru")
+        parse_metadata["mineru_formula_count"] = len(mineru_result.formulas)
+        parse_metadata["mineru_table_count"] = len(mineru_result.tables)
+        parse_metadata["mineru_figure_count"] = len(mineru_result.figures)
 
     # ── Create L2 analysis ───────────────────────────────────────
     analysis = PaperAnalysis(
