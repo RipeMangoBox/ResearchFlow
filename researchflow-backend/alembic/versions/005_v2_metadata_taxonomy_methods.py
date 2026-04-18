@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 
 revision = "005_v2"
-down_revision = "004_idea_graph_schema"
+down_revision = "015"  # Server DB is at version 015
 branch_labels = None
 depends_on = None
 
