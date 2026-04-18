@@ -129,6 +129,86 @@ async def task_refresh_materialized_views(ctx: dict):
     return {"refreshed": refreshed}
 
 
+# ── v2 tasks ─────────────────────────────────────────────────────
+
+async def task_venue_resolve_batch(ctx: dict, limit: int = 10):
+    """Resolve venue/acceptance status for papers missing acceptance_type."""
+    from backend.database import async_session
+    from backend.models.paper import Paper
+    from backend.models.enums import PaperState
+    from backend.services.venue_resolver_service import resolve_venue
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        papers = (await session.execute(
+            select(Paper).where(
+                Paper.acceptance_type.is_(None),
+                Paper.state.notin_([PaperState.SKIP, PaperState.ARCHIVED_OR_EXPIRED]),
+            ).order_by(Paper.analysis_priority.desc().nullsfirst())
+            .limit(limit)
+        )).scalars().all()
+
+        results = []
+        for paper in papers:
+            try:
+                authors = [a.get("name", "") for a in (paper.authors or []) if isinstance(a, dict)]
+                r = await resolve_venue(
+                    session, paper.id, title=paper.title,
+                    authors=authors or None,
+                    arxiv_id=paper.arxiv_id or "",
+                    current_venue=paper.venue or "",
+                    current_year=paper.year or 0,
+                )
+                results.append({"paper_id": str(paper.id), "venue": r.get("venue"), "status": r.get("acceptance_status")})
+            except Exception as e:
+                results.append({"paper_id": str(paper.id), "error": str(e)[:80]})
+        await session.commit()
+    return {"processed": len(results), "results": results}
+
+
+async def task_fetch_hf_daily_papers(ctx: dict):
+    """Fetch today's trending papers from HuggingFace Daily Papers."""
+    import httpx
+    from backend.database import async_session
+    from backend.services import ingestion_service
+    from backend.schemas.import_ import LinkImportItem
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get("https://huggingface.co/api/daily_papers", params={"limit": "30"})
+        if resp.status_code != 200:
+            return {"error": f"HF API returned {resp.status_code}"}
+        papers = resp.json()
+
+    # Convert to import items
+    items = []
+    for p in papers:
+        paper_data = p.get("paper", {})
+        arxiv_id = paper_data.get("id", "")
+        if arxiv_id:
+            items.append(LinkImportItem(url=f"https://arxiv.org/abs/{arxiv_id}"))
+
+    if not items:
+        return {"fetched": 0, "ingested": 0}
+
+    async with async_session() as session:
+        results = await ingestion_service.ingest_links(
+            session, items, "HF_Daily", False, 30,
+        )
+        await session.commit()
+    return {"fetched": len(papers), "ingested": len(results)}
+
+
+async def task_parse_batch(ctx: dict, limit: int = 5):
+    """Run L2 parse (GROBID + PyMuPDF + formula extraction) on unprocessed papers."""
+    from backend.database import async_session
+    from backend.services import parse_service
+
+    async with async_session() as session:
+        results = await parse_service.parse_all_unprocessed(session, limit=limit)
+        await session.commit()
+    return {"processed": len(results), "results": results}
+
+
 # ── Startup / shutdown ──────────────────────────────────────────
 
 async def startup(ctx: dict):
@@ -162,6 +242,9 @@ class WorkerSettings:
         task_refresh_materialized_views,
         task_sync_domains_hot,
         task_sync_domains_weekly,
+        task_venue_resolve_batch,
+        task_fetch_hf_daily_papers,
+        task_parse_batch,
     ]
 
     cron_jobs = [
@@ -176,6 +259,12 @@ class WorkerSettings:
         cron(task_weekly_digest, weekday=6, hour=22, minute=0),
         # Cleanup expired ephemeral papers daily at 03:00
         cron(task_cleanup_expired, hour=3, minute=0),
+        # v2: HuggingFace daily papers at 08:00 and 20:00
+        cron(task_fetch_hf_daily_papers, hour={8, 20}, minute=0),
+        # v2: Venue resolution batch at 07:00
+        cron(task_venue_resolve_batch, hour=7, minute=0),
+        # v2: Parse unprocessed PDFs every 2 hours
+        cron(task_parse_batch, hour={2, 4, 8, 12, 16, 20}, minute=30),
     ]
 
     on_startup = startup

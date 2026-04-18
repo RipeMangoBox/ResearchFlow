@@ -20,6 +20,8 @@ from backend.api.reports import router as reports_router
 from backend.api.reviews import router as reviews_router
 from backend.api.bottlenecks import router as bottlenecks_router
 from backend.api.search import router as search_router
+from backend.api.taxonomy import router as taxonomy_router
+from backend.api.methods import router as methods_router
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,8 @@ app.include_router(pipeline_router, prefix=settings.api_prefix)
 app.include_router(exploration_router, prefix=settings.api_prefix)
 app.include_router(reviews_router, prefix=settings.api_prefix)
 app.include_router(bottlenecks_router, prefix=settings.api_prefix)
+app.include_router(taxonomy_router, prefix=settings.api_prefix)
+app.include_router(methods_router, prefix=settings.api_prefix)
 
 
 # Global exception handler
