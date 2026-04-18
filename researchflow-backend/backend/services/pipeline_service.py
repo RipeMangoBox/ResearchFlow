@@ -65,14 +65,26 @@ async def download_arxiv_pdf(session: AsyncSession, paper_id: UUID) -> bool:
     paper.pdf_path_local = rel_path
     paper.state = PaperState.DOWNLOADED
 
+    # Upload to object storage (if configured)
+    object_key = f"papers/raw-pdf/{rel_path}"
+    try:
+        from backend.services.object_storage import get_storage
+        storage = get_storage()
+        await storage.put(object_key, resp.content)
+        paper.pdf_object_key = object_key
+        logger.info(f"Uploaded PDF to object storage: {object_key}")
+    except Exception as e:
+        logger.warning(f"Object storage upload failed for {paper.arxiv_id}, local only: {e}")
+
     # Create asset record
-    from backend.utils.sanitize import sanitize_filename
+    from backend.services.object_storage import compute_checksum
     asset = PaperAsset(
         paper_id=paper.id,
         asset_type=AssetType.RAW_PDF,
-        object_key=f"papers/raw-pdf/{rel_path}",
+        object_key=object_key,
         mime_type="application/pdf",
         size_bytes=len(resp.content),
+        checksum=compute_checksum(resp.content),
     )
     session.add(asset)
     await session.flush()

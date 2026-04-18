@@ -725,11 +725,54 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptRe
 
 # ── Entry point ─────────────────────────────────────────────────
 
-async def main():
+async def main_stdio():
+    """Run MCP server via stdio (local Claude Code / Codex)."""
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 
 
+async def main_sse(host: str = "0.0.0.0", port: int = 8001):
+    """Run MCP server via SSE transport (remote connection).
+
+    Connect from Claude Code with:
+      .mcp.json: {"url": "http://your-server:8001/sse"}
+    """
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    import uvicorn
+
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+
+    async def handle_messages(request):
+        await sse.handle_post_message(request.scope, request.receive, request._send)
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Route("/messages/", endpoint=handle_messages, methods=["POST"]),
+        ],
+    )
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    srv = uvicorn.Server(config)
+    await srv.serve()
+
+
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    import sys
+
+    if "--sse" in sys.argv:
+        port = 8001
+        for i, arg in enumerate(sys.argv):
+            if arg == "--port" and i + 1 < len(sys.argv):
+                port = int(sys.argv[i + 1])
+        print(f"Starting MCP SSE server on port {port}...")
+        asyncio.run(main_sse(port=port))
+    else:
+        asyncio.run(main_stdio())

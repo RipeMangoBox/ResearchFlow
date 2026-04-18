@@ -137,3 +137,44 @@ async def search_papers(
 ):
     papers = await paper_service.search_papers(session, q, limit)
     return [PaperBrief.model_validate(p) for p in papers]
+
+
+@router.get("/{paper_id}/download-pdf")
+async def download_paper_pdf(
+    paper_id: UUID,
+    session: Session,
+):
+    """Download a paper's PDF. Checks object storage first, then local path."""
+    from fastapi.responses import FileResponse, Response
+    from backend.models.paper import Paper
+
+    paper = await session.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(404, "Paper not found")
+
+    # Try object storage first
+    if paper.pdf_object_key:
+        from backend.services.object_storage import get_storage
+        storage = get_storage()
+        data = await storage.get(paper.pdf_object_key)
+        if data:
+            filename = f"{paper.title_sanitized or str(paper.id)}.pdf"
+            return Response(
+                content=data,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
+    # Fallback to local path
+    if paper.pdf_path_local:
+        from pathlib import Path
+        from backend.config import settings
+        local_path = Path(settings.paper_pdfs_dir) / paper.pdf_path_local
+        if local_path.exists():
+            return FileResponse(
+                str(local_path),
+                media_type="application/pdf",
+                filename=f"{paper.title_sanitized or str(paper.id)}.pdf",
+            )
+
+    raise HTTPException(404, "PDF not available")

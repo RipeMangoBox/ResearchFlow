@@ -168,6 +168,155 @@ def _titles_similar(a: str, b: str) -> bool:
     return shorter[:30] in longer or longer[:30] in shorter
 
 
+# ── OpenAlex enrichment ────────────────────────────────────────
+
+OPENALEX_API = "https://api.openalex.org"
+
+async def _fetch_openalex(client: httpx.AsyncClient, paper: "Paper") -> dict | None:
+    """Fetch metadata from OpenAlex — venue verification, citation count, type."""
+    try:
+        # Try DOI first (most reliable)
+        if paper.doi:
+            resp = await client.get(
+                f"{OPENALEX_API}/works/doi:{paper.doi}",
+                headers={"User-Agent": "ResearchFlow/0.1 (mailto:researchflow@example.com)"},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                return _parse_openalex_work(resp.json())
+
+        # Try arXiv ID
+        if paper.arxiv_id:
+            base_id = re.sub(r"v\d+$", "", paper.arxiv_id)
+            resp = await client.get(
+                f"{OPENALEX_API}/works",
+                params={"filter": f"ids.openalex_id:https://openalex.org/W*,doi:https://doi.org/10.48550/arXiv.{base_id}"},
+                headers={"User-Agent": "ResearchFlow/0.1"},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                if results:
+                    return _parse_openalex_work(results[0])
+
+        # Try title search (fallback)
+        if paper.title:
+            resp = await client.get(
+                f"{OPENALEX_API}/works",
+                params={"search": paper.title[:200], "per_page": "1"},
+                headers={"User-Agent": "ResearchFlow/0.1"},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                if results and _titles_similar(paper.title, results[0].get("title", "")):
+                    return _parse_openalex_work(results[0])
+
+    except httpx.HTTPError as e:
+        logger.warning(f"OpenAlex API error for '{paper.title[:50]}': {e}")
+    return None
+
+
+def _parse_openalex_work(work: dict) -> dict:
+    """Parse an OpenAlex work into enrichment fields."""
+    result = {}
+
+    # OpenAlex ID
+    oa_id = work.get("id", "")
+    if oa_id:
+        result["openalex_id"] = oa_id.replace("https://openalex.org/", "")
+
+    # Venue / source
+    primary_loc = work.get("primary_location", {}) or {}
+    source = primary_loc.get("source", {}) or {}
+    if source.get("display_name"):
+        result["venue"] = source["display_name"]
+
+    # Publication type (journal-article vs posted-content)
+    result["work_type"] = work.get("type", "")
+
+    # Is it actually published (not just a preprint)?
+    result["is_published"] = work.get("type", "") != "posted-content"
+
+    # Citation count
+    result["cited_by_count"] = work.get("cited_by_count", 0)
+
+    # Year
+    if work.get("publication_year"):
+        result["year"] = work["publication_year"]
+
+    # DOI
+    if work.get("doi"):
+        result["doi"] = work["doi"].replace("https://doi.org/", "")
+
+    # Abstract (reconstructed from inverted index)
+    abstract_inv = work.get("abstract_inverted_index")
+    if abstract_inv and isinstance(abstract_inv, dict):
+        # Reconstruct from inverted index
+        words = []
+        for word, positions in abstract_inv.items():
+            for pos in positions:
+                words.append((pos, word))
+        words.sort()
+        result["abstract"] = " ".join(w for _, w in words)
+
+    # Open access
+    oa = work.get("open_access", {}) or {}
+    if oa.get("is_oa"):
+        result["is_oa"] = True
+
+    return result
+
+
+# ── GitHub code discovery ──────────────────────────────────────
+
+async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict | None:
+    """Search GitHub for paper implementation repos."""
+    try:
+        # Search for repos mentioning the paper title
+        query = f'"{title[:80]}" in:readme'
+        resp = await client.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query, "per_page": "3", "sort": "stars"},
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+
+        items = resp.json().get("items", [])
+        if not items:
+            return None
+
+        best = items[0]
+        return {
+            "code_url": best.get("html_url"),
+            "open_code": True,
+        }
+    except Exception as e:
+        logger.debug(f"GitHub search failed for '{title[:40]}': {e}")
+    return None
+
+
+# ── HuggingFace discovery ──────────────────────────────────────
+
+async def _discover_huggingface(client: httpx.AsyncClient, title: str) -> dict | None:
+    """Search HuggingFace for models/datasets related to a paper."""
+    try:
+        resp = await client.get(
+            "https://huggingface.co/api/models",
+            params={"search": title[:100], "limit": "3", "sort": "downloads"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            models = resp.json()
+            if models:
+                return {"huggingface_url": f"https://huggingface.co/{models[0].get('id', '')}"}
+    except Exception:
+        pass
+    return None
+
+
 # ── Main enrich logic ───────────────────────────────────────────
 
 async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncClient) -> dict[str, bool]:
@@ -210,7 +359,38 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 paper.year = cr_data["year"]
                 updated["year"] = True
 
-    # 3. Update state if enrichment happened and paper is in ephemeral flow
+    # 3. Try OpenAlex for venue verification + citation count
+    oa_data = await _fetch_openalex(client, paper)
+    if oa_data:
+        if oa_data.get("openalex_id") and not paper.openalex_id:
+            paper.openalex_id = oa_data["openalex_id"]
+            updated["openalex_id"] = True
+        if oa_data.get("venue") and not paper.venue:
+            paper.venue = oa_data["venue"][:100]
+            updated["venue"] = True
+        if oa_data.get("cited_by_count") and (not paper.cited_by_count or paper.cited_by_count == 0):
+            paper.cited_by_count = min(oa_data["cited_by_count"], 32767)  # SmallInteger limit
+            updated["cited_by_count"] = True
+        if not paper.abstract and oa_data.get("abstract"):
+            paper.abstract = oa_data["abstract"]
+            updated["abstract"] = True
+        if not paper.doi and oa_data.get("doi"):
+            paper.doi = oa_data["doi"]
+            updated["doi"] = True
+        if not paper.year and oa_data.get("year"):
+            paper.year = oa_data["year"]
+            updated["year"] = True
+
+    # 4. Try GitHub for code link discovery (if no code_url yet)
+    if not paper.code_url and paper.title:
+        await asyncio.sleep(0.3)
+        gh_data = await _discover_github_links(client, paper.title)
+        if gh_data:
+            paper.code_url = gh_data["code_url"]
+            paper.open_code = True
+            updated["code_url"] = True
+
+    # 5. Update state if enrichment happened and paper is in ephemeral flow
     if updated and paper.state == PaperState.CANONICALIZED:
         paper.state = PaperState.ENRICHED
 
