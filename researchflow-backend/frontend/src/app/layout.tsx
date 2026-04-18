@@ -25,6 +25,7 @@ const navItems = [
   { href: "/search", label: "Search" },
   { href: "/bottlenecks", label: "Bottlenecks" },
   { href: "/lineage", label: "Lineage" },
+  { href: "/graph", label: "Graph" },
   { href: "/reviews", label: "Reviews" },
   { href: "/reports", label: "Reports" },
   { href: "/digests", label: "Digests" },

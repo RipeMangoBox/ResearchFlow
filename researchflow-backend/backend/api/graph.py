@@ -161,3 +161,137 @@ async def list_mechanisms(
 async def get_kb_quality_report(session: AsyncSession = Depends(get_session)):
     """Get aggregate quality report across all published IdeaDeltas and DeltaCards."""
     return await quality_service.compute_kb_quality_report(session)
+
+
+# ── Visualization data ──────────────────────────────────────────
+
+@router.get("/vis-data")
+async def get_graph_vis_data(
+    limit: int = Query(default=200, ge=10, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get graph data formatted for vis-network visualization.
+
+    Returns nodes + edges for interactive rendering.
+    Node types: paper, mechanism, bottleneck, paradigm.
+    Edges from: graph_assertions (published), delta_card_lineage.
+    """
+    from sqlalchemy import text
+
+    # Nodes: papers with delta cards
+    paper_rows = (await session.execute(text("""
+        SELECT p.id, p.title, p.venue, p.year, p.category,
+               p.mechanism_family, p.structurality_score,
+               dc.baseline_paradigm
+        FROM papers p
+        LEFT JOIN delta_cards dc ON dc.id = p.current_delta_card_id
+        WHERE p.state NOT IN ('archived_or_expired', 'skip')
+        ORDER BY p.keep_score DESC NULLS LAST
+        LIMIT :lim
+    """), {"lim": limit})).fetchall()
+
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    # Paper nodes
+    for p in paper_rows:
+        nid = f"paper:{p.id}"
+        node_ids.add(nid)
+        size = 10 + (float(p.structurality_score or 0) * 20)
+        nodes.append({
+            "id": nid,
+            "label": p.title[:40],
+            "title": f"{p.title}\n{p.venue} {p.year}\nStruct: {p.structurality_score}",
+            "group": "paper",
+            "size": round(size, 1),
+            "category": p.category,
+        })
+
+        # Connect to mechanism
+        if p.mechanism_family:
+            mech_id = f"mechanism:{p.mechanism_family}"
+            if mech_id not in node_ids:
+                node_ids.add(mech_id)
+                nodes.append({
+                    "id": mech_id, "label": p.mechanism_family,
+                    "group": "mechanism", "size": 18,
+                })
+            edges.append({"from": nid, "to": mech_id, "label": "uses", "dashes": True})
+
+        # Connect to paradigm
+        if p.baseline_paradigm:
+            para_id = f"paradigm:{p.baseline_paradigm}"
+            if para_id not in node_ids:
+                node_ids.add(para_id)
+                nodes.append({
+                    "id": para_id, "label": p.baseline_paradigm,
+                    "group": "paradigm", "size": 22,
+                })
+            edges.append({"from": nid, "to": para_id, "label": "aligned_to", "dashes": True})
+
+    # Lineage edges
+    lineage_rows = (await session.execute(text("""
+        SELECT dcl.relation_type, dcl.confidence, dcl.status,
+               child_p.id AS child_id, parent_p.id AS parent_id
+        FROM delta_card_lineage dcl
+        JOIN delta_cards child_dc ON child_dc.id = dcl.child_delta_card_id
+        JOIN papers child_p ON child_p.id = child_dc.paper_id
+        JOIN delta_cards parent_dc ON parent_dc.id = dcl.parent_delta_card_id
+        JOIN papers parent_p ON parent_p.id = parent_dc.paper_id
+    """))).fetchall()
+
+    for ln in lineage_rows:
+        child_nid = f"paper:{ln.child_id}"
+        parent_nid = f"paper:{ln.parent_id}"
+        if child_nid in node_ids and parent_nid in node_ids:
+            edges.append({
+                "from": child_nid, "to": parent_nid,
+                "label": ln.relation_type,
+                "arrows": "to",
+                "color": "#e74c3c" if ln.status == "published" else "#95a5a6",
+            })
+
+    # Bottleneck nodes (from paper claims)
+    bn_rows = (await session.execute(text("""
+        SELECT DISTINCT pb.id, pb.title, pb.domain
+        FROM project_bottlenecks pb
+        JOIN paper_bottleneck_claims pbc ON pbc.bottleneck_id = pb.id
+        JOIN papers p ON p.id = pbc.paper_id
+        WHERE p.state NOT IN ('archived_or_expired', 'skip')
+        LIMIT 30
+    """))).fetchall()
+
+    for bn in bn_rows:
+        bn_id = f"bottleneck:{bn.id}"
+        if bn_id not in node_ids:
+            node_ids.add(bn_id)
+            nodes.append({
+                "id": bn_id, "label": bn.title[:30],
+                "title": bn.title, "group": "bottleneck", "size": 15,
+            })
+
+    # Bottleneck edges
+    claim_rows = (await session.execute(text("""
+        SELECT pbc.paper_id, pbc.bottleneck_id
+        FROM paper_bottleneck_claims pbc
+        JOIN papers p ON p.id = pbc.paper_id
+        WHERE p.state NOT IN ('archived_or_expired', 'skip')
+    """))).fetchall()
+
+    for cl in claim_rows:
+        p_nid = f"paper:{cl.paper_id}"
+        bn_nid = f"bottleneck:{cl.bottleneck_id}"
+        if p_nid in node_ids and bn_nid in node_ids:
+            edges.append({"from": p_nid, "to": bn_nid, "label": "addresses", "dashes": [5, 5]})
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "groups": {
+            "paper": {"color": "#3498db", "shape": "dot"},
+            "mechanism": {"color": "#2ecc71", "shape": "diamond"},
+            "paradigm": {"color": "#9b59b6", "shape": "triangle"},
+            "bottleneck": {"color": "#e74c3c", "shape": "square"},
+        },
+    }

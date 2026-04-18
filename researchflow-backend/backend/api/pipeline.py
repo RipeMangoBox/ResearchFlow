@@ -225,6 +225,20 @@ async def sync_analyses(
     return {"exported": exported}
 
 
+@router.post("/export/obsidian-vault")
+async def export_obsidian_vault(
+    session: AsyncSession = Depends(get_session),
+):
+    """Export full knowledge base as Obsidian-ready vault with [[wikilinks]] + concept hub pages.
+
+    Generates: papers/ (per-paper with wikilinks), concepts/mechanisms/, concepts/bottlenecks/,
+    concepts/paradigms/, _Index.md (Dataview queries), _Graph.md (graph view guide).
+    """
+    from backend.services.export_service import export_obsidian_vault as _export
+    result = await _export(session)
+    return result
+
+
 @router.post("/export/build-collection-index")
 async def build_collection_index(
     session: AsyncSession = Depends(get_session),
