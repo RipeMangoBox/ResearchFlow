@@ -16,6 +16,11 @@ redis>=5.2.0
 
 # PDF parsing
 pymupdf>=1.25.0
+# GROBID client (via httpx, no extra dep needed)
+# MinerU — uncomment when GPU available:
+# magic-pdf>=0.9.0
+# Docling — uncomment when needed:
+# docling>=2.0.0
 
 # HTTP client
 httpx>=0.28.0

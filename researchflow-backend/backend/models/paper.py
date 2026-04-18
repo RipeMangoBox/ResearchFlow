@@ -114,6 +114,13 @@ class Paper(Base):
     # baseline / structural / plugin
     domain_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
+    # Venue acceptance details (from metadata resolver)
+    acceptance_type: Mapped[str | None] = mapped_column(String(50))
+    # oral / poster / spotlight / workshop / rejected / under_review
+    review_scores: Mapped[dict | None] = mapped_column(JSONB)
+    # Schema: {avg_score, scores: [{reviewer, score, confidence}]}
+    dblp_key: Mapped[str | None] = mapped_column(String(200))
+
     # Source tracking
     source: Mapped[str | None] = mapped_column(String(50))
     source_ref: Mapped[str | None] = mapped_column(Text)

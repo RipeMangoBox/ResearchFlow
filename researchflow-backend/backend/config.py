@@ -10,11 +10,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Object Storage
-    object_storage_provider: str = "cos"  # "cos" or "oss"
+    object_storage_provider: str = "cos"  # "cos" or "oss" or "local"
     object_storage_bucket: str = "researchflow"
     object_storage_secret_id: str = ""
     object_storage_secret_key: str = ""
     object_storage_region: str = "ap-shanghai"
+    object_storage_cdn_domain: str = ""  # e.g., "cdn.researchflow.xyz" for public URLs
+
+    # GROBID
+    grobid_url: str = "http://localhost:8070"
 
     # LLM
     anthropic_api_key: str = ""

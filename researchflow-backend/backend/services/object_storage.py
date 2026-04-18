@@ -47,6 +47,10 @@ class StorageBackend:
         """Return local file path if available (for PDF parsing)."""
         return None
 
+    def get_public_url(self, key: str) -> str | None:
+        """Get public URL for an object (for CDN/remote image references)."""
+        return None
+
 
 # ── Local Storage ───────────────────────────────────────────────
 
@@ -94,6 +98,81 @@ class LocalStorage(StorageBackend):
 
 
 # ── Tencent Cloud COS Storage ──────────────────────────────────
+
+class AliyunOSSStorage(StorageBackend):
+    """Alibaba Cloud OSS storage.
+
+    Requires: pip install oss2
+    Config: OBJECT_STORAGE_SECRET_ID (AccessKeyId), SECRET_KEY (AccessKeySecret),
+            REGION (e.g., oss-cn-shanghai), BUCKET
+    """
+
+    def __init__(self):
+        import oss2
+
+        auth = oss2.Auth(
+            settings.object_storage_secret_id,
+            settings.object_storage_secret_key,
+        )
+        endpoint = f"https://{settings.object_storage_region}.aliyuncs.com"
+        self.bucket = oss2.Bucket(auth, endpoint, settings.object_storage_bucket)
+        self._cdn_domain = settings.object_storage_cdn_domain
+        # Local cache for downloaded files
+        self._cache_dir = Path(tempfile.gettempdir()) / "rf_oss_cache"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Aliyun OSS initialized: bucket={settings.object_storage_bucket}, region={settings.object_storage_region}")
+
+    async def put(self, key: str, data: bytes) -> str:
+        self.bucket.put_object(key, data)
+        return key
+
+    async def put_file(self, key: str, local_path: str) -> str:
+        self.bucket.put_object_from_file(key, local_path)
+        return key
+
+    async def get(self, key: str) -> bytes | None:
+        import oss2
+        try:
+            result = self.bucket.get_object(key)
+            return result.read()
+        except oss2.exceptions.NoSuchKey:
+            return None
+
+    async def exists(self, key: str) -> bool:
+        return self.bucket.object_exists(key)
+
+    async def delete(self, key: str) -> bool:
+        try:
+            self.bucket.delete_object(key)
+            return True
+        except Exception:
+            return False
+
+    async def get_size(self, key: str) -> int | None:
+        try:
+            meta = self.bucket.head_object(key)
+            return meta.content_length
+        except Exception:
+            return None
+
+    def get_local_path(self, key: str) -> str | None:
+        """Download to local cache for PDF parsing."""
+        cache_path = self._cache_dir / key.replace("/", "_")
+        if cache_path.exists():
+            return str(cache_path)
+        try:
+            self.bucket.get_object_to_file(key, str(cache_path))
+            return str(cache_path)
+        except Exception as e:
+            logger.warning(f"OSS download failed for {key}: {e}")
+            return None
+
+    def get_public_url(self, key: str) -> str:
+        """Get public URL for an object (via CDN or direct bucket URL)."""
+        if self._cdn_domain:
+            return f"https://{self._cdn_domain}/{key}"
+        return f"https://{settings.object_storage_bucket}.{settings.object_storage_region}.aliyuncs.com/{key}"
+
 
 class COSStorage(StorageBackend):
     """Tencent Cloud COS storage for production.
@@ -200,6 +279,13 @@ def get_storage() -> StorageBackend:
         return _storage_instance
 
     provider = settings.object_storage_provider.lower()
+
+    if provider == "oss" and settings.object_storage_secret_id:
+        try:
+            _storage_instance = AliyunOSSStorage()
+            return _storage_instance
+        except Exception as e:
+            logger.warning(f"Aliyun OSS init failed, falling back to local: {e}")
 
     if provider == "cos" and settings.object_storage_secret_id:
         try:

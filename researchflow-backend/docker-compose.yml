@@ -34,6 +34,21 @@ services:
           memory: 256M
     command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru
 
+  grobid:
+    image: lfoppiano/grobid:0.8.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8070:8070"
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   api:
     build:
       context: .
@@ -44,7 +59,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      grobid:
+        condition: service_healthy
     env_file: .env
+    environment:
+      GROBID_URL: http://grobid:8070
     volumes:
       - ./exports:/app/exports
       - ./storage:/app/storage

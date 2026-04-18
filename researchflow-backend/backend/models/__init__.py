@@ -24,6 +24,9 @@ from backend.models.canonical_idea import CanonicalIdea, ContributionToCanonical
 from backend.models.lineage import DeltaCardLineage
 from backend.models.candidates import ParadigmCandidate, SlotCandidate, MechanismCandidate
 from backend.models.domain import DomainSpec, DomainSourceRegistry, IncrementalCheckpoint
+from backend.models.metadata import MetadataObservation, CanonicalPaperMetadata
+from backend.models.taxonomy import TaxonomyNode, TaxonomyEdge, PaperFacet, ProblemNode, ProblemClaim
+from backend.models.method import MethodNode, MethodSlot, MethodEdge, MethodApplication
 
 __all__ = [
     "AnalysisLevel", "AssetType", "EvidenceBasis", "FeedbackType",
@@ -44,4 +47,7 @@ __all__ = [
     "DeltaCardLineage",
     "ParadigmCandidate", "SlotCandidate", "MechanismCandidate",
     "DomainSpec", "DomainSourceRegistry", "IncrementalCheckpoint",
+    "MetadataObservation", "CanonicalPaperMetadata",
+    "TaxonomyNode", "TaxonomyEdge", "PaperFacet", "ProblemNode", "ProblemClaim",
+    "MethodNode", "MethodSlot", "MethodEdge", "MethodApplication",
 ]
