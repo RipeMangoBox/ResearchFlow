@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # GROBID
     grobid_url: str = "http://localhost:8070"
 
+    # MCP Auth
+    mcp_auth_token: str = ""  # Set in .env for production
+
     # LLM
     anthropic_api_key: str = ""
     openai_api_key: str = ""

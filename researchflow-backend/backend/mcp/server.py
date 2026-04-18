@@ -954,15 +954,29 @@ async def main_sse(host: str = "0.0.0.0", port: int = 8001):
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.routing import Route
+    from starlette.responses import Response
     import uvicorn
+
+    from backend.config import settings
 
     sse = SseServerTransport("/messages/")
 
+    def _check_auth(request) -> bool:
+        """Verify Bearer token if MCP_AUTH_TOKEN is configured."""
+        if not settings.mcp_auth_token:
+            return True  # No auth configured (dev mode)
+        auth_header = request.headers.get("authorization", "")
+        return auth_header == f"Bearer {settings.mcp_auth_token}"
+
     async def handle_sse(request):
+        if not _check_auth(request):
+            return Response("Unauthorized", status_code=401)
         async with sse.connect_sse(request.scope, request.receive, request._send) as (read, write):
             await server.run(read, write, server.create_initialization_options())
 
     async def handle_messages(request):
+        if not _check_auth(request):
+            return Response("Unauthorized", status_code=401)
         await sse.handle_post_message(request.scope, request.receive, request._send)
 
     app = Starlette(
