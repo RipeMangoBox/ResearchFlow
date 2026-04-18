@@ -380,6 +380,10 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
     await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
 
+    # ── Steps 3-6: each wrapped with session recovery ─────────
+    # If any step throws a DB error the session enters failed state.
+    # We must rollback to recover before the next step can proceed.
+
     # ── Step 3: Build comparison set (defense line #2) ────────
     logger.info(f"[L4 Step 3/6] build_compare_set for {paper_id}")
     try:
@@ -387,6 +391,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         await build_compare_set(session, paper.id, analysis_data)
     except Exception as e:
         logger.warning(f"Step 3 (compare_set) failed for {paper.id}: {e}")
+        await session.rollback()
 
     # ── Step 4: Propose lineage ───────────────────────────────
     logger.info(f"[L4 Step 4/6] propose_lineage for {paper_id}")
@@ -396,6 +401,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
             await link_to_parent_baselines(session, paper.current_delta_card_id, analysis_data)
     except Exception as e:
         logger.warning(f"Step 4 (lineage) failed for {paper.id}: {e}")
+        await session.rollback()
 
     # ── Step 5: Synthesize concepts ───────────────────────────
     logger.info(f"[L4 Step 5/6] synthesize_concept for {paper_id}")
@@ -404,6 +410,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         await synthesize_concepts(session, paper.id, analysis_data)
     except Exception as e:
         logger.warning(f"Step 5 (concept) failed for {paper.id}: {e}")
+        await session.rollback()
 
     # ── Step 6: Reconcile neighbors ───────────────────────────
     logger.info(f"[L4 Step 6/6] reconcile_neighbors for {paper_id}")
@@ -412,6 +419,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         await reconcile_neighbors(session, paper.id, analysis_data)
     except Exception as e:
         logger.warning(f"Step 6 (reconcile) failed for {paper.id}: {e}")
+        await session.rollback()
 
     # ── Auto-export to paperAnalysis/ Markdown ────────────────
     try:
@@ -419,6 +427,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
         await export_paper_analysis(session, paper.id)
     except Exception as e:
         logger.warning(f"Auto-export to paperAnalysis/ failed for {paper.id}: {e}")
+        await session.rollback()
 
     logger.info(f"[L4 complete] 6-step pipeline done for {paper_id}")
     return analysis
