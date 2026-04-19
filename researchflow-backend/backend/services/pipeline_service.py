@@ -144,6 +144,13 @@ async def run_full_pipeline(
     else:
         progress["steps"]["enrich"] = "skipped (already enriched)"
 
+    # Guard: if title is still a placeholder after enrich, arXiv was unreachable
+    await session.refresh(paper)
+    if re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''):
+        progress["steps"]["warning"] = "Title still placeholder — arXiv API may be rate-limited. Retry later."
+        # Still continue with PDF download/parse but skip LLM analysis
+        logger.warning(f"Paper {paper_id} title is still placeholder after enrich")
+
     # Step 2.5: Venue resolution (OpenReview + DBLP + arXiv comments)
     if not paper.acceptance_type:
         try:
@@ -236,6 +243,129 @@ async def run_full_pipeline(
         await session.commit()
     else:
         progress["steps"]["deep_l4"] = "skipped (already analyzed)"
+
+    # Step 5.5: Post-L4 — fill paper fields from analysis + assign taxonomy
+    try:
+        await session.commit()  # Commit any pending changes first
+        await session.refresh(paper)
+        # Get latest L4 analysis
+        latest_l4 = (await session.execute(
+            select(PaperAnalysis).where(
+                PaperAnalysis.paper_id == paper_id,
+                PaperAnalysis.level == AnalysisLevel.L4_DEEP,
+                PaperAnalysis.is_current.is_(True),
+            )
+        )).scalar_one_or_none()
+
+        if latest_l4:
+            # Fill core_operator from core_intuition
+            if not paper.core_operator and latest_l4.core_intuition:
+                paper.core_operator = latest_l4.core_intuition[:200]
+            # Fill primary_logic from method_summary (first 2 sentences)
+            if not paper.primary_logic and latest_l4.method_summary:
+                sentences = latest_l4.method_summary.split("。")[:2]
+                paper.primary_logic = "。".join(sentences)[:300]
+            # Fill claims from evidence_summary
+            if not paper.claims and latest_l4.evidence_summary:
+                paper.claims = [s.strip() for s in latest_l4.evidence_summary.split("。")[:3] if s.strip()]
+
+            # Assign ring based on structurality_score
+            if not paper.ring and paper.structurality_score is not None:
+                s = float(paper.structurality_score)
+                if s >= 0.7:
+                    paper.ring = "baseline"
+                elif s >= 0.4:
+                    paper.ring = "structural"
+                else:
+                    paper.ring = "plugin"
+
+            # Assign role_in_kb
+            if not paper.role_in_kb:
+                paper.role_in_kb = "extension"  # default
+
+        # Taxonomy assignment — map paper fields to taxonomy facets
+        from backend.models.taxonomy import TaxonomyNode, PaperFacet
+        existing_facets = (await session.execute(
+            select(PaperFacet).where(PaperFacet.paper_id == paper_id)
+        )).scalars().all()
+
+        if not existing_facets:
+            # Auto-assign from paper.category, tags, mechanism_family, keywords
+            assigned = 0
+            for tag in (paper.tags or []):
+                tag_clean = tag.replace("task/", "").replace("dataset/", "").replace("repr/", "").replace("opensource/", "")
+                node = (await session.execute(
+                    select(TaxonomyNode).where(
+                        TaxonomyNode.name.ilike(f"%{tag_clean}%")
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if node:
+                    facet = PaperFacet(
+                        paper_id=paper_id, node_id=node.id,
+                        facet_role=node.dimension, source="auto_tags", confidence=0.6,
+                    )
+                    session.add(facet)
+                    assigned += 1
+
+            # Map category to domain
+            if paper.category:
+                cat_node = (await session.execute(
+                    select(TaxonomyNode).where(
+                        TaxonomyNode.name.ilike(f"%{paper.category}%"),
+                        TaxonomyNode.dimension == "domain",
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if cat_node:
+                    session.add(PaperFacet(
+                        paper_id=paper_id, node_id=cat_node.id,
+                        facet_role="domain", source="auto_category", confidence=0.7,
+                    ))
+                    assigned += 1
+
+            # Map mechanism_family
+            if paper.mechanism_family:
+                mech_node = (await session.execute(
+                    select(TaxonomyNode).where(
+                        TaxonomyNode.name.ilike(f"%{paper.mechanism_family.replace('_', '%')}%"),
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if mech_node:
+                    session.add(PaperFacet(
+                        paper_id=paper_id, node_id=mech_node.id,
+                        facet_role="mechanism", source="auto_mech", confidence=0.6,
+                    ))
+                    assigned += 1
+
+            # Map keywords (arXiv categories) to modality/paradigm
+            keyword_map = {
+                "cs.CV": ("modality", "Image"), "cs.CL": ("modality", "Text"),
+                "cs.AI": ("domain", "Agent"), "cs.LG": ("learning_paradigm", "Reinforcement Learning"),
+                "cs.RO": ("domain", "Embodied AI"),
+            }
+            for kw in (paper.keywords or []):
+                if kw in keyword_map:
+                    dim, name = keyword_map[kw]
+                    kw_node = (await session.execute(
+                        select(TaxonomyNode).where(
+                            TaxonomyNode.name == name, TaxonomyNode.dimension == dim,
+                        ).limit(1)
+                    )).scalar_one_or_none()
+                    if kw_node:
+                        session.add(PaperFacet(
+                            paper_id=paper_id, node_id=kw_node.id,
+                            facet_role=dim, source="auto_arxiv_cat", confidence=0.5,
+                        ))
+                        assigned += 1
+
+            progress["steps"]["taxonomy_assign"] = {"facets_assigned": assigned}
+        else:
+            progress["steps"]["taxonomy_assign"] = "skipped (already assigned)"
+
+        await session.commit()
+        await session.refresh(paper)
+    except Exception as e:
+        logger.warning(f"Post-L4 processing failed for {paper_id}: {e}")
+        progress["steps"]["post_l4"] = f"error: {str(e)[:100]}"
 
     # Step 6: Discover related papers (references + citations via S2)
     try:

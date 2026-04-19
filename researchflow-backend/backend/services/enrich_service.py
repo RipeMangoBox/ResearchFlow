@@ -315,22 +315,38 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
         if not items:
             return None
 
-        # Verify the repo is actually for THIS paper (not a generic framework)
+        # Verify the repo is actually for THIS paper
         best = None
+        title_lower = title.lower()
+        # Extract key words from title (skip common words)
+        stop = {"a","an","the","of","for","in","on","with","and","to","from","by","is","are","its","via","based","using"}
+        title_keywords = {w for w in title_lower.split() if w not in stop and len(w) > 2}
+
         for item in items:
             repo_name = item.get("name", "").lower()
             repo_desc = (item.get("description") or "").lower()
-            title_words = set(title.lower().split()[:5])  # First 5 words of title
+            full_name = item.get("full_name", "").lower()
+            stars = item.get("stargazers_count", 0)
 
-            # Skip repos that are clearly generic frameworks (too many stars, generic name)
-            if item.get("stargazers_count", 0) > 10000 and len(title_words & set(repo_name.split("-"))) < 2:
+            # Score: how many title keywords appear in repo name or description
+            name_words = set(repo_name.replace("-", " ").replace("_", " ").split())
+            desc_words = set(repo_desc.replace("-", " ").replace("_", " ").split())
+            name_match = len(title_keywords & name_words)
+            desc_match = len(title_keywords & desc_words)
+
+            # Must have at least 2 keyword matches in name, or 3 in description
+            if name_match >= 2 or (name_match >= 1 and desc_match >= 2):
+                best = item
+                break
+
+            # Skip generic repos (awesome-lists, frameworks with >5K stars but low match)
+            if stars > 5000 and name_match < 2:
+                continue
+            if "awesome" in repo_name and name_match < 3:
                 continue
 
-            best = item
-            break
-
         if not best:
-            best = items[0]  # Fallback to first result
+            return None  # No confident match — don't guess
 
         result = {
             "code_url": best.get("html_url"),
@@ -386,17 +402,22 @@ async def _fetch_github_readme(client: httpx.AsyncClient, owner_repo: str) -> di
         if dataset_urls:
             result["dataset_urls"] = dataset_urls
 
-        # Extract project page link
+        # Extract project page link (skip badge/shield URLs)
         import re
         project_patterns = [
+            r'\[(?:Project\s*Page|Demo|Homepage|Website)\]\((https?://[^\)]+)\)',
             r'(?:project\s*page|demo|homepage)[:\s]*\[?[^\]]*\]?\(?(https?://[^\s\)]+)',
-            r'\[(?:Project Page|Demo|Homepage)\]\((https?://[^\)]+)\)',
         ]
         for pat in project_patterns:
             m = re.search(pat, readme_text, re.IGNORECASE)
             if m:
-                result["project_url"] = m.group(1)
-                break
+                url = m.group(1)
+                # Filter out badge/shield URLs
+                if not any(skip in url.lower() for skip in
+                           ["img.shields.io", "badge", "shields.io", "travis-ci",
+                            "codecov.io", "github.com/workflows"]):
+                    result["project_url"] = url
+                    break
 
         return result if result else None
 
@@ -696,7 +717,9 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 updated["keywords"] = True
 
     # ── 2. Crossref ───────────────────────────────────────────
-    if not paper.doi and paper.title:
+    # Skip Crossref if title is still a placeholder (arxiv ID) — would match wrong papers
+    title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
+    if not paper.doi and paper.title and not title_is_placeholder:
         await asyncio.sleep(0.5)
         cr_data = await _fetch_crossref(client, paper.title)
         if cr_data:
@@ -720,7 +743,11 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 updated["year"] = True
 
     # ── 3. OpenAlex ───────────────────────────────────────────
-    oa_data = await _fetch_openalex(client, paper)
+    # Only search OpenAlex if we have a real title, DOI, or arxiv_id (not placeholder)
+    title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
+    oa_data = None
+    if paper.doi or paper.arxiv_id or not title_is_placeholder:
+        oa_data = await _fetch_openalex(client, paper)
     if oa_data:
         if oa_data.get("venue"):
             await record_observation(session, entity_type="paper", entity_id=paper.id,
@@ -767,7 +794,8 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 source="semantic_scholar", source_url=s2_data.get("s2_url"))
 
     # ── 5. GitHub code discovery ──────────────────────────────
-    if not paper.code_url and paper.title:
+    title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
+    if not paper.code_url and paper.title and not title_is_placeholder:
         await asyncio.sleep(0.3)
         gh_data = await _discover_github_links(client, paper.title)
         if gh_data:
@@ -779,7 +807,7 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 source="github")
 
     # ── 6. HuggingFace model/dataset discovery ────────────────
-    if paper.title:
+    if paper.title and not title_is_placeholder:
         await asyncio.sleep(0.3)
         hf_data = await _discover_huggingface(client, paper.title)
         if hf_data:
