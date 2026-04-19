@@ -27,6 +27,12 @@ from backend.models.domain import DomainSpec, DomainSourceRegistry, IncrementalC
 from backend.models.metadata import MetadataObservation, CanonicalPaperMetadata
 from backend.models.taxonomy import TaxonomyNode, TaxonomyEdge, PaperFacet, ProblemNode, ProblemClaim
 from backend.models.method import MethodNode, MethodSlot, MethodEdge, MethodApplication
+from backend.models.candidate import PaperCandidate, CandidateScore, ScoreSignal
+from backend.models.agent import AgentRun, AgentBlackboardItem, PaperExtraction, ReferenceRoleMap
+from backend.models.kb import (
+    GraphNodeCandidate, GraphEdgeCandidate, KBNodeProfile, KBEdgeProfile,
+    PaperReport, PaperReportSection, ReviewQueueItem,
+)
 
 __all__ = [
     "AnalysisLevel", "AssetType", "EvidenceBasis", "FeedbackType",
@@ -50,4 +56,8 @@ __all__ = [
     "MetadataObservation", "CanonicalPaperMetadata",
     "TaxonomyNode", "TaxonomyEdge", "PaperFacet", "ProblemNode", "ProblemClaim",
     "MethodNode", "MethodSlot", "MethodEdge", "MethodApplication",
+    "PaperCandidate", "CandidateScore", "ScoreSignal",
+    "AgentRun", "AgentBlackboardItem", "PaperExtraction", "ReferenceRoleMap",
+    "GraphNodeCandidate", "GraphEdgeCandidate", "KBNodeProfile", "KBEdgeProfile",
+    "PaperReport", "PaperReportSection", "ReviewQueueItem",
 ]

@@ -8,7 +8,7 @@ IncrementalCheckpoint: sync progress per source for incremental updates.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, SmallInteger, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +46,21 @@ class DomainSpec(Base):
     # e.g. {"min_year": 2023, "must_have_abstract": true, "min_cited_by": 5}
     negative_constraints: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     # e.g. ["no_plugin_only", "must_have_evidence", "must_have_open_code"]
+
+    # ── V6: Scope Definition (Domain Manifest) ──
+    scope_modalities: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    scope_tasks: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    scope_paradigms: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    scope_seed_methods: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    scope_seed_models: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    scope_seed_datasets: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+    negative_scope: Mapped[list[str] | None] = mapped_column(ARRAY(Text), default=[])
+
+    # ── V6: Budget Limits ──
+    budget_metadata_candidates: Mapped[int | None] = mapped_column(Integer, default=500)
+    budget_shallow_ingest: Mapped[int | None] = mapped_column(Integer, default=200)
+    budget_deep_ingest: Mapped[int | None] = mapped_column(Integer, default=50)
+    budget_anchor_methods: Mapped[int | None] = mapped_column(Integer, default=20)
 
     # Stats
     paper_count: Mapped[int] = mapped_column(SmallInteger, default=0)
