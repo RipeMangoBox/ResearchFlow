@@ -111,6 +111,12 @@ class AutoPromoteResponse(BaseModel):
     papers: list[PaperBrief]
 
 
+class ColdStartRequest(BaseModel):
+    name: str
+    display_name_zh: str | None = None
+    scope: dict  # {modalities, tasks, paradigms, seed_methods, ...}
+
+
 class StatsResponse(BaseModel):
     total: int
     by_status: dict[str, int]
@@ -275,3 +281,17 @@ async def auto_promote(session: Session, body: AutoPromoteRequest):
         promoted_count=len(papers),
         papers=[PaperBrief.model_validate(p) for p in papers],
     )
+
+
+@router.post("/domains/cold-start")
+async def cold_start_domain_endpoint(body: ColdStartRequest, session: Session):
+    """Bootstrap a new domain knowledge base from a manifest.
+
+    Creates DomainSpec, skeleton nodes, harvests candidates from arXiv + S2,
+    scores them, and auto-promotes top anchors. Deep ingest is deferred to workers.
+    """
+    from backend.services.cold_start_service import cold_start_domain as _cold_start
+
+    result = await _cold_start(session, body.model_dump())
+    await session.commit()
+    return result

@@ -209,6 +209,69 @@ async def task_parse_batch(ctx: dict, limit: int = 5):
     return {"processed": len(results), "results": results}
 
 
+# ── V6 tasks ───────────────────────────────────────────────────────
+
+async def task_score_candidates_v6(ctx: dict, limit: int = 50):
+    """Score unscored paper candidates."""
+    from backend.database import async_session
+    from backend.services import candidate_service
+
+    async with async_session() as session:
+        count = await candidate_service.score_batch(session, limit=limit)
+        await session.commit()
+    return {"scored": count}
+
+
+async def task_auto_promote_v6(ctx: dict, threshold: float = 75.0, limit: int = 20):
+    """Auto-promote high-scoring candidates to papers."""
+    from backend.database import async_session
+    from backend.services import candidate_service
+
+    async with async_session() as session:
+        papers = await candidate_service.auto_promote_batch(session, threshold=threshold, limit=limit)
+        await session.commit()
+    return {"promoted": len(papers)}
+
+
+async def task_refresh_stale_profiles_v6(ctx: dict, threshold: int = 3, limit: int = 20):
+    """Refresh node profiles that have become stale."""
+    from backend.database import async_session
+    from backend.services import node_profile_service
+
+    async with async_session() as session:
+        count = await node_profile_service.refresh_stale_profiles(session, threshold=threshold, limit=limit)
+        await session.commit()
+    return {"refreshed": count}
+
+
+async def task_process_reference_roles_v6(ctx: dict, limit: int = 30):
+    """Process reference role maps for recursive discovery."""
+    from backend.database import async_session
+    from backend.services.ingest_workflow import IngestWorkflow
+    from sqlalchemy import select
+    from backend.models.agent import AgentBlackboardItem
+
+    async with async_session() as session:
+        items = (await session.execute(
+            select(AgentBlackboardItem.paper_id)
+            .where(
+                AgentBlackboardItem.item_type == "reference_role_map",
+                AgentBlackboardItem.is_verified == False,  # noqa: E712
+            )
+            .limit(limit)
+        )).scalars().all()
+        total = 0
+        for paper_id in items:
+            try:
+                workflow = IngestWorkflow(session)
+                result = await workflow.process_reference_roles(paper_id)
+                total += result.get("full_imported", 0) + result.get("shallow_imported", 0)
+            except Exception:
+                continue
+        await session.commit()
+    return {"papers_processed": len(items), "refs_imported": total}
+
+
 # ── Startup / shutdown ──────────────────────────────────────────
 
 async def startup(ctx: dict):
@@ -245,6 +308,11 @@ class WorkerSettings:
         task_venue_resolve_batch,
         task_fetch_hf_daily_papers,
         task_parse_batch,
+        # V6
+        task_score_candidates_v6,
+        task_auto_promote_v6,
+        task_refresh_stale_profiles_v6,
+        task_process_reference_roles_v6,
     ]
 
     cron_jobs = [
@@ -265,6 +333,14 @@ class WorkerSettings:
         cron(task_venue_resolve_batch, hour=7, minute=0),
         # v2: Parse unprocessed PDFs every 2 hours
         cron(task_parse_batch, hour={2, 4, 8, 12, 16, 20}, minute=30),
+        # V6: Score candidates every 2 hours
+        cron(task_score_candidates_v6, hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22}, minute=15),
+        # V6: Auto-promote daily at 09:00
+        cron(task_auto_promote_v6, hour=9, minute=0),
+        # V6: Refresh stale profiles daily at 05:00
+        cron(task_refresh_stale_profiles_v6, hour=5, minute=0),
+        # V6: Process reference roles every 4 hours
+        cron(task_process_reference_roles_v6, hour={1, 5, 9, 13, 17, 21}, minute=45),
     ]
 
     on_startup = startup
