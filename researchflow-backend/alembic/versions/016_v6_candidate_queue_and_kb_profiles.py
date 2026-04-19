@@ -3,7 +3,7 @@
 16 new tables + DomainSpec scope extensions.
 
 Revision ID: 016
-Revises: 015
+Revises: 005_v2
 Create Date: 2026-04-19
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 revision = "016"
-down_revision = "015"
+down_revision = "005_v2"
 branch_labels = None
 depends_on = None
 

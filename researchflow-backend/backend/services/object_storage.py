@@ -114,13 +114,23 @@ class AliyunOSSStorage(StorageBackend):
             settings.object_storage_secret_id,
             settings.object_storage_secret_key,
         )
-        endpoint = f"https://{settings.object_storage_region}.aliyuncs.com"
-        self.bucket = oss2.Bucket(auth, endpoint, settings.object_storage_bucket)
+        region = settings.object_storage_region  # e.g., "oss-cn-shanghai"
+        # Use internal endpoint when running inside Alibaba Cloud (free traffic)
+        endpoint_internal = f"https://{region}-internal.aliyuncs.com"
+        endpoint_public = f"https://{region}.aliyuncs.com"
+        try:
+            bucket = oss2.Bucket(auth, endpoint_internal, settings.object_storage_bucket)
+            bucket.put_object("_probe", b"")
+            self.bucket = bucket
+            self._endpoint_type = "internal"
+        except Exception:
+            self.bucket = oss2.Bucket(auth, endpoint_public, settings.object_storage_bucket)
+            self._endpoint_type = "public"
+        self._region = region
         self._cdn_domain = settings.object_storage_cdn_domain
-        # Local cache for downloaded files
         self._cache_dir = Path(tempfile.gettempdir()) / "rf_oss_cache"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Aliyun OSS initialized: bucket={settings.object_storage_bucket}, region={settings.object_storage_region}")
+        logger.info(f"Aliyun OSS initialized: bucket={settings.object_storage_bucket}, region={region}, endpoint={self._endpoint_type}")
 
     async def put(self, key: str, data: bytes) -> str:
         self.bucket.put_object(key, data)
@@ -145,7 +155,8 @@ class AliyunOSSStorage(StorageBackend):
         try:
             self.bucket.delete_object(key)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"OSS delete failed for {key}: {e}")
             return False
 
     async def get_size(self, key: str) -> int | None:
@@ -171,7 +182,7 @@ class AliyunOSSStorage(StorageBackend):
         """Get public URL for an object (via CDN or direct bucket URL)."""
         if self._cdn_domain:
             return f"https://{self._cdn_domain}/{key}"
-        return f"https://{settings.object_storage_bucket}.{settings.object_storage_region}.aliyuncs.com/{key}"
+        return f"https://{settings.object_storage_bucket}.{self._region}.aliyuncs.com/{key}"
 
 
 class COSStorage(StorageBackend):

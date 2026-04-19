@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 ARXIV_API = "http://export.arxiv.org/api/query"
 S2_PAPER_API = "https://api.semanticscholar.org/graph/v1/paper"
+
+def _s2_headers() -> dict:
+    h = {"User-Agent": "ResearchFlow/0.1"}
+    if settings.s2_api_key:
+        h["x-api-key"] = settings.s2_api_key
+    return h
 GITHUB_RAW = "https://raw.githubusercontent.com"
 
 
@@ -221,6 +227,7 @@ async def refresh_citation_counts(session: AsyncSession, *, limit: int = 50) -> 
                 resp = await client.get(
                     f"{S2_PAPER_API}/{s2_id}",
                     params={"fields": "citationCount"},
+                    headers=_s2_headers(),
                 )
                 papers_checked += 1
 

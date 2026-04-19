@@ -152,43 +152,26 @@ async def _call_openai(prompt: str, system: str, model: str,
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    try:
-        # Try non-streaming first
-        response = await client.chat.completions.create(
-            model=model, messages=messages, max_tokens=max_tokens,
-            temperature=temperature, stream=False,
-        )
-        latency = int((time.monotonic() - start) * 1000)
-        text = response.choices[0].message.content or ""
-        usage = response.usage
-        return LLMResponse(
-            text=text,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            model=model,
-            provider="openai",
-            latency_ms=latency,
-        )
-    except Exception as e:
-        # Fallback: some proxies force streaming — collect chunks
-        logger.info(f"Non-streaming failed ({e}), trying streaming mode")
-        stream = await client.chat.completions.create(
-            model=model, messages=messages, max_tokens=max_tokens,
-            temperature=temperature, stream=True,
-        )
-        chunks = []
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                chunks.append(chunk.choices[0].delta.content)
-        latency = int((time.monotonic() - start) * 1000)
-        return LLMResponse(
-            text="".join(chunks),
-            input_tokens=len(prompt.split()),  # estimate
-            output_tokens=len("".join(chunks).split()),
-            model=model,
-            provider="openai",
-            latency_ms=latency,
-        )
+    # Always use streaming — proxy APIs (e.g. apicursor.com) may truncate
+    # non-streaming responses at ~3000 chars
+    stream = await client.chat.completions.create(
+        model=model, messages=messages, max_tokens=max_tokens,
+        temperature=temperature, stream=True,
+    )
+    chunks = []
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            chunks.append(chunk.choices[0].delta.content)
+    latency = int((time.monotonic() - start) * 1000)
+    text = "".join(chunks)
+    return LLMResponse(
+        text=text,
+        input_tokens=len(prompt.split()),  # estimate (streaming has no usage)
+        output_tokens=len(text.split()),
+        model=model,
+        provider="openai",
+        latency_ms=latency,
+    )
 
 
 def _mock_response(prompt: str, system: str) -> LLMResponse:

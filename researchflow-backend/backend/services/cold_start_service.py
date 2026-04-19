@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 ARXIV_API = "http://export.arxiv.org/api/query"
 S2_SEARCH_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 
+def _s2_headers() -> dict:
+    from backend.config import settings
+    h = {"User-Agent": "ResearchFlow/0.1"}
+    if settings.s2_api_key:
+        h["x-api-key"] = settings.s2_api_key
+    return h
+
 
 # ---------------------------------------------------------------------------
 # 1. Main entry point
@@ -309,6 +316,7 @@ async def harvest_from_s2(
                         "limit": str(max_per_query),
                         "fields": fields,
                     },
+                    headers=_s2_headers(),
                 )
                 if resp.status_code != 200:
                     logger.warning("S2 search failed for '%s': HTTP %d", query, resp.status_code)

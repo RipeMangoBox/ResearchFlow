@@ -92,6 +92,52 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
     else:
         logger.info("GROBID not available, using PyMuPDF only")
 
+    # ── S2 fallback for refs + authors when GROBID fails ─────────
+    if not grobid_refs and paper.arxiv_id:
+        try:
+            import httpx
+            from backend.services.enrich_service import _s2_headers
+            S2_API = "https://api.semanticscholar.org/graph/v1"
+            s2_id = f"ARXIV:{paper.arxiv_id}"
+            async with httpx.AsyncClient(timeout=30) as client:
+                # Fetch references
+                resp = await client.get(
+                    f"{S2_API}/paper/{s2_id}/references",
+                    params={"fields": "title,year,venue,externalIds,authors", "limit": "100"},
+                    headers=_s2_headers(),
+                )
+                if resp.status_code == 200:
+                    for ref in resp.json().get("data", []):
+                        cp = ref.get("citedPaper", {})
+                        if cp.get("title"):
+                            eids = cp.get("externalIds", {}) or {}
+                            grobid_refs.append({
+                                "ref_id": "", "title": cp["title"],
+                                "authors": [a.get("name","") for a in (cp.get("authors") or [])[:5]],
+                                "venue": cp.get("venue", ""), "year": str(cp.get("year", "")),
+                                "doi": eids.get("DOI", ""), "arxiv_id": eids.get("ArXiv", ""),
+                            })
+                    logger.info(f"S2 fallback refs for {paper_id}: {len(grobid_refs)}")
+
+                # Fetch detailed author info
+                import asyncio as _asyncio
+                await _asyncio.sleep(1.2)
+                resp2 = await client.get(
+                    f"{S2_API}/paper/{s2_id}/authors",
+                    params={"fields": "name,affiliations,hIndex"},
+                    headers=_s2_headers(),
+                )
+                if resp2.status_code == 200:
+                    for a in resp2.json().get("data", []):
+                        grobid_authors.append({
+                            "name": a.get("name", ""), "given_name": "", "surname": "",
+                            "affiliation": (a.get("affiliations") or [""])[0] if a.get("affiliations") else "",
+                            "email": "", "orcid": "",
+                        })
+                    logger.info(f"S2 fallback authors for {paper_id}: {len(grobid_authors)}")
+        except Exception as e:
+            logger.debug(f"S2 fallback failed for {paper_id}: {e}")
+
     # ── Merge sections ───────────────────────────────────────────
     # Prefer GROBID sections if available (better structure), fall back to PyMuPDF
     merged_sections = {}
@@ -155,7 +201,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             paper_id, pymupdf_result.figure_images, figure_captions
         )
 
-    # ── Formula extraction (GROBID coords + VLM OCR) ────────
+    # ── Formula extraction (VLM page scan, GROBID coords optional) ──
     extracted_formulas = pymupdf_result.formulas  # PyMuPDF regex as baseline
     grobid_formula_data = []
 
@@ -166,7 +212,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             if f.text
         ]
 
-    if pdf_path and (grobid_formula_data or not extracted_formulas):
+    if pdf_path and (settings.anthropic_api_key or settings.openai_api_key):
         try:
             from backend.services.formula_extraction_service import extract_formulas
             vlm_formulas = await extract_formulas(
@@ -176,9 +222,8 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
                 session=session,
             )
             if vlm_formulas:
-                # VLM LaTeX is better than PyMuPDF regex
                 extracted_formulas = [f["latex"] for f in vlm_formulas if f.get("latex")]
-                logger.info(f"Formula extraction: {len(vlm_formulas)} formulas via VLM/GROBID for {paper_id}")
+                logger.info(f"Formula extraction: {len(vlm_formulas)} formulas via VLM for {paper_id}")
         except Exception as e:
             logger.warning(f"Formula extraction failed for {paper_id}: {e}")
 

@@ -17,6 +17,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.models.enums import PaperState
 from backend.models.paper import Paper
 from backend.schemas.import_ import LinkImportItem
@@ -26,17 +27,21 @@ logger = logging.getLogger(__name__)
 
 S2_API = "https://api.semanticscholar.org/graph/v1"
 S2_FIELDS = "title,abstract,year,venue,externalIds,citationCount,referenceCount,url"
-S2_HEADERS = {"User-Agent": "ResearchFlow/0.1"}
+def _s2_headers() -> dict:
+    h = {"User-Agent": "ResearchFlow/0.1"}
+    if settings.s2_api_key:
+        h["x-api-key"] = settings.s2_api_key
+    return h
 
 
 async def _s2_get(client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict | None:
     """Make a rate-limited Semantic Scholar API call."""
     try:
-        resp = await client.get(url, params=params, headers=S2_HEADERS, timeout=20)
+        resp = await client.get(url, params=params, headers=_s2_headers(), timeout=20)
         if resp.status_code == 429:
             logger.warning("S2 rate limit hit, sleeping 3s")
             await asyncio.sleep(3)
-            resp = await client.get(url, params=params, headers=S2_HEADERS, timeout=20)
+            resp = await client.get(url, params=params, headers=_s2_headers(), timeout=20)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -53,7 +58,7 @@ async def find_paper_on_s2(
     if not paper:
         return None
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         # Try arxiv_id first
         if paper.arxiv_id:
             data = await _s2_get(client, f"{S2_API}/paper/ARXIV:{paper.arxiv_id}",
@@ -113,7 +118,7 @@ async def discover_related_papers(
     if not s2_id:
         return {**result, "error": "No S2 paperId"}
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         # 1. Get references
         refs_data = await _s2_get(
             client, f"{S2_API}/paper/{s2_id}/references",

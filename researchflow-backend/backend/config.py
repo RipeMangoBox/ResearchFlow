@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     object_storage_region: str = "ap-shanghai"
     object_storage_cdn_domain: str = ""  # e.g., "cdn.researchflow.xyz" for public URLs
 
+    # Semantic Scholar
+    s2_api_key: str = ""  # Semantic Scholar API key for higher rate limits
+
     # GROBID
     grobid_url: str = "http://localhost:8070"
 

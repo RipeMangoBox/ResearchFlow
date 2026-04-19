@@ -464,10 +464,10 @@ class WorkerSettings:
         cron(task_lineage_detection_v6, weekday=4, hour=5, minute=0),
         # V6 incremental: Node score recomputation Saturday 04:00
         cron(task_recompute_node_scores_v6, weekday=5, hour=4, minute=0),
-        # V6 incremental: Duplicate detection 1st of month 02:00
-        cron(task_detect_duplicates_v6, month_day=1, hour=2, minute=0),
-        # V6 incremental: Stale candidate cleanup 15th of month 02:00
-        cron(task_cleanup_stale_candidates_v6, month_day=15, hour=2, minute=0),
+        # V6 incremental: Duplicate detection — Sunday 02:00 (weekly, arq has no month_day)
+        cron(task_detect_duplicates_v6, weekday=6, hour=2, minute=0),
+        # V6 incremental: Stale candidate cleanup — Sunday 03:00
+        cron(task_cleanup_stale_candidates_v6, weekday=6, hour=3, minute=0),
     ]
 
     on_startup = startup

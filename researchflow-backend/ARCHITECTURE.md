@@ -29,8 +29,8 @@
 ```
 Layer 1: 确定性后端 (CPU, 免费)
 ├── PyMuPDF: 文本/section/图片/caption 提取
-├── GROBID (Docker): 结构化 authors/affiliations/references/formulas
-├── 公式区域检测: 数学符号聚类 + 区域截图
+├── VLM page scan: 公式 LaTeX 提取 (PyMuPDF 渲染 + Claude Vision)
+├── S2 API: 结构化 references/authors (GROBID 已移除)
 └── Figure 区域检测: caption 锚定 + 向上扫描
 
 Layer 2: 来源适配器 (8 个 API)
@@ -165,7 +165,7 @@ canonical_paper_metadata
 权威优先级:
   会议中稿: official_conf > openreview > dblp > crossref > arxiv > s2
   引用数: s2 > openalex > crossref > google_scholar
-  作者机构: pdf_grobid > openalex > crossref > s2
+  作者机构: openalex > crossref > s2 > arxiv
 ```
 
 ### 3.6 论文过滤评分
@@ -251,11 +251,11 @@ POST /pipeline/{paper_id}/run  (或 /pipeline/batch?limit=N)
  │    → canonical resolver (按 authority_rank 选最优)
  │
  ├─ Step 3: parse_paper_pdf() — L2 Parser Ensemble  [parse_service]
- │    → GROBID: authors(含机构) + references(结构化) + formulas(坐标)
- │    → PyMuPDF: sections + figure images + captions
+ │    → PyMuPDF: text + sections + figure images + captions
+ │    → S2 API: references(结构化) + authors(含机构) (GROBID 已移除)
  │    → Figure extraction: caption 锚定 + VLM 分类补漏
- │    → Formula extraction: 区域检测 + 合并 + VLM OCR → LaTeX
- │    → 结果合并，冲突标记
+ │    → Formula extraction: VLM page scan (按数学密度选页 → 分批发送 → LaTeX)
+ │    → 结果合并
  │
  ├─ Step 4: skim_paper() — L3                       [analysis_service]
  │    1 次 LLM 调用 (abstract + 关键章节, ≤8K tokens)
@@ -447,14 +447,18 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 6. VLM 返回: label, semantic_role, description (中文)
 ```
 
-### 公式提取流程
+### 公式提取流程 (VLM page scan, 2026-04-20 重构)
 
 ```
-1. GROBID 检测 <formula> 坐标 (优先) 或数学符号聚类 (fallback)
-2. bbox 横向扩展到文本列宽 (包含公式编号)
-3. 相邻公式行合并 (多行方程)
-4. 3x 高清截图 → VLM OCR → LaTeX
+1. PyMuPDF 扫描每页文本 → 按数学符号密度排序
+2. 选 top 9 页 (3 页/batch × 3 batch)
+3. PyMuPDF 渲染页面图片 (1.5x zoom)
+4. Claude VLM: 页面图片 → 提取所有公式 LaTeX + label + context
+5. (可选) GROBID 坐标增强: 精确裁剪 → VLM OCR (如 GROBID 可用)
 ```
+
+> 旧方案 (GROBID): GROBID 坐标 → bbox 扩展 → 3x 截图 → VLM OCR。
+> 因长 PDF OOM 且占 2-3GB 内存，已改为 VLM page scan。
 
 ---
 
@@ -602,13 +606,13 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 | **incremental_reconciler_service.py** | Step 6: 反向更新邻居 |
 | **delta_card_service.py** | DeltaCard → Evidence → IdeaDelta → Assertions |
 | **frame_assign_service.py** | 范式匹配 (静态→模糊→LLM发现) |
-| **parse_service.py** | L2 PDF 解析 (GROBID + PyMuPDF ensemble) |
+| **parse_service.py** | L2 PDF 解析 (PyMuPDF + S2 API + VLM) |
 | **enrich_service.py** | 10 步元数据补全 (8 个 API) |
 | **triage_service.py** | 论文评分 (4 维) |
 | **venue_resolver_service.py** | 会议中稿检测 (OpenReview + DBLP + arXiv) |
 | **metadata_resolver_service.py** | 多源元数据 canonical resolve |
 | **figure_extraction_service.py** | 图表提取 (caption 锚定 + VLM) |
-| **formula_extraction_service.py** | 公式提取 (GROBID + VLM OCR) |
+| **formula_extraction_service.py** | 公式提取 (VLM page scan, GROBID optional) |
 | **vlm_extraction_service.py** | Vision-Language Model 调用 |
 | **search_service.py** | 混合搜索 (keyword + semantic + structured) |
 | **embedding_service.py** | 向量嵌入生成管理 |
@@ -675,7 +679,7 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 | `review_queue` | 待审核队列 |
 | `submit_review_decision` | 提交审核决策 |
 | `resolve_venue` | 会议中稿检测 (OpenReview + DBLP) |
-| `get_paper_citations` | GROBID refs + S2 citing papers |
+| `get_paper_citations` | S2 refs + citing papers |
 | `get_paper_figures` | 图表 + OSS URLs + VLM 描述 |
 | `get_metadata_conflicts` | 多源元数据冲突查看 |
 | `rf_domain_cold_start` | V6: 基于 domain manifest 冷启动 |
@@ -782,7 +786,7 @@ GET /explore/{id}
 | ORM | SQLAlchemy 2.0 (async) |
 | 数据库 | PostgreSQL 16 + pgvector |
 | 任务队列 | ARQ (Redis) |
-| PDF 解析 | PyMuPDF + GROBID (ensemble) |
+| PDF 解析 | PyMuPDF + VLM + S2 API |
 | LLM | Anthropic Claude / OpenAI (streaming) |
 | VLM | Claude Vision (图表分类 + 公式 OCR) |
 | MCP | Python MCP SDK (stdio + SSE) |
@@ -1020,7 +1024,7 @@ URL / arxiv_id
 | **P__Paper** (论文) | promote_candidate | PaperReport (10 sections) | papers + paper_reports |
 | **D__Dataset** (数据集) | Experiment → GraphCandidate | NodeProfile | taxonomy_nodes(dim=dataset) + kb_node_profiles |
 | **L__Lineage** (演化链) | GraphCandidate + 确定性检测 | — | graph_node_candidates + delta_card_lineage |
-| **Lab__Team** (团队) | GROBID 机构提取 (确定性) | NodeProfile | taxonomy_nodes(dim=lab) + kb_node_profiles |
+| **Lab__Team** (团队) | S2 API 机构提取 | NodeProfile | taxonomy_nodes(dim=lab) + kb_node_profiles |
 | **边** (节点间关系) | GraphCandidate (edge_candidates) | EdgeProfile | graph_edge_candidates + kb_edge_profiles |
 
 ### 15.4 评分体系详解
@@ -1179,7 +1183,7 @@ Step 6-8: Worker 异步执行
 | 吸收级别 | 外部 HTTP | LLM 调用 | 估算成本/篇 |
 |---------|---------|---------|-----------|
 | L0 仅 metadata | 5-10 | **0** | $0 |
-| L1 浅层卡片 | 5-10 + GROBID | **4** | $0.22 |
+| L1 浅层卡片 | 5-10 + VLM | **4** | $0.22 |
 | L2 图谱可见 | 同 L1 | **4** | $0.22 |
 | L3 完整论文 | 同 L1 | **13-18** | $1.00-1.34 |
 | L4 锚点 | 同 L1 | **13-18** + 人工审核 | $1.00-1.34 |

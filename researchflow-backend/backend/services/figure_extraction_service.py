@@ -27,6 +27,8 @@ from backend.services.object_storage import get_storage
 
 logger = logging.getLogger(__name__)
 
+MAX_PAGES_TO_SCAN = 15
+
 
 async def extract_figures_precise(
     pdf_path: str,
@@ -67,7 +69,7 @@ async def extract_figures_precise(
         })
 
     # Step 3: ONE Claude API call — classify candidates + detect missed figures
-    if settings.anthropic_api_key:
+    if settings.anthropic_api_key or settings.openai_api_key:
         # Also render full-page thumbnails for missed figure detection
         page_thumbs = []
         page_count = min(len(doc), MAX_PAGES_TO_SCAN)
@@ -112,11 +114,17 @@ async def extract_figures_precise(
                 "description": missed.get("description", ""),
             })
     else:
-        classifications = [
-            {"index": i, "is_figure_or_table": True, "label": f"Figure {i+1}",
-             "type": "figure", "semantic_role": "other", "description": "", "caption": ""}
-            for i in range(len(thumbnails))
-        ]
+        # No VLM — use label from detection, skip tables (only keep figures)
+        classifications = []
+        for i, c in enumerate(candidates):
+            label = c.get("label", f"Figure {i+1}")
+            is_table = label.lower().startswith("table")
+            classifications.append({
+                "index": i, "is_figure_or_table": not is_table,
+                "label": label, "type": "table" if is_table else "figure",
+                "semantic_role": "other", "description": "",
+                "caption": c.get("caption_text", ""),
+            })
 
     # Step 4: Confirmed candidates → high-res crop → OSS
     storage = get_storage()
@@ -273,15 +281,10 @@ def _detect_candidate_regions(doc) -> list[dict]:
 def _find_content_above_caption(page, caption: dict, text_blocks: list) -> "fitz.Rect | None":
     """Given a caption position, find the figure/table content region above it.
 
-    Key insight: the figure region is the FULL-WIDTH space between
-    the previous text block (or page top) and the caption.
-
-    For academic papers, figures occupy either:
-    - Full page width (single-column figures)
-    - Half page width (in-column figures)
-
-    We detect which case by checking if there's a text gap spanning
-    more than half the page width above the caption.
+    Strategy:
+    1. Try to find embedded images (page.get_image_info) near the caption
+    2. If found, use the image bbox directly (most reliable)
+    3. Otherwise, scan upward for the gap between body text and caption
     """
     import re as _re
     page_rect = page.rect
@@ -289,32 +292,71 @@ def _find_content_above_caption(page, caption: dict, text_blocks: list) -> "fitz
     cap_x0 = caption["x0"]
     cap_x1 = caption["x1"]
 
-    # Find the nearest BODY TEXT block ABOVE the caption
-    # Skip: other captions, very short blocks (labels), blocks very close to caption
+    # ── Strategy 1: Find embedded images OR dense drawing regions above caption ──
+    try:
+        nearby_rects = []
+
+        # Check embedded raster images
+        img_infos = page.get_image_info(xrefs=True)
+        for img in img_infos:
+            img_rect = fitz.Rect(img["bbox"])
+            if img_rect.y1 > cap_y - 300 and img_rect.y0 < cap_y + 10:
+                if img_rect.width > 50 and img_rect.height > 30:
+                    nearby_rects.append(img_rect)
+
+        # Check vector drawings (lines, curves, rects) — figures often use these
+        drawings = page.get_drawings()
+        if drawings:
+            # Cluster drawing paths above caption into a bounding rect
+            draw_rects = []
+            for d in drawings:
+                r = fitz.Rect(d["rect"])
+                if r.y1 > cap_y - 300 and r.y0 < cap_y and r.width > 10 and r.height > 10:
+                    draw_rects.append(r)
+            if len(draw_rects) >= 3:  # Need multiple drawing elements to be a figure
+                union = draw_rects[0]
+                for r in draw_rects[1:]:
+                    union = union | r
+                if union.width > 50 and union.height > 30:
+                    nearby_rects.append(union)
+
+        if nearby_rects:
+            union = nearby_rects[0]
+            for r in nearby_rects[1:]:
+                union = union | r
+            result = fitz.Rect(
+                min(union.x0, cap_x0) - 5,
+                union.y0 - 5,
+                max(union.x1, cap_x1) + 5,
+                caption["y1"] + 5,
+            )
+            result = result & page_rect
+            if result.width > 30 and result.height > 50:
+                return result
+    except Exception:
+        pass
+
+    # ── Strategy 2: Text gap scanning (original logic, relaxed) ──
     above_text_y1 = page_rect.y0  # Default: top of page
 
     for y0, y1, x0, x1, text in text_blocks:
         if y1 > cap_y - 5:
             continue  # Not above
-        if len(text) < 20:
-            continue  # Too short (likely label, equation number)
+        if len(text) < 30:
+            continue  # Too short (likely label, axis tick)
         if _re.match(r'^(Figure|Fig\.|Table)\s*\d+', text, _re.IGNORECASE):
             continue  # Another caption
-        # Must be a real paragraph — at least 2 lines or 50 chars
+        # Must be a real paragraph — at least 50 chars
         if len(text) < 50 and y1 - y0 < 15:
             continue
         if y1 > above_text_y1:
             above_text_y1 = y1
 
-    # The figure region is between above_text_y1 and caption bottom
     gap = cap_y - above_text_y1
 
-    if gap < 20:
-        # Very small gap — no figure content above this caption
-        # Maybe the caption is below a table rendered as text
-        # Try expanding downward instead (for tables)
+    if gap < 15:
+        # Very small gap — try table content below caption
         if caption["type"] == "table":
-            # Look for table content below caption
             below_blocks = [(y0, y1, x0, x1) for y0, y1, x0, x1, t in text_blocks
                             if y0 > caption["y1"] + 2]
             if below_blocks:
@@ -502,10 +544,12 @@ async def _classify_and_detect_missed(
     content = []
 
     # Part A: candidate crops (OpenAI image_url format)
+    # Cap at 15 candidates to stay within token limits
     detected_labels = set()
-    if thumbnails:
-        content.append({"type": "text", "text": f"=== PART A: {len(thumbnails)} candidate crops ==="})
-        for i, thumb in enumerate(thumbnails):
+    capped_thumbnails = thumbnails[:15] if thumbnails else []
+    if capped_thumbnails:
+        content.append({"type": "text", "text": f"=== PART A: {len(capped_thumbnails)} candidate crops ==="})
+        for i, thumb in enumerate(capped_thumbnails):
             content.append({
                 "type": "text",
                 "text": f"--- Candidate {i} (page {thumb['page_num']}) ---",
@@ -519,8 +563,10 @@ async def _classify_and_detect_missed(
                 detected_labels.add(thumb["label"])
 
     # Part B: full page thumbnails for missed detection
-    content.append({"type": "text", "text": f"\n=== PART B: {len(page_thumbs)} full page thumbnails ==="})
-    for pt in page_thumbs:
+    # Cap at 5 pages to avoid token limit (each page ~1500 tokens)
+    capped_pages = page_thumbs[:5]
+    content.append({"type": "text", "text": f"\n=== PART B: {len(capped_pages)} full page thumbnails ==="})
+    for pt in capped_pages:
         content.append({
             "type": "text",
             "text": f"--- Page {pt['page_num']} ---",
@@ -624,9 +670,15 @@ Rules:
 
     except Exception as e:
         logger.error(f"VLM classify+detect failed: {e}")
-        # Fallback: treat all candidates as figures, no missed detection
-        return [
-            {"index": i, "is_figure_or_table": True, "label": f"Figure {i+1}",
-             "type": "figure", "semantic_role": "other", "description": "", "caption": ""}
-            for i in range(len(thumbnails))
-        ], []
+        # Fallback: use original labels, filter out tables
+        fallback = []
+        for i, t in enumerate(thumbnails):
+            label = t.get("label", f"Figure {i+1}")
+            is_table = label.lower().startswith("table")
+            fallback.append({
+                "index": i, "is_figure_or_table": not is_table,
+                "label": label, "type": "table" if is_table else "figure",
+                "semantic_role": "other", "description": "",
+                "caption": t.get("caption_text", ""),
+            })
+        return fallback, []

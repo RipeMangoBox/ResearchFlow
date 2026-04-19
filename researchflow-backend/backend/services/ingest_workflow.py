@@ -543,7 +543,7 @@ class IngestWorkflow:
 
         discovered_papers: list[tuple[dict, str, str]] = []  # (paper_dict, source, reason)
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
             # References
             refs_data = await _s2_get(
                 client, f"{S2_API}/paper/{s2_id}/references",

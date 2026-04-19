@@ -156,24 +156,98 @@ Rules:
 # ── Step execution ────────────────────────────────────────────────
 
 def _parse_json_safe(text: str) -> dict:
-    """Parse JSON from LLM response, tolerating markdown fences."""
+    """Parse JSON from LLM response, tolerating markdown fences and truncation."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.startswith("```")]
         text = "\n".join(lines)
+
+    # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
+        pass
+
+    # Extract JSON object
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+
+    # Handle truncated JSON — proxy APIs may cut responses mid-stream
+    if start >= 0:
+        fragment = text[start:]
+        # Try to repair: close unclosed strings and brackets
+        repaired = _repair_truncated_json(fragment)
+        if repaired:
             try:
-                return json.loads(text[start:end])
+                result = json.loads(repaired)
+                logger.warning(f"JSON repaired from truncated response (len={len(text)})")
+                return result
             except json.JSONDecodeError:
                 pass
-    logger.error(f"JSON parse failed: {text[:300]}")
+
+    logger.error(f"JSON parse failed (len={len(text)}): {text[:300]}...TAIL: {text[-200:]}")
     return {}
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """Attempt to repair truncated JSON by closing unclosed structures.
+
+    Strategy: track bracket/brace stack, find last complete top-level
+    key-value pair, truncate there, close all open structures.
+    """
+    # Track state through the JSON
+    last_top_comma = -1
+    in_string = False
+    escape_next = False
+    stack = []  # Track open brackets: '{', '['
+
+    for i, c in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if c == '\\' and in_string:
+            escape_next = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+
+        if c in ('{', '['):
+            stack.append(c)
+        elif c == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+            if not stack:
+                return text[:i + 1]  # Complete JSON found
+        elif c == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+        elif c == ',':
+            # Track last comma at top-level of the root object (stack depth = 1)
+            if len(stack) == 1 and stack[0] == '{':
+                last_top_comma = i
+
+    if last_top_comma <= 0:
+        return None
+
+    # Truncate at last complete top-level value, close all open structures
+    repaired = text[:last_top_comma]
+    # Close any remaining open structures in reverse order
+    for bracket in reversed(stack):
+        if bracket == '{':
+            repaired += "\n}"
+        elif bracket == '[':
+            repaired += "\n]"
+
+    return repaired
 
 
 async def _call_with_retry(
@@ -204,9 +278,14 @@ async def _call_with_retry(
             return data
 
         if attempt < MAX_RETRIES:
+            # Log partial response for debugging
+            for f in missing:
+                val = data.get(f)
+                logger.warning(f"  Field '{f}' value: {repr(val)[:100]}")
             logger.warning(
                 f"Step {prompt_version} attempt {attempt+1}: "
-                f"missing {missing}, retrying..."
+                f"missing {missing}, retrying... "
+                f"(parsed {len(data)} keys: {[k for k in data if not k.startswith('_')]})"
             )
         else:
             logger.warning(
@@ -247,7 +326,7 @@ async def run_step1_extract_evidence(
     return await _call_with_retry(
         prompt=prompt,
         system=STEP1_SYSTEM,
-        max_tokens=3000,
+        max_tokens=4096,
         session=session,
         paper_id=paper.id,
         prompt_version="l4_step1_v1",
@@ -281,7 +360,7 @@ async def run_step2_build_delta(
     return await _call_with_retry(
         prompt=prompt,
         system=STEP2_SYSTEM,
-        max_tokens=4096,
+        max_tokens=8000,
         session=session,
         paper_id=paper.id,
         prompt_version="l4_step2_v1",

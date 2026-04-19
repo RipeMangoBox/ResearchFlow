@@ -50,7 +50,7 @@ async def download_arxiv_pdf(session: AsyncSession, paper_id: UUID) -> bool:
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=180) as client:
             resp = await client.get(pdf_url)
             resp.raise_for_status()
             if len(resp.content) < 1000:
@@ -136,7 +136,7 @@ async def run_full_pipeline(
     if not paper.abstract or not paper.authors:
         from backend.services import enrich_service
         import httpx
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
             enriched = await enrich_service.enrich_paper(session, paper, client)
         progress["steps"]["enrich"] = enriched if enriched else "no_data"
         await session.commit()
@@ -174,7 +174,10 @@ async def run_full_pipeline(
             # Apply results to paper
             if venue_result.get("acceptance_status") and venue_result["acceptance_status"] != "unknown":
                 paper.acceptance_type = venue_result["acceptance_status"]
-            if venue_result.get("venue") and not paper.venue:
+                # Venue from accepted conference is more authoritative than arXiv default
+                if venue_result.get("venue"):
+                    paper.venue = venue_result["venue"][:100]
+            elif venue_result.get("venue") and not paper.venue:
                 paper.venue = venue_result["venue"][:100]
             await session.commit()
             await session.refresh(paper)
@@ -290,13 +293,18 @@ async def run_full_pipeline(
 
         # Taxonomy assignment — map paper fields to taxonomy facets
         from backend.models.taxonomy import TaxonomyNode, PaperFacet
-        existing_facets = (await session.execute(
-            select(PaperFacet).where(PaperFacet.paper_id == paper_id)
-        )).scalars().all()
-
-        if not existing_facets:
+        from sqlalchemy import delete
+        # Clear existing auto-assigned facets to avoid unique constraint violations on re-run
+        await session.execute(
+            delete(PaperFacet).where(
+                PaperFacet.paper_id == paper_id,
+                PaperFacet.source.in_(["auto_tags", "auto_category", "auto_mech", "auto_arxiv_cat"]),
+            )
+        )
+        if True:  # Always re-assign (idempotent)
             # Auto-assign from paper.category, tags, mechanism_family, keywords
             assigned = 0
+            seen_node_roles = set()  # Track (node_id, facet_role) to prevent duplicates
             for tag in (paper.tags or []):
                 tag_clean = tag.replace("task/", "").replace("dataset/", "").replace("repr/", "").replace("opensource/", "")
                 node = (await session.execute(
@@ -304,7 +312,8 @@ async def run_full_pipeline(
                         TaxonomyNode.name.ilike(f"%{tag_clean}%")
                     ).limit(1)
                 )).scalar_one_or_none()
-                if node:
+                if node and (node.id, node.dimension) not in seen_node_roles:
+                    seen_node_roles.add((node.id, node.dimension))
                     facet = PaperFacet(
                         paper_id=paper_id, node_id=node.id,
                         facet_role=node.dimension, source="auto_tags", confidence=0.6,
@@ -320,7 +329,8 @@ async def run_full_pipeline(
                         TaxonomyNode.dimension == "domain",
                     ).limit(1)
                 )).scalar_one_or_none()
-                if cat_node:
+                if cat_node and (cat_node.id, "domain") not in seen_node_roles:
+                    seen_node_roles.add((cat_node.id, "domain"))
                     session.add(PaperFacet(
                         paper_id=paper_id, node_id=cat_node.id,
                         facet_role="domain", source="auto_category", confidence=0.7,
@@ -334,7 +344,8 @@ async def run_full_pipeline(
                         TaxonomyNode.name.ilike(f"%{paper.mechanism_family.replace('_', '%')}%"),
                     ).limit(1)
                 )).scalar_one_or_none()
-                if mech_node:
+                if mech_node and (mech_node.id, "mechanism") not in seen_node_roles:
+                    seen_node_roles.add((mech_node.id, "mechanism"))
                     session.add(PaperFacet(
                         paper_id=paper_id, node_id=mech_node.id,
                         facet_role="mechanism", source="auto_mech", confidence=0.6,
@@ -355,7 +366,8 @@ async def run_full_pipeline(
                             TaxonomyNode.name == name, TaxonomyNode.dimension == dim,
                         ).limit(1)
                     )).scalar_one_or_none()
-                    if kw_node:
+                    if kw_node and (kw_node.id, dim) not in seen_node_roles:
+                        seen_node_roles.add((kw_node.id, dim))
                         session.add(PaperFacet(
                             paper_id=paper_id, node_id=kw_node.id,
                             facet_role=dim, source="auto_arxiv_cat", confidence=0.5,

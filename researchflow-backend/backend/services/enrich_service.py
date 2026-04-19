@@ -27,6 +27,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.models.enums import PaperState
 from backend.models.paper import Paper
 
@@ -209,12 +210,12 @@ async def _fetch_openalex(client: httpx.AsyncClient, paper: "Paper") -> dict | N
             if resp.status_code == 200:
                 return _parse_openalex_work(resp.json())
 
-        # Try arXiv ID
+        # Try arXiv ID via DOI format
         if paper.arxiv_id:
             base_id = re.sub(r"v\d+$", "", paper.arxiv_id)
             resp = await client.get(
                 f"{OPENALEX_API}/works",
-                params={"filter": f"ids.openalex_id:https://openalex.org/W*,doi:https://doi.org/10.48550/arXiv.{base_id}"},
+                params={"filter": f"doi:https://doi.org/10.48550/arXiv.{base_id}"},
                 headers={"User-Agent": "ResearchFlow/0.1"},
                 timeout=15,
             )
@@ -294,7 +295,9 @@ def _parse_openalex_work(work: dict) -> dict:
 
 # ── GitHub code discovery ──────────────────────────────────────
 
-async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict | None:
+async def _discover_github_links(
+    client: httpx.AsyncClient, title: str, *, arxiv_id: str | None = None,
+) -> dict | None:
     """Search GitHub for paper implementation repos.
 
     Also fetches README to check for acceptance info like
@@ -304,7 +307,7 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
         query = f'"{title[:80]}" in:readme'
         resp = await client.get(
             "https://api.github.com/search/repositories",
-            params={"q": query, "per_page": "3", "sort": "stars"},
+            params={"q": query, "per_page": "5", "sort": "stars"},
             headers={"Accept": "application/vnd.github.v3+json"},
             timeout=15,
         )
@@ -328,6 +331,11 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
             full_name = item.get("full_name", "").lower()
             stars = item.get("stargazers_count", 0)
 
+            # If we searched by arXiv ID, accept if description contains the paper title
+            if arxiv_id and arxiv_id in (item.get("description") or ""):
+                best = item
+                break
+
             # Score: how many title keywords appear in repo name or description
             name_words = set(repo_name.replace("-", " ").replace("_", " ").split())
             desc_words = set(repo_desc.replace("-", " ").replace("_", " ").split())
@@ -338,6 +346,13 @@ async def _discover_github_links(client: httpx.AsyncClient, title: str) -> dict 
             if name_match >= 2 or (name_match >= 1 and desc_match >= 2):
                 best = item
                 break
+
+            # If repo description closely matches paper title (>60% keyword overlap)
+            if title_keywords and desc_words:
+                overlap = len(title_keywords & desc_words) / len(title_keywords)
+                if overlap >= 0.6:
+                    best = item
+                    break
 
             # Skip generic repos (awesome-lists, frameworks with >5K stars but low match)
             if stars > 5000 and name_match < 2:
@@ -524,6 +539,12 @@ async def _discover_huggingface(client: httpx.AsyncClient, title: str) -> dict |
 
 S2_API = "https://api.semanticscholar.org/graph/v1"
 
+def _s2_headers() -> dict:
+    h = {"User-Agent": "ResearchFlow/0.1"}
+    if settings.s2_api_key:
+        h["x-api-key"] = settings.s2_api_key
+    return h
+
 async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> dict | None:
     """Fetch citation count + venue from Semantic Scholar."""
     # Find paper on S2
@@ -540,6 +561,7 @@ async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> 
         resp = await client.get(
             f"{S2_API}/paper/{s2_id}",
             params={"fields": "title,venue,year,citationCount,referenceCount,externalIds,url"},
+            headers=_s2_headers(),
             timeout=15,
         )
         if resp.status_code != 200:
@@ -596,13 +618,20 @@ def _parse_acceptance_from_comment(comment: str) -> dict | None:
         r'(?:accepted|published|to appear|appeared)\s+(?:as\s+)?(?:a\s+)?(?:\w+\s+)?(?:paper\s+)?(?:at|in|by|to)\s+([A-Za-z]+)\s*[\'"]?(\d{4})',
         # "Accepted to NeurIPS 2025", "Accepted at ECCV 2024"
         r'(?:accepted|published|to appear|appeared)\s+(?:at|in|by|to)\s+([A-Za-z]+)\s*[\'"]?(\d{4})',
+        # "Extended NeurIPS submission", "NeurIPS 2023 paper"
+        r'(?:extended|final)\s+([A-Za-z]+)\s+(?:submission|paper|version)\s*[\'"]?(\d{4})?',
+        # "CVPR 2024 camera-ready", "NeurIPS 2023 oral"
+        r'\b([A-Za-z]+)\s+(\d{4})\s+(?:oral|spotlight|poster|paper|submission|camera.?ready)',
+        # "camera-ready version for ICLR 2025"
+        r'camera.?ready\s+(?:\w+\s+)?(?:for|at|in)\s+([A-Za-z]+)\s*(\d{4})',
     ]
 
     for pattern in acceptance_patterns:
         m = _re.search(pattern, comment, _re.IGNORECASE)
         if m:
             venue = m.group(1).upper()
-            year = int(m.group(2))
+            year_str = m.group(2) if m.lastindex >= 2 else None
+            year = int(year_str) if year_str else 0
 
             # Validate venue name is a known conference/journal
             known_venues = {
@@ -692,6 +721,16 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                         await record_observation(session, entity_type="paper", entity_id=paper.id,
                             field_name="venue", value=acceptance["venue"],
                             source="arxiv", confidence=0.7)
+                        # Write venue to paper if not already set
+                        if not paper.venue:
+                            paper.venue = acceptance["venue"][:100]
+                            updated["venue"] = True
+                    if not paper.acceptance_type:
+                        # Use acceptance_type if available, otherwise fallback to acceptance_status
+                        acc_type = acceptance.get("acceptance_type") or acceptance.get("acceptance_status", "")
+                        if acc_type:
+                            paper.acceptance_type = acc_type
+                            updated["acceptance_type"] = True
 
             # Also from journal_ref
             if arxiv_data.get("journal_ref"):
@@ -784,20 +823,30 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="citation_count", value=s2_data["citation_count"],
                 source="semantic_scholar", source_url=s2_data.get("s2_url"))
-            # S2 is more authoritative for citations than OA
-            if not paper.cited_by_count or paper.cited_by_count == 0:
-                paper.cited_by_count = min(s2_data["citation_count"], 32767)
+            # S2 is more authoritative for citations — always overwrite
+            s2_count = min(s2_data["citation_count"], 32767)
+            if s2_count > (paper.cited_by_count or 0):
+                paper.cited_by_count = s2_count
                 updated["cited_by_count"] = True
         if s2_data.get("venue"):
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="venue", value=s2_data["venue"],
                 source="semantic_scholar", source_url=s2_data.get("s2_url"))
+            if not paper.venue and s2_data["venue"].strip():
+                paper.venue = s2_data["venue"][:100]
+                updated["venue"] = True
 
     # ── 5. GitHub code discovery ──────────────────────────────
     title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
     if not paper.code_url and paper.title and not title_is_placeholder:
         await asyncio.sleep(0.3)
-        gh_data = await _discover_github_links(client, paper.title)
+        gh_data = await _discover_github_links(client, paper.title, arxiv_id=paper.arxiv_id)
+        # Fallback: search by arXiv ID if title search fails
+        if not gh_data and paper.arxiv_id:
+            await asyncio.sleep(0.3)
+            gh_data = await _discover_github_links(
+                client, paper.arxiv_id, arxiv_id=paper.arxiv_id,
+            )
         if gh_data:
             paper.code_url = gh_data["code_url"]
             paper.open_code = True

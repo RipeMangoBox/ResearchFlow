@@ -100,26 +100,39 @@ class GrobidClient:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            with open(pdf_path, "rb") as f:
-                resp = await client.post(
-                    f"{self.base_url}/api/processFulltextDocument",
-                    files={"input": (pdf_path.name, f, "application/pdf")},
-                    data={
-                        "consolidateHeader": "1",
-                        "consolidateCitations": "1",
-                        "includeRawAffiliations": "1",
-                        "includeRawCitations": "1",
-                        "teiCoordinates": "formula",  # Request formula coordinates
-                    },
-                )
+        # Retry once on disconnect (GROBID JVM GC can cause temporary drops)
+        resp = None
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    with open(pdf_path, "rb") as f:
+                        resp = await client.post(
+                            f"{self.base_url}/api/processFulltextDocument",
+                            files={"input": (pdf_path.name, f, "application/pdf")},
+                            data={
+                                "consolidateHeader": "1",
+                                "consolidateCitations": "1",
+                                "includeRawAffiliations": "1",
+                                "includeRawCitations": "1",
+                                "teiCoordinates": "formula",
+                            },
+                        )
+                break  # Success
+            except (httpx.RemoteProtocolError, httpx.ConnectError) as e:
+                if attempt == 0:
+                    logger.warning(f"GROBID connection failed (attempt 1), retrying in 5s: {e}")
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(5)
+                else:
+                    raise
 
-            if resp.status_code != 200:
-                logger.error(f"GROBID returned {resp.status_code}: {resp.text[:200]}")
-                return GrobidResult()
+        if resp is None or resp.status_code != 200:
+            status = resp.status_code if resp else "no response"
+            logger.error(f"GROBID returned {status}")
+            return GrobidResult()
 
-            tei_xml = resp.text
-            return self._parse_tei(tei_xml)
+        tei_xml = resp.text
+        return self._parse_tei(tei_xml)
 
     async def parse_header(self, pdf_path: str | Path) -> GrobidResult:
         """Parse only the header (faster, for metadata extraction)."""

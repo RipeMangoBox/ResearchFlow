@@ -34,20 +34,20 @@ services:
           memory: 256M
     command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru
 
-  grobid:
-    image: lfoppiano/grobid:0.8.1
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8070:8070"
-    deploy:
-      resources:
-        limits:
-          memory: 2048M
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+  # grobid:  # Disabled — VLM page scan replaces GROBID formula extraction
+  #   image: lfoppiano/grobid:0.8.1
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:8070:8070"
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 2048M
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
 
   api:
     build:
@@ -59,12 +59,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      grobid:
-        condition: service_healthy
     env_file: .env
-    environment:
-      GROBID_URL: http://grobid:8070
     volumes:
+      - ./backend:/app/backend
       - ./exports:/app/exports
       - ./storage:/app/storage
       - ./obsidian-vault:/obsidian-vault
@@ -74,7 +71,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 400M
+          memory: 512M
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   worker:
@@ -89,11 +86,14 @@ services:
         condition: service_started
     env_file: .env
     volumes:
+      - ./backend:/app/backend
       - ./exports:/app/exports
     deploy:
       resources:
         limits:
-          memory: 1024M
+          memory: 2048M
+    environment:
+      GROBID_URL: ""  # GROBID disabled — graceful fallback in parse_service
     command: arq backend.workers.arq_app.WorkerSettings
 
   frontend:

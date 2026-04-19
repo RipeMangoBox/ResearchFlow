@@ -1,20 +1,21 @@
-"""Formula extraction service — GROBID coords + PyMuPDF crop + VLM OCR.
+"""Formula extraction service — VLM page scan + PyMuPDF crop.
 
-Pipeline (no GPU needed):
-  1. GROBID detects formula regions → coordinates in TEI XML
-  2. PyMuPDF crops each formula region from the PDF page → PNG
-  3. ONE Claude VLM call: all formula images → LaTeX source code
+Pipeline (no GPU, no GROBID needed):
+  1. PyMuPDF scans pages → rank by math symbol density
+  2. Render top pages as images (batches of 3-5)
+  3. ONE Claude VLM call per batch: page images → LaTeX formulas
 
-Fallback when GROBID unavailable:
-  - PyMuPDF regex extraction (existing, low quality)
-  - VLM scan of pages with detected equation regions
+Fallback when no API key:
+  - PyMuPDF regex extraction (low quality, from pdf_extract.py)
 
-Total API calls: 1 (batch all formula images in single request)
+Optional GROBID enhancement (if available):
+  - GROBID coords → precise crops → VLM OCR (higher quality per-formula)
 """
 
 import base64
 import json
 import logging
+import re
 import time
 from uuid import UUID
 
@@ -23,6 +24,13 @@ import fitz
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Math symbols that indicate a page likely contains formulas
+_MATH_INDICATOR = re.compile(
+    r'[∑∫∏∂∇∆≤≥≠≈∈∉⊂⊃∀∃αβγδεζηθλμνξπρστφψωΩΓΔΘΛΣΦΨ]|'
+    r'\\(?:frac|sum|int|prod|mathbb|mathcal|text|left|right)\b|'
+    r'\(\d+\)\s*$'
+)
 
 
 async def extract_formulas(
@@ -33,240 +41,109 @@ async def extract_formulas(
 ) -> list[dict]:
     """Extract formulas from PDF as LaTeX.
 
-    Args:
-        pdf_path: Path to PDF file
-        paper_id: For cost tracking
-        grobid_formulas: Pre-parsed GROBID formula data with coords
-            [{text, label, page, bbox: [x0,y0,x1,y1]}]
-        session: DB session for cost logging
+    Primary: VLM page scan (sends page images, VLM extracts all formulas).
+    Enhanced: If GROBID coords provided, also do precise crop + OCR.
+    Fallback: Return GROBID raw text if no API key.
 
-    Returns: [{latex, label, page, bbox, source, context}]
+    Returns: [{latex, label, page, context, source}]
     """
+    if not (settings.anthropic_api_key or settings.openai_api_key):
+        # No API key — can only return GROBID text if available
+        if grobid_formulas:
+            return [
+                {"latex": f.get("text", ""), "label": f.get("label", ""),
+                 "page": f.get("page", -1), "source": "grobid_text"}
+                for f in grobid_formulas if f.get("text")
+            ]
+        return []
+
     doc = fitz.open(pdf_path)
-    formula_images = []
 
-    # ── Step 1: Get formula regions ──────────────────────────
+    # ── Primary: VLM page scan ──────────────────────────────────
+    vlm_results = await _vlm_page_scan(doc, paper_id, session)
+
+    # ── Enhanced: GROBID crop + OCR (if coords available) ───────
     if grobid_formulas:
-        # GROBID provided coordinates — crop each formula
-        for f in grobid_formulas:
-            if not f.get("bbox") or f.get("page", -1) < 0:
-                continue
-            page_num = f["page"]
-            if page_num >= len(doc):
-                continue
-
-            page = doc[page_num]
-            bbox = f["bbox"]
-            rect = fitz.Rect(*bbox)
-
-            # Expand horizontally to full text width (formulas often wider than GROBID bbox)
-            text_margin = 50
-            page_mid = page.rect.width / 2
-            if rect.x0 < page_mid and rect.x1 > page_mid:
-                rect = fitz.Rect(text_margin, rect.y0,
-                                 page.rect.width - text_margin, rect.y1)
-            elif rect.x0 < page_mid:
-                rect = fitz.Rect(text_margin, rect.y0,
-                                 max(rect.x1 + 30, page_mid - 5), rect.y1)
-            else:
-                rect = fitz.Rect(min(rect.x0 - 30, page_mid + 5), rect.y0,
-                                 page.rect.width - text_margin, rect.y1)
-
-            # Vertical margin
-            rect = fitz.Rect(
-                max(rect.x0, page.rect.x0),
-                max(rect.y0 - 3, page.rect.y0),
-                min(rect.x1, page.rect.x1),
-                min(rect.y1 + 3, page.rect.y1),
-            )
-
-            if rect.width < 20 or rect.height < 8:
-                continue
-
-            # Crop at 3x zoom for OCR clarity
-            pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=rect)
-            formula_images.append({
-                "png_bytes": pix.tobytes("png"),
-                "page": page_num,
-                "bbox": [round(rect.x0, 1), round(rect.y0, 1),
-                         round(rect.x1, 1), round(rect.y1, 1)],
-                "grobid_text": f.get("text", ""),
-                "label": f.get("label", ""),
-                "width": pix.width,
-                "height": pix.height,
-            })
-    else:
-        # No GROBID — detect formula regions heuristically
-        formula_images = _detect_formula_regions_heuristic(doc)
+        crop_results = await _grobid_crop_ocr(doc, grobid_formulas, paper_id, session)
+        # Merge: deduplicate by label, prefer VLM scan (has context)
+        vlm_results = _merge_formula_results(vlm_results, crop_results)
 
     doc.close()
 
-    if not formula_images:
-        logger.info(f"No formula regions found for {paper_id}")
+    logger.info(f"Formula extraction for {paper_id}: {len(vlm_results)} formulas")
+    return vlm_results
+
+
+# ── VLM Page Scan ────────────────────────────────────────────────────
+
+def _rank_pages_by_math_density(doc, max_pages: int = 15) -> list[int]:
+    """Rank pages by math symbol density. Returns page indices sorted by density."""
+    page_scores = []
+    for i in range(min(len(doc), max_pages)):
+        text = doc[i].get_text()
+        hits = len(_MATH_INDICATOR.findall(text))
+        page_scores.append((i, hits))
+
+    # Filter pages with any math content, sort by density
+    math_pages = [(i, h) for i, h in page_scores if h >= 2]
+    math_pages.sort(key=lambda x: x[1], reverse=True)
+
+    if not math_pages:
+        # No math detected — try pages 1-5 (method section usually there)
+        return list(range(min(5, len(doc))))
+
+    return [i for i, _ in math_pages]
+
+
+async def _vlm_page_scan(
+    doc,
+    paper_id: UUID,
+    session=None,
+    pages_per_batch: int = 3,
+    max_batches: int = 3,
+) -> list[dict]:
+    """Send page images to VLM, extract all formulas directly.
+
+    Batches pages to stay within token limits (~3 pages per call).
+    """
+    ranked_pages = _rank_pages_by_math_density(doc)
+    if not ranked_pages:
         return []
 
-    logger.info(f"Found {len(formula_images)} formula regions for {paper_id}")
+    # Cap total pages
+    max_pages = pages_per_batch * max_batches
+    selected_pages = ranked_pages[:max_pages]
 
-    # ── Step 2: VLM OCR — convert images to LaTeX ────────────
-    if settings.anthropic_api_key or settings.openai_api_key:
-        return await _ocr_formulas_vlm(formula_images, session, paper_id)
-    else:
-        # No API key — return GROBID text as fallback
-        return [
-            {
-                "latex": f.get("grobid_text", ""),
-                "label": f.get("label", ""),
-                "page": f.get("page", -1),
-                "bbox": f.get("bbox"),
-                "source": "grobid_text",
-            }
-            for f in formula_images
-            if f.get("grobid_text")
-        ]
+    all_results = []
+    for batch_start in range(0, len(selected_pages), pages_per_batch):
+        batch_indices = selected_pages[batch_start:batch_start + pages_per_batch]
 
+        # Render pages
+        page_images = []
+        for idx in sorted(batch_indices):
+            page = doc[idx]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            page_images.append({
+                "page": idx,
+                "png_bytes": pix.tobytes("png"),
+            })
 
-def _detect_formula_regions_heuristic(doc, pdf_path: str = "") -> list[dict]:
-    """Fallback: detect formula regions without GROBID.
+        batch_results = await _call_vlm_page_scan(page_images, paper_id, session)
+        all_results.extend(batch_results)
 
-    Strategy: look for pages with text blocks containing math Unicode
-    characters (∑, ∫, ∏, ≤, ≥, θ, α, β, etc.) that form isolated
-    short lines (likely equations, not inline text).
-    """
-    import re
-    math_chars = re.compile(r'[∑∫∏∂∇∆≤≥≠≈∈∉⊂⊃∀∃αβγδεζηθλμνξπρστφψωΩΓΔΘΛΣΦΨ]')
-    formula_images = []
+        # Stop if this batch found nothing (unlikely to find more)
+        if not batch_results and batch_start > 0:
+            break
 
-    for page_num in range(min(len(doc), 15)):
-        page = doc[page_num]
-        blocks = page.get_text("dict")["blocks"]
-
-        for block in blocks:
-            if block["type"] != 0:
-                continue
-
-            bbox = block["bbox"]
-            block_text = ""
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    block_text += span.get("text", "")
-
-            block_text = block_text.strip()
-
-            # Heuristic: short block with math symbols = likely a formula
-            if (len(block_text) < 200
-                    and len(math_chars.findall(block_text)) >= 2
-                    and bbox[3] - bbox[1] < 80):  # Not too tall
-
-                rect = fitz.Rect(*bbox)
-
-                # Expand horizontally to full text column width
-                # Academic papers: single-column formulas span ~90% page width
-                # Double-column: formulas span column width
-                page_mid = page.rect.width / 2
-                text_margin = 50  # Typical margin in academic papers
-
-                if rect.x0 < page_mid and rect.x1 > page_mid:
-                    # Full-width formula (single column or spanning)
-                    rect = fitz.Rect(text_margin, rect.y0,
-                                     page.rect.width - text_margin, rect.y1)
-                elif rect.x0 < page_mid:
-                    # Left column formula
-                    rect = fitz.Rect(text_margin, rect.y0,
-                                     page_mid - 5, rect.y1)
-                else:
-                    # Right column formula
-                    rect = fitz.Rect(page_mid + 5, rect.y0,
-                                     page.rect.width - text_margin, rect.y1)
-
-                # Vertical margin
-                rect = fitz.Rect(
-                    max(rect.x0, page.rect.x0),
-                    max(rect.y0 - 5, page.rect.y0),
-                    min(rect.x1, page.rect.x1),
-                    min(rect.y1 + 5, page.rect.y1),
-                )
-
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=rect)
-                formula_images.append({
-                    "png_bytes": pix.tobytes("png"),
-                    "page": page_num,
-                    "bbox": [round(rect.x0, 1), round(rect.y0, 1),
-                             round(rect.x1, 1), round(rect.y1, 1)],
-                    "grobid_text": block_text,
-                    "label": "",
-                    "width": pix.width,
-                    "height": pix.height,
-                })
-
-                if len(formula_images) >= 30:
-                    break
-
-    # Merge vertically adjacent formula rects on same page BEFORE cropping
-    # (multi-line equations get split into separate text blocks)
-    merged_rects = _merge_adjacent_rects(
-        [(f["page"], f["bbox"], f["grobid_text"]) for f in formula_images]
-    )
-
-    # Re-crop merged regions
-    result = []
-    for page_num, bbox, text in merged_rects:
-        if page_num >= len(doc):
-            continue
-        page = doc[page_num]
-        rect = fitz.Rect(*bbox)
-        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=rect)
-        result.append({
-            "png_bytes": pix.tobytes("png"),
-            "page": page_num,
-            "bbox": bbox,
-            "grobid_text": text,
-            "label": "",
-            "width": pix.width,
-            "height": pix.height,
-        })
-
-    return result
+    return all_results
 
 
-def _merge_adjacent_rects(
-    items: list[tuple[int, list[float], str]],
-    gap: float = 15.0,
-) -> list[tuple[int, list[float], str]]:
-    """Merge vertically adjacent formula rects on the same page."""
-    if len(items) <= 1:
-        return items
-
-    # Sort by page then y
-    items = sorted(items, key=lambda x: (x[0], x[1][1]))
-    merged = []
-    cur_page, cur_bbox, cur_text = items[0]
-    cur_bbox = list(cur_bbox)
-
-    for page, bbox, text in items[1:]:
-        if page == cur_page and bbox[1] - cur_bbox[3] <= gap:
-            # Adjacent — merge
-            cur_bbox[0] = min(cur_bbox[0], bbox[0])
-            cur_bbox[1] = min(cur_bbox[1], bbox[1])
-            cur_bbox[2] = max(cur_bbox[2], bbox[2])
-            cur_bbox[3] = max(cur_bbox[3], bbox[3])
-            cur_text += " " + text
-        else:
-            merged.append((cur_page, cur_bbox, cur_text))
-            cur_page, cur_bbox, cur_text = page, list(bbox), text
-
-    merged.append((cur_page, cur_bbox, cur_text))
-    return merged
-
-
-async def _ocr_formulas_vlm(
-    formula_images: list[dict],
-    session,
+async def _call_vlm_page_scan(
+    page_images: list[dict],
     paper_id: UUID,
+    session=None,
 ) -> list[dict]:
-    """ONE Claude VLM call: batch all formula images → LaTeX.
-
-    Sends all formula crops in a single request for cost efficiency.
-    """
+    """One VLM call: page images → all formulas as LaTeX."""
     import openai
     client = openai.AsyncOpenAI(
         api_key=settings.openai_api_key or settings.anthropic_api_key,
@@ -274,37 +151,31 @@ async def _ocr_formulas_vlm(
     )
     actual_model = settings.openai_model or "claude-sonnet-4-20250514"
 
-    # Cap at 20 formulas per call (token limit)
-    images_to_send = formula_images[:20]
-
     content = []
-    for i, f in enumerate(images_to_send):
-        content.append({
-            "type": "text",
-            "text": f"--- Formula {i} (page {f['page']}, label: {f.get('label', '?')}) ---",
-        })
-        b64 = base64.b64encode(f["png_bytes"]).decode("utf-8")
+    for p in page_images:
+        content.append({"type": "text", "text": f"--- Page {p['page'] + 1} ---"})
+        b64 = base64.b64encode(p["png_bytes"]).decode()
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{b64}"},
         })
 
-    prompt = f"""Convert each formula image to LaTeX.
+    content.append({"type": "text", "text": """Extract ALL mathematical formulas/equations from these pages.
 
-Return a JSON array with one entry per formula:
+Return a JSON array:
 [
-  {{"index": 0, "latex": "\\\\mathcal{{J}}_{{DAPO}}(\\\\theta) = \\\\mathbb{{E}}_{{...}}[...]", "label": "(5)", "is_formula": true}},
-  {{"index": 1, "latex": "", "is_formula": false}}
+  {"page": 3, "label": "(1)", "latex": "\\mathcal{L} = ...", "context": "loss function for..."},
+  ...
 ]
 
 Rules:
-- Use standard LaTeX math notation (not Unicode)
-- Include equation numbers if visible (as "label" field)
-- If the image is NOT a formula (just text or a diagram), set is_formula=false
-- Wrap display equations in $$ ... $$ notation
-- Return ONLY the JSON array"""
-
-    content.append({"type": "text", "text": prompt})
+- Include BOTH display equations (numbered) and important multi-symbol equations
+- Skip trivial inline math (single variables like x, y)
+- Use standard LaTeX notation (not Unicode)
+- "label" = equation number if visible, null otherwise
+- "context" = brief description of what the formula represents
+- "page" is 1-indexed
+- Return ONLY the JSON array, no explanation"""})
 
     start = time.monotonic()
     try:
@@ -320,72 +191,281 @@ Rules:
             if chunk.choices and chunk.choices[0].delta.content:
                 chunks.append(chunk.choices[0].delta.content)
 
-        latency = int((time.monotonic() - start) * 1000)
-        text = "".join(chunks) if chunks else "[]"
+        elapsed = time.monotonic() - start
+        text = "".join(chunks).strip() if chunks else "[]"
+        in_tokens = len(page_images) * 1500  # ~1500 tokens per page image
+        out_tokens = len(text.split())
+
+        logger.info(
+            f"VLM page scan: {len(page_images)} pages, "
+            f"~{in_tokens}→{out_tokens} tokens, {elapsed:.1f}s"
+        )
+
+        # Log cost
+        if session:
+            try:
+                from backend.models.system import ModelRun
+                run = ModelRun(
+                    paper_id=paper_id,
+                    model_provider="anthropic",
+                    model_name=actual_model,
+                    prompt_version="formula_page_scan_v1",
+                    input_tokens=in_tokens,
+                    output_tokens=out_tokens,
+                    cost_usd=(in_tokens * 3.0 + out_tokens * 15.0) / 1_000_000,
+                    latency_ms=int(elapsed * 1000),
+                )
+                session.add(run)
+            except Exception:
+                pass
+
+        # Parse JSON
+        parsed = _parse_vlm_json(text)
+        if not isinstance(parsed, list):
+            return []
+
+        return [
+            {
+                "latex": r.get("latex", ""),
+                "label": r.get("label") or "",
+                "page": (r.get("page", 1) - 1),  # Convert to 0-indexed
+                "context": r.get("context", ""),
+                "source": "vlm_page_scan",
+            }
+            for r in parsed
+            if r.get("latex")
+        ]
+
+    except Exception as e:
+        logger.error(f"VLM page scan failed: {e}")
+        return []
+
+
+# ── GROBID Crop + OCR (optional enhancement) ────────────────────────
+
+async def _grobid_crop_ocr(
+    doc,
+    grobid_formulas: list[dict],
+    paper_id: UUID,
+    session=None,
+) -> list[dict]:
+    """Crop formula regions using GROBID coords, OCR via VLM.
+
+    This is the original pipeline, kept as optional enhancement when
+    GROBID is available.
+    """
+    formula_images = []
+    for f in grobid_formulas:
+        if not f.get("bbox") or f.get("page", -1) < 0:
+            continue
+        page_num = f["page"]
+        if page_num >= len(doc):
+            continue
+
+        page = doc[page_num]
+        rect = fitz.Rect(*f["bbox"])
+
+        # Expand horizontally to full text width
+        text_margin = 50
+        page_mid = page.rect.width / 2
+        if rect.x0 < page_mid and rect.x1 > page_mid:
+            rect = fitz.Rect(text_margin, rect.y0,
+                             page.rect.width - text_margin, rect.y1)
+        elif rect.x0 < page_mid:
+            rect = fitz.Rect(text_margin, rect.y0,
+                             max(rect.x1 + 30, page_mid - 5), rect.y1)
+        else:
+            rect = fitz.Rect(min(rect.x0 - 30, page_mid + 5), rect.y0,
+                             page.rect.width - text_margin, rect.y1)
+
+        rect = fitz.Rect(
+            max(rect.x0, page.rect.x0), max(rect.y0 - 3, page.rect.y0),
+            min(rect.x1, page.rect.x1), min(rect.y1 + 3, page.rect.y1),
+        )
+
+        if rect.width < 20 or rect.height < 8:
+            continue
+
+        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=rect)
+        formula_images.append({
+            "png_bytes": pix.tobytes("png"),
+            "page": page_num,
+            "bbox": [round(rect.x0, 1), round(rect.y0, 1),
+                     round(rect.x1, 1), round(rect.y1, 1)],
+            "grobid_text": f.get("text", ""),
+            "label": f.get("label", ""),
+        })
+
+    if not formula_images:
+        return []
+
+    return await _ocr_formula_crops(formula_images, paper_id, session)
+
+
+async def _ocr_formula_crops(
+    formula_images: list[dict],
+    paper_id: UUID,
+    session=None,
+) -> list[dict]:
+    """ONE VLM call: batch formula crop images → LaTeX."""
+    import openai
+    client = openai.AsyncOpenAI(
+        api_key=settings.openai_api_key or settings.anthropic_api_key,
+        base_url=settings.openai_base_url or None,
+    )
+    actual_model = settings.openai_model or "claude-sonnet-4-20250514"
+
+    images_to_send = formula_images[:20]
+    content = []
+    for i, f in enumerate(images_to_send):
+        content.append({
+            "type": "text",
+            "text": f"--- Formula {i} (page {f['page']}, label: {f.get('label', '?')}) ---",
+        })
+        b64 = base64.b64encode(f["png_bytes"]).decode()
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"},
+        })
+
+    content.append({"type": "text", "text": """Convert each formula image to LaTeX.
+Return a JSON array: [{"index": 0, "latex": "...", "label": "(1)", "is_formula": true}, ...]
+Rules:
+- Standard LaTeX math notation (not Unicode)
+- Include equation numbers as "label"
+- If NOT a formula, set is_formula=false
+- Return ONLY the JSON array"""})
+
+    start = time.monotonic()
+    try:
+        stream = await client.chat.completions.create(
+            model=actual_model, max_tokens=4000, temperature=0.1,
+            messages=[{"role": "user", "content": content}], stream=True,
+        )
+        chunks = []
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                chunks.append(chunk.choices[0].delta.content)
+
+        elapsed = time.monotonic() - start
+        text = "".join(chunks).strip() if chunks else "[]"
         in_tokens = len(images_to_send) * 500
         out_tokens = len(text.split())
 
         logger.info(
-            f"VLM formula OCR: {len(images_to_send)} formulas, "
-            f"~{in_tokens}→{out_tokens} tokens, {latency}ms"
+            f"VLM crop OCR: {len(images_to_send)} formulas, "
+            f"~{in_tokens}→{out_tokens} tokens, {elapsed:.1f}s"
         )
 
         if session:
-            from backend.models.system import ModelRun
-            run = ModelRun(
-                paper_id=paper_id,
-                model_provider="anthropic",
-                model_name=actual_model,
-                prompt_version="formula_ocr_v1",
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cost_usd=(response.usage.input_tokens * 3.0 + response.usage.output_tokens * 15.0) / 1_000_000,
-                latency_ms=latency,
-            )
-            session.add(run)
+            try:
+                from backend.models.system import ModelRun
+                run = ModelRun(
+                    paper_id=paper_id,
+                    model_provider="anthropic",
+                    model_name=actual_model,
+                    prompt_version="formula_crop_ocr_v1",
+                    input_tokens=in_tokens,
+                    output_tokens=out_tokens,
+                    cost_usd=(in_tokens * 3.0 + out_tokens * 15.0) / 1_000_000,
+                    latency_ms=int(elapsed * 1000),
+                )
+                session.add(run)
+            except Exception:
+                pass
 
-        # Parse
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
+        parsed = _parse_vlm_json(text)
+        if not isinstance(parsed, list):
+            return []
 
-        ocr_results = json.loads(text)
-        if not isinstance(ocr_results, list):
-            ocr_results = []
-
-        # Merge OCR results with original metadata
         results = []
-        for ocr in ocr_results:
+        for ocr in parsed:
             idx = ocr.get("index", -1)
             if idx < 0 or idx >= len(images_to_send) or not ocr.get("is_formula", False):
                 continue
-
             orig = images_to_send[idx]
             results.append({
                 "latex": ocr.get("latex", ""),
                 "label": ocr.get("label", orig.get("label", "")),
                 "page": orig.get("page", -1),
                 "bbox": orig.get("bbox"),
-                "source": "vlm_ocr",
-                "grobid_text": orig.get("grobid_text", ""),
+                "source": "grobid_crop_vlm_ocr",
             })
-
         return results
 
     except Exception as e:
-        logger.error(f"VLM formula OCR failed: {e}")
-        # Fallback: return GROBID text
+        logger.error(f"VLM crop OCR failed: {e}")
         return [
-            {
-                "latex": f.get("grobid_text", ""),
-                "label": f.get("label", ""),
-                "page": f.get("page", -1),
-                "bbox": f.get("bbox"),
-                "source": "grobid_text_fallback",
-            }
-            for f in formula_images
-            if f.get("grobid_text")
+            {"latex": f.get("grobid_text", ""), "label": f.get("label", ""),
+             "page": f.get("page", -1), "source": "grobid_text_fallback"}
+            for f in formula_images if f.get("grobid_text")
         ]
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _parse_vlm_json(text: str):
+    """Parse JSON from VLM response, handling markdown code blocks."""
+    text = text.strip()
+
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown code block
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts[1:]:
+            cleaned = part.strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                continue
+
+    logger.warning(f"Could not parse VLM JSON response: {text[:200]}")
+    return []
+
+
+def _merge_formula_results(
+    vlm_results: list[dict],
+    crop_results: list[dict],
+) -> list[dict]:
+    """Merge VLM page scan results with GROBID crop OCR results.
+
+    Dedup by label — if both found the same equation, prefer VLM scan
+    (has context field). Add any crop-only formulas.
+    """
+    if not crop_results:
+        return vlm_results
+    if not vlm_results:
+        return crop_results
+
+    # Index VLM results by label
+    vlm_by_label = {}
+    for r in vlm_results:
+        if r.get("label"):
+            vlm_by_label[r["label"]] = r
+
+    # Add crop results that VLM missed
+    for cr in crop_results:
+        label = cr.get("label", "")
+        if label and label in vlm_by_label:
+            continue  # Already have from VLM scan
+        # Check if any VLM result on same page has similar LaTeX
+        found_dup = False
+        for vr in vlm_results:
+            if vr.get("page") == cr.get("page"):
+                # Simple similarity: first 30 chars of LaTeX match
+                v_prefix = vr.get("latex", "")[:30].replace(" ", "")
+                c_prefix = cr.get("latex", "")[:30].replace(" ", "")
+                if v_prefix and c_prefix and v_prefix == c_prefix:
+                    found_dup = True
+                    break
+        if not found_dup:
+            vlm_results.append(cr)
+
+    return vlm_results
