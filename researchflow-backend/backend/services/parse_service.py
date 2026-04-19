@@ -140,15 +140,18 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
 
     # ── Merge sections ───────────────────────────────────────────
     # Prefer GROBID sections if available (better structure), fall back to PyMuPDF
+    def _clean_text(text: str) -> str:
+        """Remove null bytes that PostgreSQL text columns cannot store."""
+        return text.replace("\x00", "") if text else text
+
     merged_sections = {}
     if grobid_result and grobid_result.sections:
-        merged_sections = {k: v[:5000] for k, v in grobid_result.sections.items()}
-        # Add PyMuPDF sections that GROBID missed
+        merged_sections = {k: _clean_text(v[:5000]) for k, v in grobid_result.sections.items()}
         for k, v in pymupdf_result.sections.items():
             if k not in merged_sections:
-                merged_sections[k] = v[:5000]
+                merged_sections[k] = _clean_text(v[:5000])
     else:
-        merged_sections = {k: v[:5000] for k, v in pymupdf_result.sections.items()}
+        merged_sections = {k: _clean_text(v[:5000]) for k, v in pymupdf_result.sections.items()}
 
     # ── Merge figure captions ────────────────────────────────────
     figure_captions = pymupdf_result.figure_captions

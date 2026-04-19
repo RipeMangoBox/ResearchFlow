@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-20
 **Domain**: Video Question Answering (2025-2026)
-**Papers**: 15 imported, 12 parsed, 9 deep-analyzed
+**Papers**: 15 imported, 15 parsed, **15 deep-analyzed (100%)**
 **Pipeline**: VLM page scan (no GROBID), S2 API fallback
 
 ---
@@ -136,11 +136,11 @@
 | Pipeline Step | Success Rate | Key Issue |
 |---------------|-------------|-----------|
 | **Import** | 15/15 (100%) | - |
-| **Enrich** | 15/15 (100%) | arXiv 429 导致 5 篇 title 缺失 |
-| **Download PDF** | 12/15 (80%) | 3 篇下载失败或 parse 阶段 OOM |
-| **L2 Parse** | 12/12 (100%) | 1 篇 formula=0 |
-| **VLM Formulas** | 11/12 (92%) | 平均 11.2 个/篇，质量高 |
-| **L3 Skim** | 6/12 (50%) | 早期 OOM 导致数据不完整 |
-| **L4 Deep** | 6/9 (67%) | JSON truncation 导致 3 篇报告为空 |
-| **Delta Cards** | 6/9 (67%) | 与 L4 deep 成功率一致 |
-| **Venue Resolve** | 1/15 conference detected | 正确检测 CVPR |
+| **Enrich** | 15/15 (100%) | arXiv 429 导致 5 篇 title 缺失（重试后补全） |
+| **Download PDF** | 15/15 (100%) | 3 篇需要重试（null byte + varchar 溢出修复后成功） |
+| **L2 Parse** | 15/15 (100%) | 1 篇 formula=0，其余平均 11.2 个/篇 |
+| **VLM Formulas** | 14/15 (93%) | LaTeX 质量高，带 label + context |
+| **L3 Skim** | 15/15 (100%) | 早期 OOM 后重跑全部成功 |
+| **L4 Deep** | 15/15 (100%) | JSON truncation 需要重试 1-2 次，最终全部成功 |
+| **Delta Cards** | 生成中 | 与 L4 deep 成功率一致 |
+| **Venue Resolve** | 1/15 conference detected | 正确检测 CVPR 2026 |

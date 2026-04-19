@@ -90,6 +90,9 @@
 |---|-----|-----|--------|
 | F1 | API 容器内存 512MB 不够 pipeline/run | 增加到 2048MB | docker-compose.yml |
 | F2 | Worker 内存调整 | 1536MB (从 2048 降以腾出给 api) | docker-compose.yml |
+| F3 | PyMuPDF 文本含 `\x00` null byte → PG 拒绝写入 | parse_service.py 加 `_clean_text()` | parse_service.py |
+| F4 | `prompt_version` varchar(20) 溢出 (formula_page_scan_v1=21 chars) | ALTER TABLE 扩到 varchar(50) | DB migration needed |
+| F5 | 代理 API 偶尔返回 Claude 自我介绍而非 completion | 无法修复 (第三方问题)，重试可解决 | - |
 
 ---
 
