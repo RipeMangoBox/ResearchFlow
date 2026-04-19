@@ -51,31 +51,23 @@ async def call_vlm(
 
     Returns: {text: str, input_tokens: int, output_tokens: int, model: str}
     """
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key and not settings.openai_api_key:
         return {"text": "[VLM mock — no API key]", "input_tokens": 0, "output_tokens": 0, "model": "mock"}
 
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-    # Build multimodal content
+    # Build multimodal content in OpenAI format (works with apicursor proxy too)
     content = []
     for img in images:
         if "data" in img:
+            b64 = base64.b64encode(img["data"]).decode("utf-8")
+            media = img.get("media_type", "image/png")
             content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": img.get("media_type", "image/png"),
-                    "data": base64.b64encode(img["data"]).decode("utf-8"),
-                },
+                "type": "image_url",
+                "image_url": {"url": f"data:{media};base64,{b64}"},
             })
         elif "url" in img:
             content.append({
-                "type": "image",
-                "source": {
-                    "type": "url",
-                    "url": img["url"],
-                },
+                "type": "image_url",
+                "image_url": {"url": img["url"]},
             })
 
     content.append({"type": "text", "text": prompt})
@@ -84,38 +76,89 @@ async def call_vlm(
     start = time.monotonic()
 
     try:
-        kwargs = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [{"role": "user", "content": content}],
-        }
-        if system:
-            kwargs["system"] = system
+        # Primary: OpenAI SDK with streaming (works with apicursor)
+        if settings.openai_api_key:
+            import openai
+            client = openai.AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url or None,
+            )
+            actual_model = settings.openai_model or model
+            messages = [{"role": "user", "content": content}]
+            if system:
+                messages.insert(0, {"role": "system", "content": system})
 
-        response = await client.messages.create(**kwargs)
-        latency = int((time.monotonic() - start) * 1000)
+            stream = await client.chat.completions.create(
+                model=actual_model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+            )
+            chunks = []
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    chunks.append(chunk.choices[0].delta.content)
 
-        text = response.content[0].text if response.content else ""
-        result = {
-            "text": text,
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "model": model,
-            "latency_ms": latency,
-        }
+            latency = int((time.monotonic() - start) * 1000)
+            text = "".join(chunks)
+            # Estimate tokens from text length
+            in_tokens = len(prompt.split()) + len(images) * 1000  # rough estimate
+            out_tokens = len(text.split())
+
+            result = {
+                "text": text,
+                "input_tokens": in_tokens,
+                "output_tokens": out_tokens,
+                "model": actual_model,
+                "latency_ms": latency,
+            }
+
+        # Fallback: Anthropic SDK (direct API)
+        elif settings.anthropic_api_key:
+            import anthropic
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            # Convert OpenAI image format to Anthropic format
+            anthropic_content = []
+            for item in content:
+                if item["type"] == "image_url":
+                    url = item["image_url"]["url"]
+                    if url.startswith("data:"):
+                        parts = url.split(",", 1)
+                        media = parts[0].split(";")[0].split(":")[1]
+                        anthropic_content.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media, "data": parts[1]},
+                        })
+                else:
+                    anthropic_content.append(item)
+
+            kwargs = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
+                      "messages": [{"role": "user", "content": anthropic_content}]}
+            if system:
+                kwargs["system"] = system
+            response = await client.messages.create(**kwargs)
+            latency = int((time.monotonic() - start) * 1000)
+            text = response.content[0].text if response.content else ""
+            result = {
+                "text": text,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "model": model,
+                "latency_ms": latency,
+            }
 
         # Log cost
         if session:
             run = ModelRun(
                 paper_id=paper_id,
-                model_provider="anthropic",
-                model_name=model,
+                model_provider="openai" if settings.openai_api_key else "anthropic",
+                model_name=result["model"],
                 prompt_version="vlm_v1",
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cost_usd=_estimate_vlm_cost(response.usage.input_tokens, response.usage.output_tokens, model),
-                latency_ms=latency,
+                input_tokens=result["input_tokens"],
+                output_tokens=result["output_tokens"],
+                cost_usd=_estimate_vlm_cost(result["input_tokens"], result["output_tokens"], result["model"]),
+                latency_ms=result["latency_ms"],
             )
             session.add(run)
 

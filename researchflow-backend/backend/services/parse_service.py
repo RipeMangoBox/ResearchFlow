@@ -135,7 +135,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
     # Primary: VLM-guided precise extraction (1 API call)
     # Fallback: PyMuPDF heuristic extraction (free, CPU only)
     figure_image_records = []
-    if settings.anthropic_api_key and pdf_path:
+    if (settings.anthropic_api_key or settings.openai_api_key) and pdf_path:
         try:
             from backend.services.figure_extraction_service import extract_figures_precise
             figure_image_records = await extract_figures_precise(

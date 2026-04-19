@@ -108,7 +108,7 @@ async def extract_formulas(
     logger.info(f"Found {len(formula_images)} formula regions for {paper_id}")
 
     # ── Step 2: VLM OCR — convert images to LaTeX ────────────
-    if settings.anthropic_api_key:
+    if settings.anthropic_api_key or settings.openai_api_key:
         return await _ocr_formulas_vlm(formula_images, session, paper_id)
     else:
         # No API key — return GROBID text as fallback
@@ -267,8 +267,12 @@ async def _ocr_formulas_vlm(
 
     Sends all formula crops in a single request for cost efficiency.
     """
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    import openai
+    client = openai.AsyncOpenAI(
+        api_key=settings.openai_api_key or settings.anthropic_api_key,
+        base_url=settings.openai_base_url or None,
+    )
+    actual_model = settings.openai_model or "claude-sonnet-4-20250514"
 
     # Cap at 20 formulas per call (token limit)
     images_to_send = formula_images[:20]
@@ -279,13 +283,10 @@ async def _ocr_formulas_vlm(
             "type": "text",
             "text": f"--- Formula {i} (page {f['page']}, label: {f.get('label', '?')}) ---",
         })
+        b64 = base64.b64encode(f["png_bytes"]).decode("utf-8")
         content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.b64encode(f["png_bytes"]).decode("utf-8"),
-            },
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"},
         })
 
     prompt = f"""Convert each formula image to LaTeX.
@@ -307,19 +308,26 @@ Rules:
 
     start = time.monotonic()
     try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+        stream = await client.chat.completions.create(
+            model=actual_model,
             max_tokens=4000,
             temperature=0.1,
             messages=[{"role": "user", "content": content}],
+            stream=True,
         )
-        latency = int((time.monotonic() - start) * 1000)
+        chunks = []
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                chunks.append(chunk.choices[0].delta.content)
 
-        text = response.content[0].text if response.content else "[]"
+        latency = int((time.monotonic() - start) * 1000)
+        text = "".join(chunks) if chunks else "[]"
+        in_tokens = len(images_to_send) * 500
+        out_tokens = len(text.split())
+
         logger.info(
             f"VLM formula OCR: {len(images_to_send)} formulas, "
-            f"{response.usage.input_tokens}→{response.usage.output_tokens} tokens, "
-            f"{latency}ms"
+            f"~{in_tokens}→{out_tokens} tokens, {latency}ms"
         )
 
         if session:
@@ -327,7 +335,7 @@ Rules:
             run = ModelRun(
                 paper_id=paper_id,
                 model_provider="anthropic",
-                model_name="claude-sonnet-4-20250514",
+                model_name=actual_model,
                 prompt_version="formula_ocr_v1",
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,

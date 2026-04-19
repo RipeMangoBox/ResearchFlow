@@ -492,12 +492,16 @@ async def _classify_and_detect_missed(
     - classifications: [{index, is_figure_or_table, label, type, ...}]
     - missed_figures: [{page, label, type, semantic_role, description}]
     """
-    import anthropic
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    import openai
+    client = openai.AsyncOpenAI(
+        api_key=settings.openai_api_key or settings.anthropic_api_key,
+        base_url=settings.openai_base_url or None,
+    )
+    actual_model = settings.openai_model or "claude-sonnet-4-20250514"
 
     content = []
 
-    # Part A: candidate crops
+    # Part A: candidate crops (OpenAI image_url format)
     detected_labels = set()
     if thumbnails:
         content.append({"type": "text", "text": f"=== PART A: {len(thumbnails)} candidate crops ==="})
@@ -506,13 +510,10 @@ async def _classify_and_detect_missed(
                 "type": "text",
                 "text": f"--- Candidate {i} (page {thumb['page_num']}) ---",
             })
+            b64 = base64.b64encode(thumb["thumb_bytes"]).decode("utf-8")
             content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": base64.b64encode(thumb["thumb_bytes"]).decode("utf-8"),
-                },
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
             })
             if thumb.get("label"):
                 detected_labels.add(thumb["label"])
@@ -524,13 +525,10 @@ async def _classify_and_detect_missed(
             "type": "text",
             "text": f"--- Page {pt['page_num']} ---",
         })
+        b64 = base64.b64encode(pt["thumb_bytes"]).decode("utf-8")
         content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.b64encode(pt["thumb_bytes"]).decode("utf-8"),
-            },
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"},
         })
 
     detected_str = ", ".join(sorted(detected_labels)) if detected_labels else "none yet"
@@ -568,31 +566,38 @@ Rules:
 
     start = time.monotonic()
     try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+        stream = await client.chat.completions.create(
+            model=actual_model,
             max_tokens=4000,
             temperature=0.1,
             messages=[{"role": "user", "content": content}],
+            stream=True,
         )
-        latency = int((time.monotonic() - start) * 1000)
+        chunks = []
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                chunks.append(chunk.choices[0].delta.content)
 
-        text = response.content[0].text if response.content else "{}"
+        latency = int((time.monotonic() - start) * 1000)
+        text = "".join(chunks) if chunks else "{}"
+        in_tokens = len(prompt.split()) + (len(thumbnails) + len(page_thumbs)) * 500
+        out_tokens = len(text.split())
+
         logger.info(
             f"VLM classify+detect: {len(thumbnails)} candidates + {len(page_thumbs)} pages, "
-            f"{response.usage.input_tokens}→{response.usage.output_tokens} tokens, "
-            f"{latency}ms"
+            f"~{in_tokens}→{out_tokens} tokens, {latency}ms"
         )
 
         if session:
             from backend.models.system import ModelRun
             run = ModelRun(
                 paper_id=paper_id,
-                model_provider="anthropic",
-                model_name="claude-sonnet-4-20250514",
+                model_provider="openai",
+                model_name=actual_model,
                 prompt_version="figure_classify_detect_v1",
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cost_usd=(response.usage.input_tokens * 3.0 + response.usage.output_tokens * 15.0) / 1_000_000,
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
+                cost_usd=(in_tokens * 3.0 + out_tokens * 15.0) / 1_000_000,
                 latency_ms=latency,
             )
             session.add(run)
