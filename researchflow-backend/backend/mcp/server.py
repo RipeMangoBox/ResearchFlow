@@ -326,6 +326,160 @@ TOOLS = [
             "required": ["paper_id"],
         },
     ),
+
+    # ── v6 Domain / Candidate / Graph tools ──────────────────
+    Tool(
+        name="rf_domain_cold_start",
+        description="Cold-start a research domain. Creates skeleton nodes, harvests papers from arXiv/S2, scores candidates, and promotes top anchors.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Domain name"},
+                "scope_tasks": {"type": "array", "items": {"type": "string"}, "description": "Task scope keywords"},
+                "scope_methods": {"type": "array", "items": {"type": "string"}, "description": "Method scope keywords"},
+                "scope_modalities": {"type": "array", "items": {"type": "string"}, "description": "Modality scope keywords"},
+                "scope_datasets": {"type": "array", "items": {"type": "string"}, "description": "Dataset scope keywords"},
+                "negative_scope": {"type": "array", "items": {"type": "string"}, "description": "Negative scope keywords to exclude"},
+            },
+            "required": ["name", "scope_tasks", "scope_methods"],
+        },
+    ),
+    Tool(
+        name="rf_candidate_list",
+        description="List paper candidates with optional filters. Returns candidates with their discovery scores.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "domain_id": {"type": "string", "description": "Filter by domain UUID"},
+                "status": {"type": "string", "description": "Filter by candidate status"},
+                "min_score": {"type": "number", "description": "Minimum discovery score"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="rf_candidate_promote",
+        description="Promote a paper candidate to a full Paper at the specified absorption level (1=shallow, 2=visible, 3=full).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "candidate_id": {"type": "string", "description": "Candidate UUID"},
+                "absorption_level": {"type": "integer", "default": 1, "description": "1=shallow, 2=visible, 3=full"},
+            },
+            "required": ["candidate_id"],
+        },
+    ),
+    Tool(
+        name="rf_candidate_reject",
+        description="Reject a paper candidate with a reason.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "candidate_id": {"type": "string", "description": "Candidate UUID"},
+                "reason": {"type": "string", "description": "Rejection reason"},
+            },
+            "required": ["candidate_id", "reason"],
+        },
+    ),
+    Tool(
+        name="rf_paper_build_neighborhood",
+        description="Discover related papers via Semantic Scholar and create candidates (not direct ingest).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string", "description": "Paper UUID"},
+                "max_references": {"type": "integer", "default": 30},
+                "max_citations": {"type": "integer", "default": 50},
+            },
+            "required": ["paper_id"],
+        },
+    ),
+    Tool(
+        name="rf_node_profile_get",
+        description="Get the profile (introduction, structured data) for a knowledge graph node.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string", "description": "Node entity type (e.g. 'task', 'method', 'dataset')"},
+                "entity_id": {"type": "string", "description": "Entity UUID"},
+                "lang": {"type": "string", "default": "zh", "description": "Language for profile (zh or en)"},
+            },
+            "required": ["entity_type", "entity_id"],
+        },
+    ),
+    Tool(
+        name="rf_node_profile_refresh",
+        description="Regenerate the profile for a knowledge graph node using the latest data.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string", "description": "Node entity type"},
+                "entity_id": {"type": "string", "description": "Entity UUID"},
+            },
+            "required": ["entity_type", "entity_id"],
+        },
+    ),
+    Tool(
+        name="rf_edge_profile_get",
+        description="Get the contextual description of a connection between two knowledge graph nodes.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source_entity_type": {"type": "string", "description": "Source node entity type"},
+                "source_entity_id": {"type": "string", "description": "Source entity UUID"},
+                "target_entity_type": {"type": "string", "description": "Target node entity type"},
+                "target_entity_id": {"type": "string", "description": "Target entity UUID"},
+            },
+            "required": ["source_entity_type", "source_entity_id", "target_entity_type", "target_entity_id"],
+        },
+    ),
+    Tool(
+        name="rf_graph_get_subgraph",
+        description="Get a subgraph centered on a node, including neighbors, edges, and their profiles.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "center_entity_type": {"type": "string", "description": "Center node entity type"},
+                "center_entity_id": {"type": "string", "description": "Center entity UUID"},
+                "depth": {"type": "integer", "default": 1, "description": "Traversal depth (1-3)"},
+            },
+            "required": ["center_entity_type", "center_entity_id"],
+        },
+    ),
+    Tool(
+        name="rf_review_queue",
+        description="View the review queue for items needing human review (promotions, edges, conflicts).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "default": "pending", "description": "Filter by status"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="rf_score_explain",
+        description="Explain the scoring breakdown for a paper candidate — shows all sub-scores, signals, caps, and boosts.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "candidate_id": {"type": "string", "description": "Candidate UUID"},
+            },
+            "required": ["candidate_id"],
+        },
+    ),
+    Tool(
+        name="rf_run_v6_pipeline",
+        description="Run the full V6 pipeline: import → score → shallow ingest → deep ingest → profiles → report.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "paper_url": {"type": "string", "description": "Paper URL or arXiv ID"},
+                "domain_id": {"type": "string", "description": "Optional domain UUID"},
+            },
+            "required": ["paper_url"],
+        },
+    ),
 ]
 
 
@@ -626,6 +780,125 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             result["formulas"] = []
             result["note"] = "No L2 parse available. Run the pipeline first."
 
+        return result
+
+    # ── v6 Domain / Candidate / Graph tools ─────────────────────
+    elif name == "rf_domain_cold_start":
+        from backend.services import cold_start_service
+        result = await cold_start_service.cold_start_domain(
+            session,
+            name=args["name"],
+            scope_tasks=args["scope_tasks"],
+            scope_methods=args["scope_methods"],
+            scope_modalities=args.get("scope_modalities"),
+            scope_datasets=args.get("scope_datasets"),
+            negative_scope=args.get("negative_scope"),
+        )
+        return result
+
+    elif name == "rf_candidate_list":
+        from backend.services import candidate_service
+        result = await candidate_service.list_candidates(
+            session,
+            domain_id=UUID(args["domain_id"]) if args.get("domain_id") else None,
+            status=args.get("status"),
+            min_score=args.get("min_score"),
+            limit=args.get("limit", 20),
+        )
+        return result
+
+    elif name == "rf_candidate_promote":
+        from backend.services import candidate_service
+        result = await candidate_service.promote_candidate(
+            session,
+            candidate_id=UUID(args["candidate_id"]),
+            absorption_level=args.get("absorption_level", 1),
+        )
+        return result
+
+    elif name == "rf_candidate_reject":
+        from backend.services import candidate_service
+        result = await candidate_service.reject_candidate(
+            session,
+            candidate_id=UUID(args["candidate_id"]),
+            reason=args["reason"],
+        )
+        return result
+
+    elif name == "rf_paper_build_neighborhood":
+        from backend.services import neighborhood_service
+        result = await neighborhood_service.build_neighborhood(
+            session,
+            paper_id=UUID(args["paper_id"]),
+            max_references=args.get("max_references", 30),
+            max_citations=args.get("max_citations", 50),
+        )
+        return result
+
+    elif name == "rf_node_profile_get":
+        from backend.services import profile_service
+        result = await profile_service.get_node_profile(
+            session,
+            entity_type=args["entity_type"],
+            entity_id=UUID(args["entity_id"]),
+            lang=args.get("lang", "zh"),
+        )
+        return result
+
+    elif name == "rf_node_profile_refresh":
+        from backend.services import profile_service
+        result = await profile_service.refresh_node_profile(
+            session,
+            entity_type=args["entity_type"],
+            entity_id=UUID(args["entity_id"]),
+        )
+        return result
+
+    elif name == "rf_edge_profile_get":
+        from backend.services import profile_service
+        result = await profile_service.get_edge_profile(
+            session,
+            source_entity_type=args["source_entity_type"],
+            source_entity_id=UUID(args["source_entity_id"]),
+            target_entity_type=args["target_entity_type"],
+            target_entity_id=UUID(args["target_entity_id"]),
+        )
+        return result
+
+    elif name == "rf_graph_get_subgraph":
+        from backend.services import graph_query_service
+        result = await graph_query_service.get_subgraph(
+            session,
+            center_entity_type=args["center_entity_type"],
+            center_entity_id=UUID(args["center_entity_id"]),
+            depth=args.get("depth", 1),
+        )
+        return result
+
+    elif name == "rf_review_queue":
+        from backend.services import review_service
+        result = await review_service.list_reviews(
+            session,
+            status=args.get("status", "pending"),
+            limit=args.get("limit", 20),
+        )
+        return result
+
+    elif name == "rf_score_explain":
+        from backend.services import candidate_service
+        result = await candidate_service.explain_score(
+            session,
+            candidate_id=UUID(args["candidate_id"]),
+        )
+        return result
+
+    elif name == "rf_run_v6_pipeline":
+        from backend.services.ingest_workflow import IngestWorkflow
+        workflow = IngestWorkflow(session)
+        result = await workflow.run_full_v6_pipeline(
+            args["paper_url"],
+            domain_id=UUID(args["domain_id"]) if args.get("domain_id") else None,
+        )
         return result
 
     return {"error": f"Unknown tool: {name}"}

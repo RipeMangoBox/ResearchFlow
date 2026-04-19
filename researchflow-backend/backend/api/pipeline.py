@@ -303,6 +303,16 @@ async def export_obsidian_vault(
     return result
 
 
+@router.post("/export/obsidian-vault-v6")
+async def export_obsidian_vault_v6(
+    session: AsyncSession = Depends(get_session),
+):
+    """Export v6 vault: v5 base + node/edge profiles + Lab pages."""
+    from backend.services.vault_export_v6 import export_vault_v6
+    result = await export_vault_v6(session)
+    return result
+
+
 @router.post("/export/build-collection-index")
 async def build_collection_index(
     session: AsyncSession = Depends(get_session),
@@ -328,6 +338,58 @@ async def promote_to_paradigm(
         return {"paradigm_id": str(paradigm.id), "name": paradigm.name, "version": paradigm.version}
     except HTTPException:
         raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+# ── V6 pipeline endpoints ───────────────────────────────────────
+
+class V6PipelineRequest(BaseModel):
+    source: str  # URL or arxiv_id
+    domain_id: UUID | None = None
+
+
+@router.post("/v6/run")
+async def run_v6_pipeline(
+    body: V6PipelineRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Run the V6 pipeline for a paper URL."""
+    from backend.services.ingest_workflow import IngestWorkflow
+    try:
+        workflow = IngestWorkflow(session)
+        result = await workflow.run_full_v6_pipeline(body.source, domain_id=body.domain_id)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
+
+
+@router.post("/v6/shallow/{candidate_id}")
+async def run_v6_shallow(candidate_id: UUID, session: AsyncSession = Depends(get_session)):
+    """Run shallow ingest on a candidate."""
+    from backend.services.ingest_workflow import IngestWorkflow
+    try:
+        workflow = IngestWorkflow(session)
+        result = await workflow.shallow_ingest(candidate_id)
+        await session.commit()
+        return result
+    except Exception:
+        await session.rollback()
+        raise
+
+
+@router.post("/v6/deep/{paper_id}")
+async def run_v6_deep(paper_id: UUID, session: AsyncSession = Depends(get_session)):
+    """Run deep ingest on a paper."""
+    from backend.services.ingest_workflow import IngestWorkflow
+    try:
+        workflow = IngestWorkflow(session)
+        result = await workflow.deep_ingest(paper_id)
+        await session.commit()
+        return result
     except Exception:
         await session.rollback()
         raise

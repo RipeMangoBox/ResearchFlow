@@ -1,9 +1,13 @@
 """arq worker configuration and task definitions."""
 
+import logging
+
 from arq import cron
 from arq.connections import RedisSettings
 
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Task functions ──────────────────────────────────────────────
@@ -272,6 +276,107 @@ async def task_process_reference_roles_v6(ctx: dict, limit: int = 30):
     return {"papers_processed": len(items), "refs_imported": total}
 
 
+# ── V6 incremental sync tasks ─────────────────────────────────────
+
+# V6 arXiv daily sync — daily at 10:00
+async def task_arxiv_daily_sync_v6(ctx: dict):
+    """Sync new arXiv papers for all active domains."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import sync_arxiv_daily
+        from sqlalchemy import select
+        from backend.models.domain import DomainSpec
+        domains = (await session.execute(
+            select(DomainSpec).where(DomainSpec.status == "active")
+        )).scalars().all()
+        total = 0
+        for domain in domains:
+            try:
+                result = await sync_arxiv_daily(session, domain.id)
+                total += result.get("candidates_created", 0)
+            except Exception as e:
+                logger.error(f"arXiv sync failed for {domain.name}: {e}")
+        await session.commit()
+        return {"domains_synced": len(domains), "total_candidates": total}
+
+
+# V6 citation refresh — weekly on Wednesday 03:00
+async def task_citation_refresh_v6(ctx: dict, limit: int = 50):
+    """Refresh citation counts for papers via S2 API."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import refresh_citation_counts
+        result = await refresh_citation_counts(session, limit=limit)
+        await session.commit()
+        return result
+
+
+# V6 awesome repo diff — weekly on Thursday 04:00
+async def task_awesome_repo_diff_v6(ctx: dict):
+    """Detect new papers in tracked awesome repos."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import detect_awesome_repo_changes
+        from sqlalchemy import select
+        from backend.models.domain import DomainSpec
+        domains = (await session.execute(
+            select(DomainSpec).where(DomainSpec.status == "active")
+        )).scalars().all()
+        total = 0
+        for domain in domains:
+            try:
+                result = await detect_awesome_repo_changes(session, domain.id)
+                total += result.get("candidates_created", 0)
+            except Exception as e:
+                logger.error(f"Awesome repo diff failed for {domain.name}: {e}")
+        await session.commit()
+        return {"domains_checked": len(domains), "total_candidates": total}
+
+
+# V6 lineage detection — weekly on Friday 05:00
+async def task_lineage_detection_v6(ctx: dict):
+    """Detect method evolution lineage chains."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import detect_lineage_chains
+        result = await detect_lineage_chains(session)
+        await session.commit()
+        return result
+
+
+# V6 node score recomputation — weekly on Saturday 04:00
+async def task_recompute_node_scores_v6(ctx: dict, limit: int = 100):
+    """Recompute promotion scores for graph node candidates."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import recompute_node_scores
+        result = await recompute_node_scores(session, limit=limit)
+        await session.commit()
+        return result
+
+
+# V6 duplicate detection — monthly on 1st at 02:00
+async def task_detect_duplicates_v6(ctx: dict):
+    """Detect duplicate nodes in taxonomy and method tables."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import detect_duplicate_nodes
+        result = await detect_duplicate_nodes(session)
+        await session.commit()
+        return result
+
+
+# V6 stale candidate cleanup — monthly on 15th at 02:00
+async def task_cleanup_stale_candidates_v6(ctx: dict, days: int = 90):
+    """Archive stale candidates that haven't progressed."""
+    from backend.database import async_session
+    async with async_session() as session:
+        from backend.services.incremental_sync_service import cleanup_stale_candidates
+        result = await cleanup_stale_candidates(session, days=days)
+        await session.commit()
+        return result
+
+
 # ── Startup / shutdown ──────────────────────────────────────────
 
 async def startup(ctx: dict):
@@ -313,6 +418,14 @@ class WorkerSettings:
         task_auto_promote_v6,
         task_refresh_stale_profiles_v6,
         task_process_reference_roles_v6,
+        # V6 incremental sync
+        task_arxiv_daily_sync_v6,
+        task_citation_refresh_v6,
+        task_awesome_repo_diff_v6,
+        task_lineage_detection_v6,
+        task_recompute_node_scores_v6,
+        task_detect_duplicates_v6,
+        task_cleanup_stale_candidates_v6,
     ]
 
     cron_jobs = [
@@ -341,6 +454,20 @@ class WorkerSettings:
         cron(task_refresh_stale_profiles_v6, hour=5, minute=0),
         # V6: Process reference roles every 4 hours
         cron(task_process_reference_roles_v6, hour={1, 5, 9, 13, 17, 21}, minute=45),
+        # V6 incremental: arXiv daily sync at 10:00
+        cron(task_arxiv_daily_sync_v6, hour=10, minute=0),
+        # V6 incremental: Citation refresh Wednesday 03:00
+        cron(task_citation_refresh_v6, weekday=2, hour=3, minute=0),
+        # V6 incremental: Awesome repo diff Thursday 04:00
+        cron(task_awesome_repo_diff_v6, weekday=3, hour=4, minute=0),
+        # V6 incremental: Lineage detection Friday 05:00
+        cron(task_lineage_detection_v6, weekday=4, hour=5, minute=0),
+        # V6 incremental: Node score recomputation Saturday 04:00
+        cron(task_recompute_node_scores_v6, weekday=5, hour=4, minute=0),
+        # V6 incremental: Duplicate detection 1st of month 02:00
+        cron(task_detect_duplicates_v6, month_day=1, hour=2, minute=0),
+        # V6 incremental: Stale candidate cleanup 15th of month 02:00
+        cron(task_cleanup_stale_candidates_v6, month_day=15, hour=2, minute=0),
     ]
 
     on_startup = startup
