@@ -122,29 +122,45 @@ class StatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/discover/{paper_id}", response_model=DiscoverResponse)
-async def discover_candidates(session: Session, paper_id: UUID):
+async def discover_candidates(
+    session: Session,
+    paper_id: UUID,
+    domain_id: UUID | None = None,
+    max_references: int = Query(default=30, ge=1, le=100),
+    max_citations: int = Query(default=50, ge=1, le=200),
+    max_related: int = Query(default=10, ge=1, le=50),
+):
     """Trigger neighborhood discovery for a paper.
 
-    Discovers related papers from citation graphs, search, etc.
-    and creates candidates instead of ingesting directly.
+    Discovers related papers from Semantic Scholar (references, citations,
+    recommendations) and creates scored candidates for each.
     """
-    # TODO: integrate with discovery_service to walk citations / references
-    # and call candidate_service.create_candidate for each discovered paper.
-    #
-    # Pseudocode:
-    #   from backend.services import discovery_service
-    #   discovered = await discovery_service.discover_neighborhood(session, paper_id)
-    #   created, existing = 0, 0
-    #   for item in discovered:
-    #       candidate = await candidate_service.create_candidate(session, ...)
-    #       if candidate was new: created += 1
-    #       else: existing += 1
-    #   await session.commit()
+    from backend.services.ingest_workflow import IngestWorkflow
 
-    raise HTTPException(
-        status_code=501,
-        detail="Discovery integration not yet implemented. "
-               "Wire discovery_service.discover_neighborhood here.",
+    workflow = IngestWorkflow(session)
+    try:
+        result = await workflow.discover_neighborhood(
+            paper_id,
+            max_references=max_references,
+            max_citations=max_citations,
+            max_related=max_related,
+            domain_id=domain_id,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Discovery failed: {str(e)[:200]}",
+        )
+
+    if "error" in result and result.get("total_discovered", 0) == 0:
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    await session.commit()
+
+    return DiscoverResponse(
+        candidates_created=result.get("candidates_created", 0),
+        candidates_existing=result.get("candidates_existing", 0),
+        total_discovered=result.get("total_discovered", 0),
     )
 
 
