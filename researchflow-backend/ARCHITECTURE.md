@@ -792,94 +792,431 @@ GET /explore/{id}
 
 ---
 
-## 15. V6: Candidate Queue + Multi-Agent Pipeline
+## 15. V6: 候选队列 + 多 Agent 管线
 
-### 15.1 paper_candidates 表与 5 级吸收
+> **核心变更**: 论文不再发现即入库。所有论文先进候选池 (`paper_candidates`)，经过多阶段评分筛选后，才逐级提升到知识图谱。后端 Agent 自动执行，Claude Code 通过 MCP 触发和审查。
 
-候选论文不再直接进入 papers 表，而是经过分级吸收：
+### 15.1 单篇论文完整流程
 
 ```
-new → shallow → reference_done → deep → graph_ready
- │       │           │              │         │
- │   ShallowPaper  ReferenceRole  6 deep    Profile
- │   agent         agent          agents    + promote
- │                                          to graph
+URL / arxiv_id
+    │
+    ▼
+┌─ 阶段 0: 元数据提取 (确定性, 0 次 LLM, 5-10 次 HTTP) ────────┐
+│ arXiv API → title/abstract/authors/year/comments              │
+│ Crossref → DOI/venue/year                                     │
+│ OpenAlex → venue/citations/open_access                        │
+│ Semantic Scholar → citation_count/venue                       │
+│ DBLP → 会议验证 | OpenReview → 审稿结果                        │
+│ GitHub → code_url | HuggingFace → models/datasets             │
+│ → 写入 metadata_observations (观察账本, 不直接覆盖 Paper 字段)   │
+└───────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─ 阶段 1: 创建候选 + DiscoveryScore (确定性, 0 次 LLM) ────────┐
+│ 写入 paper_candidates (status=discovered, absorption_level=0)  │
+│ 查重: arxiv_id → DOI → normalized_title                       │
+│ ScoringEngine.compute_discovery_score() → 0-100 分             │
+│ 写入 candidate_scores + score_signals                         │
+│                                                                │
+│ 路由:                                                          │
+│   ≥75 → shallow_ingest (排队)     进入阶段 2                   │
+│   60-74 → candidate_pool          等待批量处理                  │
+│   40-59 → metadata_only           可搜索但不解析                │
+│   <40 → archive                   归档                         │
+└───────────────────────────────────────────────────────────────┘
+    │ (≥75 分才继续)
+    ▼
+┌─ 阶段 2: 浅层分析 (4 次 LLM 调用) ────────────────────────────┐
+│ 候选 → Paper (absorption_level=1)                              │
+│                                                                │
+│ Agent 1: ShallowPaperAgent (6-12K tokens)                      │
+│   读: abstract + intro 前 3 段 + method/experiment 要点         │
+│   提取:                                                        │
+│     problem_statement — 解决什么问题                             │
+│     core_claim — 核心论点                                       │
+│     method_summary — 方法概述                                   │
+│     target_tasks[] — 目标任务 (如 "Long Video QA")              │
+│     target_modalities[] — 模态 (如 "video")                    │
+│     training_paradigm — 训练范式 (如 "reinforcement learning")  │
+│     limitations[] — 局限性                                      │
+│   存入: agent_blackboard_items (item_type=paper_essence)        │
+│                                                                │
+│ Agent 2: ReferenceRoleAgent (10-30K tokens) ← 防递归爆炸核心    │
+│   读: 参考文献列表 + 每篇引用在正文中的出现上下文                  │
+│   对每篇引用标注:                                                │
+│     role — 角色分类:                                             │
+│       direct_baseline    "论文直接改进的方法"                     │
+│       method_source      "核心算法思想来源"                       │
+│       dataset_source     "实验用的数据集原论文"                    │
+│       comparison_baseline "实验表中的对比方法"                     │
+│       same_task_prior    "同任务前人工作"                         │
+│       background_citation "背景引用，不重要"                      │
+│     where_mentioned[] — 出现位置 [method, experiment_table, ...]│
+│     recommended_ingest_level — 递归策略:                         │
+│       "full" → 递归入库做深度分析                                │
+│       "shallow" → 递归入库做浅层分析                              │
+│       "metadata_only" → 只记录元数据                             │
+│       "ignore" → 跳过                                           │
+│   存入: agent_blackboard_items (item_type=reference_role_map)   │
+│                                                                │
+│ Agent 3: MethodDeltaAgent-lite (8-15K tokens)                   │
+│   读: method section + Agent 1 的 PaperEssence                  │
+│   提取:                                                        │
+│     proposed_method_name — 本文方法名                            │
+│     baseline_methods[] — 基线方法 [{name, role}]                │
+│     changed_slots[] — 修改了哪些组件                             │
+│       [{slot_name, change_type: modified/added/removed, is_novel}]│
+│     should_create_method_node — 是否应创建 Method 节点           │
+│   存入: agent_blackboard_items (item_type=method_delta)         │
+│                                                                │
+│ Agent 4: ScoreAgent (4-8K tokens)                               │
+│   读: Agent 1+2+3 的输出                                       │
+│   提取布尔信号 (供评分引擎使用):                                  │
+│     is_direct_baseline — 有直接改进的 baseline 吗？               │
+│     in_experiment_table — baseline 出现在实验表中吗？             │
+│     same_primary_task — 和当前领域同一个主任务？                   │
+│     has_changed_slots — 有明确的 slot 修改？                     │
+│     has_ablation — 有消融实验？                                  │
+│     method_novelty (0-1) — 方法新颖度                           │
+│     evidence_quality (0-1) — 证据质量                           │
+│   存入: agent_blackboard_items (item_type=score_signals)        │
+│                                                                │
+│ DeepIngestScore 计算 (确定性, 从 Agent 4 的信号算分):            │
+│   ≥88 → auto_full_paper     进入阶段 3                         │
+│   80-87 → full_review_needed 进入阶段 3 (需审核)                │
+│   68-79 → shallow_card       L2 可见节点，不深度分析              │
+│   <68 → stays L1             浅层卡片                           │
+│                                                                │
+│ 递归发现 (基于 Agent 2 的角色分类):                               │
+│   role=direct_baseline → 递归调用阶段 0-1                        │
+│   role=dataset_source → 递归调用阶段 0-1                         │
+│   role=background → 只记录 metadata                              │
+└───────────────────────────────────────────────────────────────┘
+    │ (≥80 分才继续)
+    ▼
+┌─ 阶段 3: 深度分析 (8-12 次 LLM 调用) ─────────────────────────┐
+│                                                                │
+│ Agent 5: MethodDeltaAgent-full (15-30K tokens)                  │
+│   提取:                                                        │
+│     完整 slot 分解 — 每个修改的组件、baseline 对照值、是否首创     │
+│     pipeline_modules[] — 管线模块拆解 [{name,input,output,is_new}]│
+│     combined_methods[] — 组合了哪些方法                          │
+│     should_create_lineage_edge — 是否创建演化边                   │
+│   存入: agent_blackboard_items (item_type=method_delta_full)    │
+│                                                                │
+│ Agent 6: ExperimentAgent (10-25K tokens)                        │
+│   提取:                                                        │
+│     main_results[] — 主实验表                                   │
+│       [{benchmark, metric, 本文分数, baseline 分数, 提升幅度}]    │
+│     ablations[] — 消融实验                                      │
+│       [{移除组件, 性能影响, 是否支持核心论点}]                      │
+│     costs — 训练成本/推理延迟/模型大小                            │
+│     fairness_assessment — 对比是否公平？baseline 是否最强？       │
+│   存入: agent_blackboard_items (item_type=experiment_matrix)    │
+│                                                                │
+│ Agent 7: FormulaFigureAgent (15-30K tokens, VLM)                │
+│   提取:                                                        │
+│     key_formulas[] — 核心公式                                    │
+│       [{LaTeX, 中文解释, 影响哪个 slot, 与 baseline 公式对比}]    │
+│     figure_roles[] — 图表角色分类                                │
+│       [{图编号, 语义角色: 动机图/架构图/结果图/失败案例, 描述}]      │
+│     formula_derivation_steps[] — 公式推导步骤                    │
+│   存入: agent_blackboard_items (item_type=formula_figure_analysis)│
+│                                                                │
+│ Agent 8: GraphCandidateAgent (10-20K tokens) ← 图谱构建核心      │
+│   读: Agent 1-7 的全部输出 + 已有图谱上下文                       │
+│   提取:                                                        │
+│     node_candidates[] — 应创建的知识图谱节点                      │
+│       [{类型: task/method/mechanism/dataset, 名称, 一句话介绍}]   │
+│     edge_candidates[] — 应创建的知识图谱边                       │
+│       [{源→目标, 关系类型, 修改的 slot, 一句话解释, 置信度}]       │
+│       关系类型区分:                                               │
+│         proposes_method ≠ uses_method                            │
+│         modifies_slot ≠ cites_as_related_work                   │
+│         evaluates_on ≠ mentions_dataset                         │
+│     lineage_candidates[] — 方法演化边                            │
+│       [{子方法→父方法, 关系: builds_on/extends/replaces}]         │
+│   存入: agent_blackboard_items (item_type=graph_candidates)     │
+│                                                                │
+│ 图谱评分 (确定性):                                               │
+│   对每个 node_candidate → NodePromotionScore                    │
+│     ≥75 分 → 触发 Agent 9                                       │
+│   对每个 edge_candidate → EdgeConfidenceScore                   │
+│     ≥70 分 → 触发 Agent 10                                      │
+│                                                                │
+│ Agent 9: NodeProfileAgent (8-15K tokens × N, N=合格节点数 2-5)   │
+│   为每个合格节点生成:                                              │
+│     one_liner — 一句话介绍                                       │
+│     short_intro_md — 2-3 段介绍 (用于 Obsidian 页面)             │
+│     detailed_md — 完整介绍                                       │
+│     structured_json — 结构化字段 (因节点类型不同而异):              │
+│       Task: 定义、输入输出、评价指标、常见数据集                     │
+│       Method: 核心思想、canonical paper、slots、变体              │
+│       Mechanism: 解决什么问题、适用方法、trade-off                 │
+│       Dataset: 用途、模态、指标、局限                              │
+│   存入: kb_node_profiles                                        │
+│                                                                │
+│ Agent 10: EdgeProfileAgent (6-12K tokens, 批量)                  │
+│   为每条合格边生成:                                                │
+│     one_liner — 上下文描述 (非通用介绍，是"为什么 A 和 B 相连")    │
+│       示例: "本文以 GRPO 为 RL baseline，                        │
+│              主要修改 reward function 与 temporal credit"         │
+│     relation_summary — 详细关系解释                               │
+│     source_context — 从源节点视角看这条边                          │
+│     target_context — 从目标节点视角看这条边                        │
+│   存入: kb_edge_profiles                                        │
+│                                                                │
+│ Agent 11: PaperReportAgent (30-80K tokens)                       │
+│   读: Agent 1-10 的全部已验证输出 (不重新读 PDF)                   │
+│   生成 10 个 section 的结构化报告 (中文, 每段 200-600 字):         │
+│     1. metadata — 会议/作者/团队/代码/数据集                      │
+│     2. core_claim — 核心论点 + 证据支撑                           │
+│     3. motivation — 问题动机 + Figure 1 解读                     │
+│     4. pipeline — 管线图解 + 模块拆解 + 与 baseline 差异           │
+│     5. formula — 核心公式 + 符号解释 + 推导步骤                    │
+│     6. experiment — 主表结论 + ablation 验证 + 成本分析            │
+│     7. related_work — 引用分类 + 值得递归阅读的论文                 │
+│     8. lineage — 方法演化链 + 上下游关系                           │
+│     9. limitations — 局限性 + 失败场景 + 假设前提                  │
+│     10. knowledge_position — 所属 Task/Method/Lineage 定位       │
+│   存入: paper_reports + paper_report_sections (10 行)            │
+│                                                                │
+│ Agent 12: QualityAuditAgent (8-15K tokens)                       │
+│   审核全部产出，生成:                                              │
+│     issues[] — 问题列表                                          │
+│       [{类型: 缺证据/低置信边/元数据冲突/重复节点, 严重度, 建议}]   │
+│     overall_quality_score — 总体质量分 0-100                     │
+│     review_items_needed[] — 需人工审核的项目                      │
+│   存入: review_queue_items                                      │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-每级吸收由对应 agent 完成，状态机确保幂等重试。
+### 15.2 DB 写入总结 (单篇论文全流程)
 
-### 15.2 4 层评分引擎
+| 表 | 写入阶段 | 行数 | 说明 |
+|---|---------|-----|------|
+| `paper_candidates` | 阶段 1 | 1 | 候选记录 |
+| `candidate_scores` | 阶段 1 | 1 | DiscoveryScore + breakdown |
+| `score_signals` | 阶段 1 | ~15 | 每个评分子信号一行，可追溯 |
+| `papers` | 阶段 2 promote | 1 | 正式论文记录 |
+| `agent_runs` | 阶段 2+3 | 12 | 每个 Agent 一行，含 token/成本/耗时 |
+| `agent_blackboard_items` | 阶段 2+3 | 12 | 每个 Agent 的结构化输出 |
+| `kb_node_profiles` | 阶段 3 | 2-5 | 合格节点的介绍页面 |
+| `kb_edge_profiles` | 阶段 3 | 3-8 | 合格边的上下文描述 |
+| `paper_reports` | 阶段 3 | 1 | 报告容器 |
+| `paper_report_sections` | 阶段 3 | 10 | 10 个 section |
+| `review_queue_items` | 阶段 3 | 0-5 | 质量问题需审核 |
 
-| 评分 | 计算时机 | 因素 | 用途 |
-|------|---------|------|------|
-| **DiscoveryScore** | 候选入队时 | 来源可信度 + 引用信号 + 时效性 | 决定是否值得 shallow 分析 |
-| **DeepIngestScore** | shallow 完成后 | ShallowPaper 输出 + 方法新颖度 + 领域相关度 | 决定是否投入 deep agent |
-| **GraphPromotionScore** | deep 完成后 | 6 deep agent 输出质量 + 证据强度 + 图谱互补性 | 决定是否晋升到 graph |
-| **AnchorScore** | 入图后 | 被引用次数 + 下游方法数 + profile 丰富度 | 锚点论文识别 |
+**全部在后端完成。Claude Code 只通过 MCP (`rf_run_v6_pipeline`) 触发，不参与执行。**
 
-### 15.3 12 Agent Prompt (agent_runner.py)
+### 15.3 知识图谱节点 ← Agent 对应
 
-所有 prompt 定义在 `agent_runner.py` 的 `AGENT_PROMPTS` dict 中:
+| 节点类型 | 创建来源 | Profile 来源 | 存储位置 |
+|---------|---------|-------------|---------|
+| **T__Task** (任务) | ShallowPaper (TaskFacet) → GraphCandidate | NodeProfile | taxonomy_nodes + kb_node_profiles |
+| **M__Method** (方法) | MethodDelta → GraphCandidate | NodeProfile | method_nodes + kb_node_profiles |
+| **C__Mechanism** (机制) | ShallowPaper (MechanismFacet) → GraphCandidate | NodeProfile | taxonomy_nodes(dim=mechanism) + kb_node_profiles |
+| **P__Paper** (论文) | promote_candidate | PaperReport (10 sections) | papers + paper_reports |
+| **D__Dataset** (数据集) | Experiment → GraphCandidate | NodeProfile | taxonomy_nodes(dim=dataset) + kb_node_profiles |
+| **L__Lineage** (演化链) | GraphCandidate + 确定性检测 | — | graph_node_candidates + delta_card_lineage |
+| **Lab__Team** (团队) | GROBID 机构提取 (确定性) | NodeProfile | taxonomy_nodes(dim=lab) + kb_node_profiles |
+| **边** (节点间关系) | GraphCandidate (edge_candidates) | EdgeProfile | graph_edge_candidates + kb_edge_profiles |
 
-| Agent | Key | 阶段 | 输出 Schema | Token 预算 |
-|-------|-----|------|------------|-----------|
-| ShallowPaperAgent | `shallow_paper` | shallow | PaperEssence + TaskFacet + MechanismFacet | 6-12K |
-| ReferenceRoleAgent | `reference_role` | shallow | ReferenceRoleMap (12 种角色) | 10-30K |
-| MethodDeltaAgent-lite | `method_delta_lite` | shallow | 初步 MethodDelta | 8-15K |
-| ScoreAgent | `score` | shallow | score_signals (结构化信号) | 4-8K |
-| MethodDeltaAgent-full | `method_delta_full` | deep | 完整 MethodDelta + pipeline_modules | 15-30K |
-| ExperimentAgent | `experiment` | deep | ExperimentMatrix + ablation + costs | 10-25K |
-| FormulaFigureAgent | `formula_figure` | deep | key_formulas + figure_roles + derivation | 15-30K |
-| GraphCandidateAgent | `graph_candidate` | deep | node_candidates + edge_candidates + lineage | 10-20K |
-| NodeProfileAgent | `node_profile` | profile | one_liner + short_intro + detailed | 8-15K |
-| EdgeProfileAgent | `edge_profile` | profile | contextual one_liner + summary | 6-12K |
-| PaperReportAgent | `paper_report` | report | 10 section 结构化报告 | 30-80K |
-| QualityAuditAgent | `quality_audit` | audit | issues + quality_score + review_items | 8-15K |
+### 15.4 评分体系详解
 
-Context Pack Builder 为每个 agent 组装不同上下文 (Global→Domain→Paper→Run 4 层)。
+#### DiscoveryScore (元数据阶段, 0-100, 确定性)
 
-### 15.4 kb_node_profiles + kb_edge_profiles
+```
+DiscoveryScore =
+    0.25 × 领域匹配 + 0.20 × 来源可信度 + 0.20 × 图谱距离
+  + 0.10 × 影响力 + 0.10 × 开源资产 + 0.10 × 新颖性
+  + 0.05 × 时效性 - 惩罚
+```
 
-知识图谱节点和边不再只是 ID + label，而是拥有结构化 profile：
+**冷启动特殊**: 图谱为空时领域匹配权重提升到 0.35，图谱距离降到 0.05。
 
-- **kb_node_profiles**: 方法节点的能力矩阵、适用场景、局限性、代表论文
-- **kb_edge_profiles**: 边的变更描述、证据支持、置信度、影响范围
+**来源可信度查表** (发现论文的来源不同，可信度不同):
 
-Profile 由 NodeProfile / EdgeProfile agent 生成，随新论文增量更新。
+| 来源 | 分数 | 含义 |
+|------|------|------|
+| 用户手动导入 | 100 | 明确指定 |
+| method 段明确引用 | 95 | 正文方法部分引用 |
+| 实验表 baseline | 90 | 出现在实验对比表 |
+| dataset/benchmark 原论文 | 90 | 数据集来源 |
+| 多个 anchor 共同引用 | 85 | 多篇核心论文都引用 |
+| OpenReview accepted | 80 | 会议收录 |
+| 高质量 awesome repo | 70 | GitHub 精选列表 |
+| S2 引用论文 | 60 | 被目标论文引用 |
+| S2 推荐 | 45 | 语义相似推荐 |
+| 关键词搜索 | 30 | 模糊搜索命中 |
 
-### 15.5 冷启动工作流 (cold_start_service.py)
+**场景枚举 (验证区分度)**:
+
+| 场景 | 总分 | 决策 |
+|------|------|------|
+| 用户手动 seed | 88.8 | 立即分析 |
+| 直接 baseline 引用 | 77.0 | 立即分析 |
+| 实验表 baseline (+boost) | 78.3 | 立即分析 |
+| dataset 原论文 | 73.3 | 候选池 |
+| awesome repo 论文 | 64.0 | 候选池 |
+| S2 推荐 | 46.3 | 仅 metadata |
+| 高引用但偏离领域 | 43.5 | 仅 metadata |
+| 普通搜索命中 | 27.5 | 归档 |
+| 背景引用 | 25.3 | 归档 |
+
+#### DeepIngestScore (浅层分析后, 0-100, 确定性 + LLM 信号)
+
+```
+DeepIngestScore =
+    0.22 × 领域匹配 + 0.28 × 关系角色 + 0.18 × 可复用知识
+  + 0.12 × 证据质量 + 0.10 × 实验价值 + 0.06 × 开源资产
+  + 0.04 × 新颖性 - 惩罚 + 加分
+```
+
+**关系角色** (最关键子分数，权重 0.28):
+
+| 角色 | 分数 | 含义 |
+|------|------|------|
+| 直接 baseline | 100 | 本文明确改进的方法 |
+| 方法来源/公式来源 | 95 | 核心算法思想来源 |
+| 实验对比 baseline | 90 | 实验表中的主要对比 |
+| dataset/benchmark 来源 | 90 | 评测用的数据集原论文 |
+| 方法迁移到新任务 | 85 | 把已有方法用到新领域 |
+| 可复用机制提出者 | 80 | 提出通用机制/模块 |
+| survey/taxonomy | 75 | 综述论文 |
+| 同任务前人工作 | 55 | 同领域但不是直接依赖 |
+| related work 引用 | 50 | 只在相关工作中提到 |
+| 背景引用 | 25 | 不重要的背景 |
+
+**Hard Caps (防止分数膨胀)**:
+- 领域匹配 < 50 → 总分封顶 60 (除非手动导入)
+- 重复度 > 0.7 → 总分封顶 70
+- 无 PDF → 不能自动生成完整报告
+- 无 method 证据 → modifies_slot/extends 边不能 canonical
+
+**Boosts (奖励重要组合)**:
+- 直接 baseline + 实验表 + 同任务 → +10
+- baseline + 改了 slot + 有 ablation → +12
+- 低引用 + 有代码 + 强 ablation + 填补空白 → +8
+- dataset 被多篇论文使用 → +5
+
+**场景枚举**:
+
+| 场景 | 总分 | 决策 |
+|------|------|------|
+| 直接 baseline + boosts | 100 | 自动深度分析 |
+| 结构性下游改进 + boost | 94.1 | 自动深度分析 |
+| dataset 原论文 (多人用) | 84.7 | 深度分析 + 审核 |
+| 低引用高质量新论文 | 79.7 | 浅层卡片 |
+| 同任务增量改进 | 58.0 | 候选卡片 |
+| related work 引用 | 48.8 | 不进入图谱 |
+| 背景引用 (cap) | 27.6 | 不进入图谱 |
+
+### 15.5 冷启动流程 (cold_start_service.py)
 
 ```
 POST /candidates/domains/cold-start
 {
     "name": "video_rl",
-    "scope": { "tasks": [...], "seed_methods": [...], "modalities": [...], ... }
+    "display_name_zh": "视频强化学习",
+    "scope": {
+        "tasks": ["video QA", "long video understanding"],
+        "seed_methods": ["GRPO", "DPO"],
+        "modalities": ["video"],
+        "seed_datasets": ["VideoMME"]
+    }
 }
-  → Save DomainSpec + skeleton taxonomy/method nodes
-  → Query expansion (tasks × methods × modalities)
-  → arXiv API harvest → paper_candidates
-  → S2 API harvest → paper_candidates
-  → Batch DiscoveryScore (deterministic)
-  → Auto-promote top K (budget_deep_ingest)
-  → Deep ingest anchors (worker 异步)
+
+Step 1: 建骨架 (确定性, 0 LLM)
+  写入 domain_specs: 1 行
+  写入 taxonomy_nodes: task×2 + dataset×1 = 3 行
+  写入 method_nodes: 2 行 (GRPO, DPO, maturity=seed)
+
+Step 2: 关键词扩展 (确定性)
+  tasks × methods × modalities → 7 个搜索词
+  示例: "video QA GRPO video", "long video understanding DPO video"
+
+Step 3: 广泛检索 (确定性, 0 LLM, ~14 HTTP)
+  arXiv API: 7 查询 × ~20 结果 = ~140 候选
+  S2 API: 7 查询 × ~20 结果 = ~140 候选
+  去重后: ~200 候选 → paper_candidates
+
+Step 4: 批量评分 (确定性, 冷启动权重)
+  ~200 候选 → DiscoveryScore (DomainMatch 权重 0.35)
+  写入: ~200 行 candidate_scores
+
+Step 5: 锚点选择
+  按分数排序 → 取 top K (K=budget_deep_ingest, 默认 50)
+  promote 到 papers 表
+
+Step 6-8: Worker 异步执行
+  anchor 论文排队 → shallow_ingest → deep_ingest
+
+冷启动总成本 (到 Step 5): ~14 HTTP + 0 LLM = $0
 ```
 
-### 15.6 增量同步 (incremental_sync_service.py, 7 个函数)
+### 15.6 增量更新
 
-| 函数 | 频率 | 功能 |
-|------|------|------|
-| `sync_arxiv_daily()` | 每日 10:00 | 按 domain scope 搜索 arXiv 近 2 天新论文 → 候选 |
-| `refresh_citation_counts()` | 每周三 03:00 | S2 API 刷新 L3+ 论文引用数，检测显著增长 |
-| `detect_awesome_repo_changes()` | 每周四 04:00 | GitHub README diff → 新论文候选 |
-| `detect_lineage_chains()` | 每周五 05:00 | 从 delta_card_lineage 检测 ≥3 节点演化链 |
-| `recompute_node_scores()` | 每周六 04:00 | 重算 GraphNodeCandidate 分数，≥85 自动晋升 |
-| `detect_duplicate_nodes()` | 每月 1 日 02:00 | 名称归一化去重 → review_queue |
-| `cleanup_stale_candidates()` | 每月 15 日 02:00 | 归档 90 天未处理的候选 |
+**第二批论文与第一批的增量关系**: 第一批建立了图谱骨架后，第二批论文的 GraphProximity 不再为空。与已有 anchor 的连接度越高，DiscoveryScore 越高。ReferenceRoleAgent 能对比已有方法节点，关系判断更准确。
 
-### 15.7 新 API 端点
+| Worker 任务 | 频率 | 用 LLM? | 功能 |
+|------------|------|---------|------|
+| task_score_candidates_v6 | 每 2h | 否 | 给未评分候选算 DiscoveryScore |
+| task_auto_promote_v6 | 每日 09:00 | 否 | score≥75 自动 promote |
+| task_process_reference_roles_v6 | 每 4h | 否 | 处理 ReferenceRoleMap → 递归发现 |
+| task_refresh_stale_profiles_v6 | 每日 05:00 | **是** | 刷新 staleness≥3 的节点 Profile |
+| task_arxiv_daily_sync_v6 | 每日 10:00 | 否 | 按 scope 搜 arXiv 新论文 → 候选 |
+| task_citation_refresh_v6 | 每周三 | 否 | S2 API 刷新引用数 |
+| task_awesome_repo_diff_v6 | 每周四 | 否 | GitHub README diff → 新候选 |
+| task_lineage_detection_v6 | 每周五 | 否 | ≥3 节点演化链检测 |
+| task_recompute_node_scores_v6 | 每周六 | 否 | 重算节点分数，≥85 自动晋升 |
+| task_detect_duplicates_v6 | 每月 1 日 | 否 | 名称去重 → review_queue |
+| task_cleanup_stale_candidates_v6 | 每月 15 日 | 否 | 归档 90 天未处理候选 |
 
-| Router | 前缀 | 关键端点 |
-|--------|------|---------|
-| candidates | /candidates | discover/{paper_id}, list, {id}/score, score-batch, {id}/promote, {id}/reject, auto-promote, stats, domains/cold-start |
-| pipeline (v6) | /pipeline/v6 | run, shallow/{candidate_id}, deep/{paper_id} |
-| pipeline (export) | /pipeline/export | obsidian-vault-v6 |
+### 15.7 API 调用成本
+
+| 吸收级别 | 外部 HTTP | LLM 调用 | 估算成本/篇 |
+|---------|---------|---------|-----------|
+| L0 仅 metadata | 5-10 | **0** | $0 |
+| L1 浅层卡片 | 5-10 + GROBID | **4** | $0.22 |
+| L2 图谱可见 | 同 L1 | **4** | $0.22 |
+| L3 完整论文 | 同 L1 | **13-18** | $1.00-1.34 |
+| L4 锚点 | 同 L1 | **13-18** + 人工审核 | $1.00-1.34 |
+
+冷启动 500 候选 / 50 深度的典型成本: ~1300 LLM 调用 ≈ **$90**
+
+### 15.8 新增 API 端点
+
+| Router | 前缀 | 端点 | 说明 |
+|--------|------|------|------|
+| candidates | /candidates | `POST discover/{paper_id}` | 触发邻域检索 → 候选 |
+| | | `GET /` | 候选列表 (筛选/排序) |
+| | | `POST {id}/score` | 触发评分 |
+| | | `POST score-batch` | 批量评分 |
+| | | `POST {id}/promote` | 提升为 Paper |
+| | | `POST {id}/reject` | 拒绝 |
+| | | `POST auto-promote` | 自动提升高分候选 |
+| | | `GET stats` | 统计 |
+| | | `POST domains/cold-start` | 领域冷启动 |
+| pipeline | /pipeline/v6 | `POST run` | 完整 V6 管线 |
+| | | `POST shallow/{id}` | 浅层分析 |
+| | | `POST deep/{id}` | 深度分析 |
+| pipeline | /pipeline/export | `POST obsidian-vault-v6` | V6 vault 导出 (含 profile 注入) |
+
+### 15.9 新增 MCP 工具 (12 个)
+
+| 工具 | 说明 |
+|------|------|
+| `rf_domain_cold_start` | 基于 domain manifest 冷启动 — 建骨架 + 检索 + 评分 + 锚点选择 |
+| `rf_candidate_list` | 查看候选队列 — 按分数/状态/领域筛选 |
+| `rf_candidate_promote` | 提升候选到指定吸收级别 |
+| `rf_candidate_reject` | 拒绝候选 + 记录原因 |
+| `rf_paper_build_neighborhood` | S2 邻域检索 → 创建候选 (不直接入库) |
+| `rf_node_profile_get` | 获取节点 Profile (Task/Method/Mechanism/Dataset/Lab) |
+| `rf_node_profile_refresh` | 强制刷新节点 Profile |
+| `rf_edge_profile_get` | 获取边的上下文描述 ("为什么 A 和 B 相连") |
+| `rf_graph_get_subgraph` | 获取子图 — 节点 + 边 + 所有 profiles |
+| `rf_review_queue` | 查看审核队列 |
+| `rf_score_explain` | 解释候选评分明细 — 所有子分数 + 信号 + caps + boosts |
+| `rf_run_v6_pipeline` | 完整管线: import → score → shallow → deep → profile → report |
