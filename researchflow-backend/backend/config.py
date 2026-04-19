@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # MCP Auth
     mcp_auth_token: str = ""  # Set in .env for production
 
+    # OpenReview
+    openreview_username: str = ""
+    openreview_password: str = ""
+
     # LLM
     anthropic_api_key: str = ""
     openai_api_key: str = ""

@@ -53,32 +53,47 @@ class VenueDecision:
 class OpenReviewAdapter:
     """Adapter for OpenReview API.
 
-    Uses the REST API directly (no openreview-py dependency required,
-    but compatible if installed).
+    Uses openreview-py SDK with cached client to avoid repeated logins.
+    Falls back to REST API if SDK not available.
     """
 
     BASE_URL = "https://api2.openreview.net"
+    _client = None  # Cached SDK client (singleton)
 
     def __init__(self, username: str = "", password: str = ""):
-        self.username = username
-        self.password = password
+        from backend.config import settings
+        self.username = username or settings.openreview_username
+        self.password = password or settings.openreview_password
         self._token: str | None = None
 
-    async def _get_token(self) -> str | None:
-        """Authenticate and get API token (optional, needed for some queries)."""
-        if self._token:
-            return self._token
+    def _get_sdk_client(self):
+        """Get cached OpenReview SDK client."""
+        if OpenReviewAdapter._client is not None:
+            return OpenReviewAdapter._client
         if not self.username or not self.password:
             return None
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.BASE_URL}/login",
-                json={"id": self.username, "password": self.password},
+        try:
+            import openreview
+            OpenReviewAdapter._client = openreview.api.OpenReviewClient(
+                baseurl=self.BASE_URL,
+                username=self.username,
+                password=self.password,
             )
-            if resp.status_code == 200:
-                self._token = resp.json().get("token")
-                return self._token
+            self._token = OpenReviewAdapter._client.token
+            logger.info("OpenReview SDK client initialized")
+            return OpenReviewAdapter._client
+        except Exception as e:
+            logger.warning(f"OpenReview SDK init failed: {e}")
+            return None
+
+    async def _get_token(self) -> str | None:
+        """Get auth token (from SDK client or direct login)."""
+        if self._token:
+            return self._token
+        sdk = self._get_sdk_client()
+        if sdk:
+            self._token = sdk.token
+            return self._token
         return None
 
     async def _get_headers(self) -> dict:
