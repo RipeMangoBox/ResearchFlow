@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services import candidate_service
+from backend.services.candidate_service import _normalize_title
 from backend.services.context_pack_builder import ContextPackBuilder
 from backend.services.agent_runner import AgentRunner
 from backend.services.scoring_engine import ScoringEngine
@@ -244,26 +245,37 @@ class IngestWorkflow:
 
         await self.session.flush()
 
-        # Trigger recursive discovery from reference roles
-        references_discovered = 0
+        # ── Step A: 处理已知论文引用 (对比流程，不重新分析) ──
         ref_map = agent_results.get("reference_role_map", {})
         classifications = ref_map.get("classifications", [])
+        known_result = await self._handle_known_references(
+            paper_id, classifications,
+            domain_id=candidate.discovered_from_domain_id,
+        )
+        known_titles = known_result.get("known_titles_set", set())
+
+        # ── Step B: 只对真正未知的引用做递归发现 ──
+        references_discovered = 0
         for ref_cls in classifications:
+            ref_title = ref_cls.get("ref_title")
+            if not ref_title:
+                continue
+            # 跳过已在 KB 中的论文（已在 Step A 中建了关系边）
+            if _normalize_title(ref_title) in known_titles:
+                continue
             ingest_level = ref_cls.get("recommended_ingest_level", "skip")
             if ingest_level in ("deep", "abstract"):
-                ref_title = ref_cls.get("ref_title")
-                if ref_title:
-                    try:
-                        await self.import_and_score(
-                            {"title": ref_title},
-                            discovery_source="s2_reference",
-                            discovery_reason=f"ref_role={ref_cls.get('role', 'unknown')}",
-                            relation_hint=ref_cls.get("role"),
-                            discovered_from_paper_id=paper_id,
-                        )
-                        references_discovered += 1
-                    except Exception as e:
-                        logger.debug("Ref import failed for %s: %s", ref_title, e)
+                try:
+                    await self.import_and_score(
+                        {"title": ref_title},
+                        discovery_source="s2_reference",
+                        discovery_reason=f"ref_role={ref_cls.get('role', 'unknown')}",
+                        relation_hint=ref_cls.get("role"),
+                        discovered_from_paper_id=paper_id,
+                    )
+                    references_discovered += 1
+                except Exception as e:
+                    logger.debug("Ref import failed for %s: %s", ref_title, e)
 
         return {
             "paper_id": str(paper_id),
@@ -271,6 +283,8 @@ class IngestWorkflow:
             "decision": decision,
             "agents_run": agents_run,
             "references_discovered": references_discovered,
+            "known_refs_linked": known_result.get("known_refs_linked", 0),
+            "edges_created": known_result.get("edges_created", 0),
         }
 
     # ── Phase 3: Deep Ingest ──────────────────────────────────────────
@@ -733,6 +747,123 @@ class IngestWorkflow:
             "shallow_imported": shallow_imported,
             "metadata_imported": metadata_imported,
             "ignored": ignored,
+        }
+
+    # ── Known Reference Handling (对比流程) ────────────────────────
+
+    _ROLE_TO_RELATION = {
+        "direct_baseline": "builds_on",
+        "method_source": "extends",
+        "formula_source": "extends",
+        "comparison_baseline": "compares_against",
+        "dataset_source": "evaluates_on",
+        "benchmark_source": "evaluates_on",
+        "same_task_prior": "cites",
+        "survey_or_taxonomy": "cites",
+    }
+
+    async def _handle_known_references(
+        self,
+        paper_id: UUID,
+        classifications: list[dict],
+        *,
+        domain_id: UUID | None = None,
+    ) -> dict:
+        """处理引用了 KB 中已有论文的情况。
+
+        对比流程：不重新分析已知论文，而是：
+        1. 创建 当前论文→已知论文 的关系边 (GraphEdgeCandidate)
+        2. 更新已知论文的 downstream 计数
+        3. 触发已知论文 profile 的 staleness 递增
+        """
+        from backend.services import candidate_service
+        from backend.models.kb import GraphEdgeCandidate
+
+        known_refs_linked = 0
+        edges_created = 0
+        known_titles_set: set[str] = set()
+
+        important_roles = {
+            "direct_baseline", "method_source", "formula_source",
+            "comparison_baseline", "dataset_source", "benchmark_source",
+            "same_task_prior",
+        }
+
+        for ref_cls in classifications:
+            role = ref_cls.get("role", "")
+            if role not in important_roles:
+                continue
+
+            ref_title = ref_cls.get("ref_title")
+            if not ref_title:
+                continue
+
+            norm = _normalize_title(ref_title)
+
+            try:
+                # 查找 papers 表中的已有论文
+                kb_paper = await candidate_service.find_existing_paper(
+                    self.session,
+                    normalized_title=norm,
+                )
+                if not kb_paper:
+                    continue
+
+                # ── 找到已知论文，执行对比流程 ──
+                known_titles_set.add(norm)
+                known_refs_linked += 1
+
+                # 1. 创建关系边候选
+                relation = self._ROLE_TO_RELATION.get(role, "cites")
+                edge = GraphEdgeCandidate(
+                    paper_id=paper_id,
+                    source_entity_type="paper",
+                    source_entity_id=paper_id,
+                    target_entity_type="paper",
+                    target_entity_id=kb_paper.id,
+                    relation_type=relation,
+                    one_liner=ref_cls.get("reason", ""),
+                    confidence_score=ref_cls.get("confidence", 0.7),
+                    evidence_refs={
+                        "source_paper_id": str(paper_id),
+                        "role": role,
+                        "where_mentioned": ref_cls.get("where_mentioned", []),
+                    },
+                    status="candidate",
+                )
+                self.session.add(edge)
+                edges_created += 1
+
+                # 2. 更新下游计数
+                if kb_paper.cited_by_count is not None:
+                    kb_paper.cited_by_count = (kb_paper.cited_by_count or 0) + 1
+                else:
+                    kb_paper.cited_by_count = 1
+
+                # 3. 触发 profile staleness 递增
+                try:
+                    from backend.services import node_profile_service
+                    await node_profile_service.increment_staleness(
+                        self.session, "paper", kb_paper.id
+                    )
+                except Exception:
+                    pass  # profile 表可能未初始化
+
+                logger.info(
+                    "已知论文重遇: %s → %s (%s), 创建 %s 边",
+                    ref_title[:50], kb_paper.title[:50], role, relation,
+                )
+
+            except Exception as e:
+                logger.debug("Known ref check failed for %s: %s", ref_title, e)
+
+        if edges_created:
+            await self.session.flush()
+
+        return {
+            "known_refs_linked": known_refs_linked,
+            "edges_created": edges_created,
+            "known_titles_set": known_titles_set,
         }
 
     # ── Full V6 Pipeline ─────────────────────────────────────────────

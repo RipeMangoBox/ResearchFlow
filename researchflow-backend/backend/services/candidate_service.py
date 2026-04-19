@@ -63,6 +63,17 @@ def _extract_discovery_signals(
 
     # Discovery provenance — map to scoring engine keys
     signals["source_type"] = candidate.discovery_source
+    # Intent-aware source type refinement
+    # If discovered via S2 reference with intent info in discovery_reason,
+    # map to more specific source type for better scoring differentiation
+    if signals["source_type"] == "s2_reference" and candidate.discovery_reason:
+        reason_lower = candidate.discovery_reason.lower()
+        if "methodology" in reason_lower or "method" in reason_lower:
+            signals["source_type"] = "s2_reference_methodology"
+        elif "result" in reason_lower or "comparison" in reason_lower:
+            signals["source_type"] = "s2_reference_result"
+        elif "background" in reason_lower:
+            signals["source_type"] = "s2_reference_background"
     signals["discovery_source"] = candidate.discovery_source
     if candidate.discovery_reason:
         signals["discovery_reason"] = candidate.discovery_reason
@@ -151,6 +162,48 @@ async def find_duplicate(
         result = await session.execute(
             select(PaperCandidate)
             .where(PaperCandidate.normalized_title == normalized_title)
+            .limit(1)
+        )
+        found = result.scalar_one_or_none()
+        if found:
+            return found
+
+    return None
+
+
+async def find_existing_paper(
+    session: AsyncSession,
+    *,
+    arxiv_id: str | None = None,
+    doi: str | None = None,
+    normalized_title: str | None = None,
+) -> Paper | None:
+    """检查 papers 表是否已有此论文。优先 arxiv_id → DOI → 标题。
+
+    用于"已知论文重遇"场景：当新论文引用了 KB 中已有的论文，
+    应该创建关系边而非重新入库。
+    """
+    if arxiv_id:
+        result = await session.execute(
+            select(Paper).where(Paper.arxiv_id == arxiv_id).limit(1)
+        )
+        found = result.scalar_one_or_none()
+        if found:
+            return found
+
+    if doi:
+        result = await session.execute(
+            select(Paper).where(Paper.doi == doi).limit(1)
+        )
+        found = result.scalar_one_or_none()
+        if found:
+            return found
+
+    if normalized_title:
+        from sqlalchemy import func as sa_func
+        result = await session.execute(
+            select(Paper)
+            .where(sa_func.lower(Paper.title_sanitized) == normalized_title.lower())
             .limit(1)
         )
         found = result.scalar_one_or_none()
@@ -547,6 +600,86 @@ async def auto_promote_batch(
         paper = await promote_candidate(session, c.id)
         papers.append(paper)
     return papers
+
+
+# ---------------------------------------------------------------------------
+# Search & reactivation
+# ---------------------------------------------------------------------------
+
+async def search_candidates(
+    session: AsyncSession,
+    query: str,
+    *,
+    domain_id: UUID | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[PaperCandidate]:
+    """搜索候选论文（包括 L0 metadata-only 的论文）。
+
+    用 ILIKE 在 title 和 abstract 上做关键词匹配。
+    默认排除 archived 和 rejected 状态的候选。
+    """
+    from sqlalchemy import or_
+
+    conditions = []
+
+    # 关键词匹配 title 或 abstract
+    keyword_filter = or_(
+        PaperCandidate.title.ilike(f"%{query}%"),
+        PaperCandidate.abstract.ilike(f"%{query}%"),
+    )
+    conditions.append(keyword_filter)
+
+    if domain_id is not None:
+        conditions.append(PaperCandidate.discovered_from_domain_id == domain_id)
+    if status is not None:
+        conditions.append(PaperCandidate.status == status)
+    else:
+        conditions.append(PaperCandidate.status.notin_(["archived", "rejected"]))
+
+    stmt = (
+        select(PaperCandidate)
+        .where(and_(*conditions))
+        .order_by(desc(PaperCandidate.created_at))
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def check_reactivation(
+    session: AsyncSession,
+    candidate_id: UUID,
+    *,
+    citation_threshold: int = 3,
+) -> bool:
+    """检查候选论文是否应被重新激活。
+
+    如果一个 L0 候选被 KB 中 ≥3 篇论文引用（标题出现在 papers 的 abstract 中），
+    将其 status 重置为 discovered，触发重新评分。
+    """
+    candidate = await session.get(PaperCandidate, candidate_id)
+    if not candidate or candidate.status == "ingested":
+        return False
+
+    # 用标题的前 60 字做模糊匹配
+    title_fragment = candidate.title[:60] if candidate.title else ""
+    if not title_fragment:
+        return False
+
+    from sqlalchemy import func as sa_func
+    count_stmt = (
+        select(sa_func.count(Paper.id))
+        .where(Paper.abstract.ilike(f"%{title_fragment}%"))
+    )
+    count = (await session.execute(count_stmt)).scalar() or 0
+
+    if count >= citation_threshold:
+        # 重置状态，让下一轮 score_batch 重新评分
+        candidate.status = "discovered"
+        await session.flush()
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

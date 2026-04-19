@@ -201,6 +201,34 @@ async def get_stats(
     return StatsResponse(**stats)
 
 
+@router.get("/search")
+async def search_candidates_endpoint(
+    session: AsyncSession = Depends(get_session),
+    q: str = Query(..., min_length=1, description="Search query keyword"),
+    domain_id: UUID | None = None,
+    status: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """搜索候选论文（包括未入库的 L0 论文）。"""
+    from backend.services import candidate_service
+    candidates = await candidate_service.search_candidates(
+        session, q, domain_id=domain_id, status=status, limit=limit,
+    )
+    return [
+        {
+            "id": str(c.id),
+            "title": c.title,
+            "venue": c.venue,
+            "year": c.year,
+            "status": c.status,
+            "absorption_level": c.absorption_level,
+            "discovery_source": c.discovery_source,
+            "citation_count": c.citation_count,
+        }
+        for c in candidates
+    ]
+
+
 @router.get("/{candidate_id}", response_model=CandidateDetail)
 async def get_candidate(session: Session, candidate_id: UUID):
     """Get full candidate detail including metadata."""

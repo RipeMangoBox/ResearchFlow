@@ -109,7 +109,8 @@ async def cold_start_domain(session: AsyncSession, manifest: dict) -> dict:
     # ── d. Wide metadata harvest ──────────────────────────────────
     arxiv_count = await harvest_from_arxiv(session, queries, domain_id)
     s2_count = await harvest_from_s2(session, queries, domain_id)
-    total_candidates = arxiv_count + s2_count
+    dblp_count = await harvest_from_dblp(session, queries, domain_id)
+    total_candidates = arxiv_count + s2_count + dblp_count
 
     await session.flush()
 
@@ -204,10 +205,21 @@ async def harvest_from_arxiv(
     async with httpx.AsyncClient(timeout=30) as client:
         for query in queries:
             try:
+                # Build structured arXiv query
+                words = query.split()
+                if len(words) >= 3:
+                    # First word → title, rest → abstract
+                    search_query = f"ti:{quote(words[0])} AND abs:{quote(' '.join(words[1:]))}"
+                elif len(words) == 2:
+                    search_query = f"ti:{quote(words[0])} AND abs:{quote(words[1])}"
+                else:
+                    search_query = f"ti:{quote(query)} OR abs:{quote(query)}"
+
                 resp = await client.get(
                     ARXIV_API,
                     params={
-                        "search_query": f"all:{quote(query)}",
+                        "search_query": search_query,
+                        "sortBy": "relevance",
                         "max_results": str(max_per_query),
                     },
                 )
@@ -347,5 +359,74 @@ async def harvest_from_s2(
             except Exception:
                 logger.warning("S2 API call failed for query '%s'", query, exc_info=True)
                 continue
+
+    return total_created
+
+
+# ---------------------------------------------------------------------------
+# 5. DBLP harvest
+# ---------------------------------------------------------------------------
+
+async def harvest_from_dblp(
+    session: AsyncSession,
+    queries: list[str],
+    domain_id: UUID,
+    *,
+    max_per_query: int = 20,
+) -> int:
+    """Search DBLP for papers matching queries and create candidates."""
+    total_created = 0
+    dblp_api = "https://dblp.org/search/publ/api"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for query in queries[:5]:  # Limit to avoid rate limits
+            try:
+                resp = await client.get(
+                    dblp_api,
+                    params={"q": query, "format": "json", "h": str(max_per_query)},
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                hits = data.get("result", {}).get("hits", {}).get("hit", [])
+
+                for hit in hits:
+                    info = hit.get("info", {})
+                    title = info.get("title", "").strip()
+                    if not title:
+                        continue
+                    venue = info.get("venue", "")
+                    year_str = info.get("year", "")
+                    year = int(year_str) if year_str.isdigit() else None
+                    doi = info.get("doi", "")
+                    url = info.get("ee", "") or info.get("url", "")
+
+                    authors = []
+                    author_info = info.get("authors", {}).get("author", [])
+                    if isinstance(author_info, dict):
+                        author_info = [author_info]
+                    for a in author_info:
+                        name = a.get("text", "") if isinstance(a, dict) else str(a)
+                        if name:
+                            authors.append({"name": name})
+
+                    try:
+                        await candidate_service.create_candidate(
+                            session,
+                            title=title,
+                            discovery_source="dblp_proceedings",
+                            discovery_reason=f"dblp_search: {query}",
+                            doi=doi if doi else None,
+                            paper_link=url if url else None,
+                            venue=venue if venue else None,
+                            year=year,
+                            authors_json=authors if authors else None,
+                            discovered_from_domain_id=domain_id,
+                        )
+                        total_created += 1
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning("DBLP search failed for '%s': %s", query, e)
 
     return total_created

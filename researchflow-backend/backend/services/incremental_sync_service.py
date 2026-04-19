@@ -83,8 +83,17 @@ async def sync_arxiv_daily(session: AsyncSession, domain_id: UUID) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
         for query in queries:
             try:
+                # Build structured arXiv query
+                words = query.split()
+                if len(words) >= 3:
+                    search_query = f"ti:{quote(words[0])} AND abs:{quote(' '.join(words[1:]))}"
+                elif len(words) == 2:
+                    search_query = f"ti:{quote(words[0])} AND abs:{quote(words[1])}"
+                else:
+                    search_query = f"ti:{quote(query)} OR abs:{quote(query)}"
+
                 resp = await client.get(
-                    f"{ARXIV_API}?search_query=all:{quote(query)}"
+                    f"{ARXIV_API}?search_query={search_query}"
                     f"&sortBy=submittedDate&sortOrder=descending&max_results=20",
                 )
                 if resp.status_code != 200:
@@ -310,20 +319,27 @@ async def detect_awesome_repo_changes(session: AsyncSession, domain_id: UUID) ->
 
                 previous_content = last_checkpoint.checkpoint_value if last_checkpoint else ""
 
-                # Extract paper URLs from current and previous
-                current_urls = _extract_paper_urls(current_content)
+                # Extract paper entries from current and previous
+                current_entries = _extract_paper_entries(current_content)
                 previous_urls = _extract_paper_urls(previous_content) if previous_content else set()
 
-                new_urls = current_urls - previous_urls
-                new_papers_found += len(new_urls)
+                # Filter to only new entries
+                new_entries = [e for e in current_entries if e["url"] not in previous_urls]
+                new_papers_found += len(new_entries)
+
+                # Also get current URLs for checkpoint stats
+                current_urls = {e["url"] for e in current_entries}
 
                 # Create candidates for new papers
-                for url in new_urls:
+                for entry in new_entries:
                     try:
+                        url = entry["url"]
+                        entry_title = entry.get("title") or ""
                         arxiv_id = _extract_arxiv_id(url)
+                        candidate_title = entry_title if len(entry_title) >= 5 else f"[awesome-repo] {url}"
                         await candidate_service.create_candidate(
                             session,
-                            title=f"[awesome-repo] {url}",
+                            title=candidate_title,
                             discovery_source="awesome_repo",
                             discovery_reason=f"repo: {repo_path}",
                             arxiv_id=arxiv_id,
@@ -332,7 +348,7 @@ async def detect_awesome_repo_changes(session: AsyncSession, domain_id: UUID) ->
                         )
                         candidates_created += 1
                     except Exception:
-                        logger.debug("Failed to create candidate from awesome repo URL: %s", url, exc_info=True)
+                        logger.debug("Failed to create candidate from awesome repo URL: %s", entry.get("url"), exc_info=True)
                         continue
 
                 # Update checkpoint
@@ -373,6 +389,36 @@ def _extract_paper_urls(text: str) -> set[str]:
     for pattern in patterns:
         urls.update(re.findall(pattern, text))
     return urls
+
+
+def _extract_paper_entries(text: str) -> list[dict]:
+    """Extract paper entries from markdown, preserving title and description.
+
+    Matches patterns like:
+    - [Paper Title](https://arxiv.org/abs/2501.12345) - Brief description
+    - **Paper Title** [[paper](url)]
+    """
+    entries = []
+    # Pattern: [Title](url) where url is a known paper host
+    pattern = re.compile(
+        r'\[([^\]]{3,})\]\((https?://(?:arxiv\.org|doi\.org|openreview\.net|'
+        r'papers\.nips\.cc|proceedings\.mlr\.press|aclanthology\.org)[^\)]+)\)'
+    )
+    for match in pattern.finditer(text):
+        title = match.group(1).strip()
+        url = match.group(2).strip()
+        # Skip navigation links like "[Back to top]"
+        if len(title) < 5 or title.lower() in ("paper", "pdf", "code", "demo", "project"):
+            continue
+        # Try to extract description from rest of line
+        line_end = text.find('\n', match.end())
+        if line_end == -1:
+            line_end = len(text)
+        rest = text[match.end():line_end]
+        desc_match = re.match(r'\s*[-–—:]\s*(.+)', rest)
+        description = desc_match.group(1).strip() if desc_match else None
+        entries.append({"url": url, "title": title, "description": description})
+    return entries
 
 
 def _extract_arxiv_id(url: str) -> str | None:
