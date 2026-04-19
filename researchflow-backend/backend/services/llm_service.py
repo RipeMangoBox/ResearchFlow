@@ -3,12 +3,13 @@
 Every call is logged to model_runs for cost tracking and auditability.
 Falls back to mock mode when no API key is configured.
 
-v3.3: Retry with exponential backoff, timeout handling, structured error recovery.
+v4: Garbage detection for proxy APIs, robust streaming, auto-retry.
 """
 
 import asyncio
 import json
 import logging
+import re
 import time
 from uuid import UUID
 
@@ -22,6 +23,17 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0  # seconds
 
+# Patterns that indicate a garbage/non-completion response from proxy API
+_GARBAGE_PATTERNS = [
+    re.compile(r"^我是\s*(Claude|ChatGPT|AI)", re.MULTILINE),
+    re.compile(r"^I am (Claude|ChatGPT|an AI)", re.MULTILINE),
+    re.compile(r"^I'm (Claude|ChatGPT|an AI)", re.MULTILINE),
+    re.compile(r"由 Anthropic 开发"),
+    re.compile(r"developed by (Anthropic|OpenAI)", re.IGNORECASE),
+    re.compile(r"^(Hello|Hi)!?\s*(I'm|I am)\s*(Claude|an AI)", re.MULTILINE),
+    re.compile(r"模型 ID 是"),
+]
+
 
 class LLMResponse:
     """Unified response from any LLM provider."""
@@ -33,6 +45,16 @@ class LLMResponse:
         self.model = model
         self.provider = provider
         self.latency_ms = latency_ms
+
+
+def _is_garbage_response(text: str) -> bool:
+    """Detect if the response is a garbage/self-introduction from proxy API."""
+    if not text or len(text) < 20:
+        return True
+    for pattern in _GARBAGE_PATTERNS:
+        if pattern.search(text[:500]):
+            return True
+    return False
 
 
 async def call_llm(
@@ -48,12 +70,10 @@ async def call_llm(
 ) -> LLMResponse:
     """Call an LLM with retry and return structured response.
 
-    Provider selection:
-    1. If ANTHROPIC_API_KEY is set → use Claude
-    2. If OPENAI_API_KEY is set → use OpenAI
-    3. Otherwise → mock mode (returns placeholder)
-
-    Retries up to MAX_RETRIES times with exponential backoff on transient errors.
+    Retries on:
+    - Transient HTTP errors (429, 500, 502, 503, timeout)
+    - Garbage responses (proxy API self-introduction)
+    - Empty responses
     """
     start = time.monotonic()
 
@@ -61,11 +81,12 @@ async def call_llm(
         resp = _mock_response(prompt, system)
     else:
         last_error = None
+        resp = None
         for attempt in range(MAX_RETRIES):
             try:
                 if settings.anthropic_api_key:
                     resp = await asyncio.wait_for(
-                        _call_anthropic(prompt, system, model or "claude-sonnet-4-20250514", max_tokens, temperature),
+                        _call_anthropic(prompt, system, model or "claude-sonnet-4.6", max_tokens, temperature),
                         timeout=180,
                     )
                 else:
@@ -74,41 +95,54 @@ async def call_llm(
                         _call_openai(prompt, system, model or default_model, max_tokens, temperature),
                         timeout=180,
                     )
-                break  # Success
+
+                # ── Garbage detection ──────────────────────────
+                if _is_garbage_response(resp.text):
+                    last_error = f"Garbage response detected: {resp.text[:80]}"
+                    logger.warning(
+                        f"LLM garbage response (attempt {attempt+1}/{MAX_RETRIES}): "
+                        f"{resp.text[:100]}"
+                    )
+                    resp = None  # Force retry
+                else:
+                    break  # Valid response
+
             except asyncio.TimeoutError:
                 last_error = "LLM call timed out after 180s"
                 logger.warning(f"LLM timeout (attempt {attempt+1}/{MAX_RETRIES})")
             except Exception as e:
                 last_error = str(e)
                 err_str = str(e).lower()
-                # Retry on transient errors only
-                if any(kw in err_str for kw in ("rate_limit", "429", "500", "502", "503", "timeout", "connection")):
+                if any(kw in err_str for kw in ("rate_limit", "429", "500", "502", "503", "timeout", "connection", "too large")):
                     logger.warning(f"LLM transient error (attempt {attempt+1}/{MAX_RETRIES}): {e}")
                 else:
                     raise  # Non-transient error, fail immediately
 
             if attempt < MAX_RETRIES - 1:
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
-                logger.info(f"Retrying in {delay}s...")
+                logger.info(f"LLM retrying in {delay}s...")
                 await asyncio.sleep(delay)
-        else:
+
+        if resp is None:
             raise RuntimeError(f"LLM call failed after {MAX_RETRIES} attempts: {last_error}")
 
     # Log to model_runs
     if session:
-        run = ModelRun(
-            job_id=job_id,
-            paper_id=paper_id,
-            model_provider=resp.provider,
-            model_name=resp.model,
-            prompt_version=prompt_version,
-            input_tokens=resp.input_tokens,
-            output_tokens=resp.output_tokens,
-            cost_usd=_estimate_cost(resp),
-            latency_ms=resp.latency_ms,
-        )
-        session.add(run)
-        # Don't flush here — let the caller handle transaction
+        try:
+            run = ModelRun(
+                job_id=job_id,
+                paper_id=paper_id,
+                model_provider=resp.provider,
+                model_name=resp.model,
+                prompt_version=prompt_version[:50],  # Prevent varchar overflow
+                input_tokens=resp.input_tokens,
+                output_tokens=resp.output_tokens,
+                cost_usd=_estimate_cost(resp),
+                latency_ms=resp.latency_ms,
+            )
+            session.add(run)
+        except Exception as e:
+            logger.debug(f"Failed to log model_run: {e}")
 
     return resp
 
@@ -152,8 +186,7 @@ async def _call_openai(prompt: str, system: str, model: str,
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    # Always use streaming — proxy APIs (e.g. apicursor.com) may truncate
-    # non-streaming responses at ~3000 chars
+    # Always use streaming — proxy APIs may truncate non-streaming responses
     stream = await client.chat.completions.create(
         model=model, messages=messages, max_tokens=max_tokens,
         temperature=temperature, stream=True,
@@ -177,37 +210,28 @@ async def _call_openai(prompt: str, system: str, model: str,
 def _mock_response(prompt: str, system: str) -> LLMResponse:
     """Generate a structured mock response for testing without API keys."""
     logger.info("LLM mock mode — no API key configured")
-
-    # Parse what kind of analysis is being requested
     mock_text = json.dumps({
         "problem_summary": "[Mock] This paper addresses a key challenge in the domain.",
-        "method_summary": "[Mock] The proposed method introduces a novel approach using structured components.",
-        "evidence_summary": "[Mock] Experiments show improvements over baselines on standard benchmarks.",
-        "core_intuition": "[Mock] The key insight is applying a hierarchical decomposition to the problem.",
+        "method_summary": "[Mock] The proposed method introduces a novel approach.",
+        "evidence_summary": "[Mock] Experiments show improvements over baselines.",
+        "core_intuition": "[Mock] The key insight is a hierarchical decomposition.",
         "changed_slots": ["denoiser", "conditioning"],
         "is_plugin_patch": False,
         "worth_deep_read": True,
-        "confidence_notes": [
-            {"claim": "Novel architecture design", "confidence": 0.5, "basis": "speculative",
-             "reasoning": "Mock analysis — no actual LLM evaluation performed"},
-        ],
+        "confidence_notes": [],
     }, ensure_ascii=False, indent=2)
-
     return LLMResponse(
-        text=mock_text,
-        input_tokens=len(prompt.split()),
+        text=mock_text, input_tokens=len(prompt.split()),
         output_tokens=len(mock_text.split()),
-        model="mock",
-        provider="mock",
-        latency_ms=0,
+        model="mock", provider="mock", latency_ms=0,
     )
 
 
 def _estimate_cost(resp: LLMResponse) -> float:
     """Rough cost estimate in USD."""
     costs = {
-        "claude-sonnet-4-20250514": (3.0 / 1_000_000, 15.0 / 1_000_000),
-        "claude-haiku-4-5-20251001": (0.80 / 1_000_000, 4.0 / 1_000_000),
+        "claude-sonnet-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
+        "claude-haiku-4.5": (0.80 / 1_000_000, 4.0 / 1_000_000),
         "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
         "gpt-4o": (2.50 / 1_000_000, 10.0 / 1_000_000),
         "mock": (0, 0),

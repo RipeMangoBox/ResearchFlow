@@ -4,9 +4,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.database import get_session
+from backend.models.paper import Paper
 from backend.services import pipeline_service, discovery_service, domain_init_service, evolution_service
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
@@ -17,33 +20,80 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 @router.post("/{paper_id}/run")
 async def run_full_pipeline(
     paper_id: UUID,
+    sync: bool = Query(default=False, description="Run synchronously (slow, for debugging only)"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Run complete pipeline for a paper: download → enrich → parse → skim → deep → graph."""
-    try:
-        result = await pipeline_service.run_full_pipeline(session, paper_id)
-        await session.commit()
-        return result
-    except HTTPException:
-        raise
-    except Exception:
-        await session.rollback()
-        raise
+    """Run complete pipeline for a paper.
+
+    Default: enqueues to worker (async, returns immediately).
+    ?sync=true: runs in API process (slow, may OOM on large PDFs).
+    """
+    paper = await session.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    if sync:
+        # Synchronous mode — for debugging only
+        try:
+            result = await pipeline_service.run_full_pipeline(session, paper_id)
+            await session.commit()
+            return result
+        except Exception:
+            await session.rollback()
+            raise
+    else:
+        # Async mode — enqueue to worker (default)
+        from arq import create_pool
+        from backend.workers.arq_app import _parse_redis_url
+        redis = await create_pool(_parse_redis_url(settings.redis_url))
+        job = await redis.enqueue_job("task_pipeline_run", str(paper_id))
+        await redis.close()
+        return {
+            "paper_id": str(paper_id),
+            "status": "enqueued",
+            "job_id": job.job_id if job else None,
+            "message": "Pipeline running in background worker. Check paper state for progress.",
+        }
 
 
 @router.post("/batch")
 async def run_pipeline_batch(
-    limit: int = Query(default=5, ge=1, le=20),
+    limit: int = Query(default=10, ge=1, le=50),
     session: AsyncSession = Depends(get_session),
 ):
-    """Run full pipeline on papers that need processing."""
-    try:
-        results = await pipeline_service.run_pipeline_batch(session, limit)
-        await session.commit()
-        return {"processed": len(results), "results": results}
-    except Exception:
-        await session.rollback()
-        raise
+    """Enqueue pipeline for papers that need processing."""
+    from arq import create_pool
+    from backend.workers.arq_app import _parse_redis_url
+
+    # Find papers needing processing
+    from backend.models.enums import PaperState
+    papers = (await session.execute(
+        select(Paper).where(
+            Paper.state.in_([
+                PaperState.WAIT, PaperState.DOWNLOADED,
+                PaperState.L1_METADATA, PaperState.ENRICHED,
+                PaperState.L2_PARSED, PaperState.L3_SKIMMED,
+            ]),
+            Paper.arxiv_id.isnot(None),
+        ).order_by(Paper.analysis_priority.desc().nullsfirst())
+        .limit(limit)
+    )).scalars().all()
+
+    if not papers:
+        return {"enqueued": 0, "message": "No papers need processing"}
+
+    redis = await create_pool(_parse_redis_url(settings.redis_url))
+    enqueued = []
+    for paper in papers:
+        job = await redis.enqueue_job("task_pipeline_run", str(paper.id))
+        enqueued.append({
+            "paper_id": str(paper.id),
+            "title": paper.title[:60],
+            "state": paper.state.value if paper.state else "?",
+            "job_id": job.job_id if job else None,
+        })
+    await redis.close()
+    return {"enqueued": len(enqueued), "papers": enqueued}
 
 
 # ── Paper discovery ───────────────────────────────────────────────

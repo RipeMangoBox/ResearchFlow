@@ -203,7 +203,7 @@ async def task_fetch_hf_daily_papers(ctx: dict):
 
 
 async def task_parse_batch(ctx: dict, limit: int = 5):
-    """Run L2 parse (GROBID + PyMuPDF + formula extraction) on unprocessed papers."""
+    """Run L2 parse (PyMuPDF + VLM formula extraction) on unprocessed papers."""
     from backend.database import async_session
     from backend.services import parse_service
 
@@ -211,6 +211,91 @@ async def task_parse_batch(ctx: dict, limit: int = 5):
         results = await parse_service.parse_all_unprocessed(session, limit=limit)
         await session.commit()
     return {"processed": len(results), "results": results}
+
+
+async def task_pipeline_run(ctx: dict, paper_id: str):
+    """Run full pipeline for a single paper (called from API enqueue or cron).
+
+    This runs in the worker process (1.5GB memory), not the API process.
+    Each paper goes through: download → enrich → parse → skim → deep → graph.
+    """
+    from uuid import UUID
+    from backend.database import async_session
+    from backend.services import pipeline_service
+
+    async with async_session() as session:
+        try:
+            result = await pipeline_service.run_full_pipeline(session, UUID(paper_id))
+            await session.commit()
+            final = result.get("final_state", "unknown")
+            logger.info(f"Pipeline completed for {paper_id}: {final}")
+            return result
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Pipeline failed for {paper_id}: {e}")
+            return {"paper_id": paper_id, "error": str(e)[:200]}
+
+
+async def task_pipeline_recover(ctx: dict, limit: int = 5):
+    """Auto-recover papers stuck in intermediate states.
+
+    Scans for papers that should have progressed but didn't (e.g., downloaded
+    but not parsed, parsed but not skimmed). Re-runs the full pipeline for each.
+
+    This is the key to self-healing: even if a pipeline run fails due to
+    transient proxy errors, this cron will pick it up and retry.
+    """
+    from backend.database import async_session
+    from backend.models.paper import Paper
+    from backend.models.enums import PaperState
+    from backend.services import pipeline_service
+    from sqlalchemy import select, func
+    from datetime import datetime, timedelta, timezone
+
+    # Papers stuck for > 10 minutes in intermediate states
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stuck_states = [
+        PaperState.WAIT,
+        PaperState.DOWNLOADED,
+        PaperState.L1_METADATA,
+        PaperState.ENRICHED,
+        PaperState.L2_PARSED,
+        PaperState.L3_SKIMMED,
+    ]
+
+    async with async_session() as session:
+        papers = (await session.execute(
+            select(Paper).where(
+                Paper.state.in_(stuck_states),
+                Paper.arxiv_id.isnot(None),
+                Paper.updated_at < cutoff,
+            ).order_by(Paper.analysis_priority.desc().nullsfirst())
+            .limit(limit)
+        )).scalars().all()
+
+        if not papers:
+            return {"recovered": 0}
+
+        results = []
+        for paper in papers:
+            try:
+                logger.info(f"Auto-recovering paper {paper.id} (state={paper.state}, title={paper.title[:40]})")
+                result = await pipeline_service.run_full_pipeline(session, paper.id)
+                await session.commit()
+                results.append({
+                    "paper_id": str(paper.id),
+                    "from_state": paper.state.value if paper.state else "?",
+                    "to_state": result.get("final_state", "?"),
+                })
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Recovery failed for {paper.id}: {e}")
+                results.append({
+                    "paper_id": str(paper.id),
+                    "error": str(e)[:100],
+                })
+
+    return {"recovered": len(results), "results": results}
 
 
 # ── V6 tasks ───────────────────────────────────────────────────────
@@ -413,6 +498,8 @@ class WorkerSettings:
         task_venue_resolve_batch,
         task_fetch_hf_daily_papers,
         task_parse_batch,
+        task_pipeline_run,
+        task_pipeline_recover,
         # V6
         task_score_candidates_v6,
         task_auto_promote_v6,
@@ -446,6 +533,8 @@ class WorkerSettings:
         cron(task_venue_resolve_batch, hour=7, minute=0),
         # v2: Parse unprocessed PDFs every 2 hours
         cron(task_parse_batch, hour={2, 4, 8, 12, 16, 20}, minute=30),
+        # Auto-recover stuck papers every 30 minutes
+        cron(task_pipeline_recover, minute={15, 45}),
         # V6: Score candidates every 2 hours
         cron(task_score_candidates_v6, hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22}, minute=15),
         # V6: Auto-promote daily at 09:00
@@ -474,4 +563,4 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = _parse_redis_url(settings.redis_url)
     max_jobs = 2
-    job_timeout = 300  # 5 min per job
+    job_timeout = 600  # 10 min per job (pipeline needs 3-5 min per paper)

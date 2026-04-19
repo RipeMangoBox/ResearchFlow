@@ -539,7 +539,7 @@ async def _classify_and_detect_missed(
         api_key=settings.openai_api_key or settings.anthropic_api_key,
         base_url=settings.openai_base_url or None,
     )
-    actual_model = settings.openai_model or "claude-sonnet-4-20250514"
+    actual_model = settings.openai_model or "claude-sonnet-4.6"
 
     content = []
 

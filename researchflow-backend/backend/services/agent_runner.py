@@ -945,8 +945,8 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
     def _estimate_cost_from_response(resp) -> float:
         """Estimate cost from LLMResponse (mirrors llm_service._estimate_cost)."""
         costs = {
-            "claude-sonnet-4-20250514": (3.0 / 1_000_000, 15.0 / 1_000_000),
-            "claude-haiku-4-5-20251001": (0.80 / 1_000_000, 4.0 / 1_000_000),
+            "claude-sonnet-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
+            "claude-haiku-4.5": (0.80 / 1_000_000, 4.0 / 1_000_000),
             "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
             "gpt-4o": (2.50 / 1_000_000, 10.0 / 1_000_000),
             "mock": (0, 0),
