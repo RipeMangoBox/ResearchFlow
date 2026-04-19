@@ -1,161 +1,174 @@
-# ResearchFlow 快速部署指南
+# ResearchFlow 快速部署指南 (验证于 2026-04-19)
 
-## 部署路径
+## 服务器信息
 
 ```
-本地代码: /Users/hzh/Desktop/简历/ResearchFlow/researchflow-backend/
-服务器路径: /opt/researchflow/researchflow-backend/
+服务器: 阿里云 ECS 4C8G / 70G SSD
+IP: 47.101.167.55
+域名: researchflow.xyz
 SSH: ssh -i ~/.ssh/autoresearch.pem root@47.101.167.55
+代码路径: /opt/researchflow/researchflow-backend/  ← 注意不是 /root/
+代理: mihomo /opt/clash/ (7890/7891)
 ```
 
-## 快速部署（代码改动后）
+---
 
-### 1. 同步代码 (~3秒)
+## 日常部署 (改了 Python 代码, 10 秒)
+
+代码通过 Docker volume 挂载，rsync 后 restart 即可，**不需要 rebuild**。
+
 ```bash
+# Step 1: 同步代码 (~3秒)
 rsync -avz --delete \
-  --exclude='.venv' --exclude='node_modules' --exclude='.next' \
-  --exclude='__pycache__' --exclude='.git' --exclude='.pytest_cache' \
-  --exclude='storage/' --exclude='.env' --exclude='debug_figures' \
-  --exclude='obsidian-vault/' --exclude='paperPDFs/' --exclude='paperAnalysis/' \
+  --exclude='.venv' --exclude='node_modules' --exclude='__pycache__' \
+  --exclude='.git' --exclude='storage/' --exclude='.env' \
+  --exclude='obsidian-vault/' --exclude='debug_figures' \
   -e "ssh -i ~/.ssh/autoresearch.pem" \
   /Users/hzh/Desktop/简历/ResearchFlow/researchflow-backend/ \
   root@47.101.167.55:/opt/researchflow/researchflow-backend/
-```
 
-### 2. 重建容器 (~30秒, 有缓存时)
-```bash
+# Step 2: 重启 (~5秒)
 ssh -i ~/.ssh/autoresearch.pem root@47.101.167.55 \
-  "cd /opt/researchflow/researchflow-backend && \
-   docker compose build api worker mcp && \
-   docker compose up -d --force-recreate api worker mcp"
-```
+  "cd /opt/researchflow/researchflow-backend && docker compose restart api"
 
-如果代码改动很小（只改了 Python 文件，没改 requirements.txt），可以用热重载代替重建：
-```bash
-ssh -i ~/.ssh/autoresearch.pem root@47.101.167.55 \
-  "cd /opt/researchflow/researchflow-backend && \
-   docker compose restart api worker mcp"
-```
-
-### 3. 验证
-```bash
+# Step 3: 验证
 ssh -i ~/.ssh/autoresearch.pem root@47.101.167.55 \
   "curl -s http://localhost:8000/api/v1/health"
 ```
 
-## 一键部署脚本
+### 何时需要 rebuild (而非 restart)
+
+| 改了什么 | 操作 |
+|---------|------|
+| Python 代码 | `docker compose restart api` |
+| docker-compose.yml (内存/端口/环境变量) | `docker compose up -d --force-recreate api` |
+| requirements.txt (新增依赖) | `docker compose build api && docker compose up -d --force-recreate api` |
+| Dockerfile | `docker compose build --no-cache api && docker compose up -d --force-recreate api` |
+
+**注意**: `restart` 不会重新应用 compose.yml 的改动（如内存限制）。必须用 `up -d --force-recreate`。
+
+---
+
+## 容器架构 (8 个)
+
+| 容器 | 内存 | 端口 | 管理方式 |
+|------|------|------|---------|
+| api | 1536MB | 8000 | docker compose |
+| worker | 1024MB | - | docker compose |
+| mcp | 256MB | 8001 | docker compose |
+| postgres | 1280MB | 5432 | docker compose |
+| redis | 256MB | 6379 | docker compose |
+| frontend | 256MB | 3000 | docker compose |
+| caddy | - | 80/443 | docker compose |
+| **grobid** | **3072MB** | 8070 | **独立 docker run** |
+
+### GROBID 管理 (独立容器)
+
+GROBID 不在 docker-compose.yml 中，需要单独管理：
+
 ```bash
-# 保存为 deploy.sh
-#!/bin/bash
-set -e
-SERVER="root@47.101.167.55"
-SSH="ssh -i ~/.ssh/autoresearch.pem"
-REMOTE="/opt/researchflow/researchflow-backend"
+# 启动 (首次或重启后)
+docker run -d --name grobid --restart unless-stopped \
+  --network researchflow-backend_default \
+  --memory 3g \
+  -p 127.0.0.1:8070:8070 \
+  lfoppiano/grobid:0.8.1
 
-echo "=== Syncing code ==="
-rsync -avz --delete \
-  --exclude='.venv' --exclude='node_modules' --exclude='.next' \
-  --exclude='__pycache__' --exclude='.git' --exclude='storage/' \
-  --exclude='.env' --exclude='debug_figures' --exclude='obsidian-vault/' \
-  -e "$SSH" \
-  /Users/hzh/Desktop/简历/ResearchFlow/researchflow-backend/ \
-  $SERVER:$REMOTE/
-
-echo "=== Restarting containers ==="
-$SSH $SERVER "cd $REMOTE && docker compose restart api worker mcp"
-
-echo "=== Waiting ==="
-sleep 5
-
-echo "=== Health check ==="
-$SSH $SERVER "curl -s http://localhost:8000/api/v1/health"
-echo ""
-echo "DONE"
+# 启动需要 ~3 分钟 (加载 ML 模型)
+# 验证
+curl -s http://localhost:8070/api/isalive  # 返回 true 才算就绪
 ```
 
-## 瓶颈分析
+⚠️ GROBID 需要 **3GB 内存**（2GB 会 OOM 循环重启）。服务器 8GB 总内存刚好够。
 
-| 步骤 | 耗时 | 原因 |
-|------|------|------|
-| rsync | ~3秒 | 无瓶颈 |
-| docker build (有缓存) | ~10秒 | pip install 已缓存 |
-| docker build (无缓存) | ~60秒 | pip install 从头装 |
-| docker build --no-cache | ~120秒 | **避免使用**, 只在 requirements.txt 变化时用 |
-| docker restart | ~5秒 | **推荐**, 代码改动用这个 |
-| 容器启动 | ~5-10秒 | 等 postgres healthy |
+---
 
-**结论**: 日常改动用 `rsync + docker restart` (~10秒), 不用 `build --no-cache` (~120秒)
+## 网络连通性 (已验证)
 
-## 网络限制 (关键！)
+### 容器内直连 (不需要代理)
+- ✅ arXiv API + PDF 下载
+- ✅ DBLP
+- ✅ GitHub
+- ✅ OpenAlex
+- ✅ Crossref
+- ✅ HuggingFace (mihomo `allow-lan: true` 后直连 OK)
 
-### 容器内可直连
-- arXiv API (export.arxiv.org) ✅
-- OpenAlex API ✅
-- Crossref API ✅
-- DBLP API ✅
-- HuggingFace API ✅
+### 需要 API key
+- ⚠️ Semantic Scholar — 429 限流，需申请免费 API key
+- ⚠️ OpenReview — 403，需注册账号
 
-### 容器内需要代理
-- **arXiv PDF 下载** (arxiv.org/pdf/) — 经常被限速/墙
-- **GitHub API** — 部分地区限流
-- **Semantic Scholar API** — 频繁调用被 429
-- **OpenReview API** — 403 (可能需要认证或代理)
-- **Google Scholar** — 完全被墙
+### 不需要在 docker-compose.yml 中配置代理环境变量
+之前尝试在容器内配 `HTTP_PROXY` 会导致 httpx TLS 握手失败。
+正确做法：mihomo 配置 `allow-lan: true` + 添加域名规则，容器直连即可。
 
-### 配置容器代理
-在 docker-compose.yml 的 api/worker 服务中加：
-```yaml
-environment:
-  HTTP_PROXY: http://host.docker.internal:7890
-  HTTPS_PROXY: http://host.docker.internal:7890
-  NO_PROXY: localhost,postgres,redis,127.0.0.1
+---
+
+## 代理配置 (mihomo)
+
+```bash
+# 配置文件
+/opt/clash/config.yaml
+
+# 关键配置项
+allow-lan: true  # 必须，让容器通过宿主机代理
+
+# 已添加的代理规则 (在 rules 列表最前面)
+- DOMAIN-SUFFIX,huggingface.co,Proxy
+- DOMAIN-KEYWORD,huggingface,Proxy
+- DOMAIN-SUFFIX,openreview.net,Proxy
+- DOMAIN-SUFFIX,semanticscholar.org,Proxy
+- DOMAIN-SUFFIX,docker.io,Proxy
+- DOMAIN-KEYWORD,anthropic,Proxy
+
+# 重启代理
+cd /opt/clash && pkill mihomo; sleep 2; nohup ./mihomo -d . &>/tmp/mihomo.log &
 ```
 
-或者在 .env 中设置（如果 compose 使用 env_file）：
+### Docker daemon 代理 (拉镜像用)
+
+```
+文件: /etc/systemd/system/docker.service.d/http-proxy.conf
+内容:
+[Service]
+Environment="HTTP_PROXY=http://127.0.0.1:7890"
+Environment="HTTPS_PROXY=http://127.0.0.1:7890"
+Environment="NO_PROXY=localhost,127.0.0.1,172.18.0.0/16"
+
+# 生效
+systemctl daemon-reload && systemctl restart docker
+```
+
+---
+
+## LLM 配置
+
 ```env
-HTTP_PROXY=http://172.17.0.1:7890
-HTTPS_PROXY=http://172.17.0.1:7890
-NO_PROXY=localhost,postgres,redis,127.0.0.1
+OPENAI_API_KEY=sk-reapi-xxx
+OPENAI_BASE_URL=https://apicursor.com/v1
+OPENAI_MODEL=op-4.6
 ```
 
-注意：容器内不能用 `host.docker.internal`（Linux 不支持），用 Docker 网关 IP `172.17.0.1` 或主机 IP。
+- **文本 LLM**: ✅ 通过 OpenAI SDK (streaming 模式)
+- **Vision/VLM**: ✅ `op-4.6` 支持多模态，必须用 streaming 模式
+- **重要**: apicursor 不支持非 streaming 调用（会返回 str 而非 ChatCompletion 对象）
+- 所有 VLM 服务已改为 OpenAI SDK + streaming
 
-### 验证代理
+---
+
+## Pipeline 运行
+
+### 通过 API (可能超时)
 ```bash
-docker compose exec -T api python3 -c "
-import httpx, asyncio
-async def t():
-    async with httpx.AsyncClient(proxy='http://172.17.0.1:7890', timeout=10) as c:
-        r = await c.get('https://arxiv.org/pdf/2507.02259')
-        print(f'arXiv PDF: {r.status_code} size={len(r.content)}')
-asyncio.run(t())
-"
+# 导入
+curl -X POST http://localhost:8000/api/v1/import/links \
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"url": "https://arxiv.org/abs/2507.02259"}], "default_category": "LLM"}'
+
+# 运行 pipeline
+curl -X POST http://localhost:8000/api/v1/pipeline/PAPER_ID/run
 ```
 
-## 常见错误
-
-### 1. docker compose YAML 格式错误
-**原因**: sed/python 修改 YAML 时格式破坏
-**解决**: 总是保留 .bak 备份, 修改后用 `python3 -c "import yaml; yaml.safe_load(open('docker-compose.yml')); print('OK')"` 验证
-
-### 2. Alembic migration chain 断裂
-**原因**: 本地和服务器的 migration 版本不一致
-**解决**: 检查 `SELECT version_num FROM alembic_version;`, 新 migration 的 down_revision 要指向服务器当前版本
-**服务器当前版本**: `015`
-
-### 3. Docker 镜像拉取 403
-**原因**: 中国 Docker 镜像源限制某些镜像（如 GROBID）
-**解决**: 
-- 用 `docker pull` 加代理: `HTTP_PROXY=http://127.0.0.1:7890 docker pull lfoppiano/grobid:0.8.1`
-- 或改用其他镜像源
-
-### 4. arXiv API 返回错误论文
-**原因**: 从 URL ingest 时 paper.title 只是 arxiv ID (如 "2507.02259"), enrich 时 arXiv API 返回正确数据但被 title 验证拒绝
-**已修复**: 检测 title 是否是 placeholder (纯数字.数字格式), 如果是则跳过验证
-
-### 5. Pipeline HTTP 超时
-**原因**: curl --max-time 不够长, LLM 调用需要 30-60 秒/次, L3+L4 共 2-3 次调用
-**解决**: 直接在容器内运行 Python 脚本, 不经过 HTTP:
+### 直接在容器内运行 (推荐，无超时)
 ```bash
 docker compose exec -T api python3 -c "
 import asyncio, json
@@ -170,22 +183,98 @@ asyncio.run(main())
 "
 ```
 
-### 6. 外键级联删除
-**原因**: papers 表被 20+ 个表引用, 简单 DELETE 会失败
-**解决**: 使用完整的级联删除脚本 (见 scripts/clean_paper.sql)
+### 单独运行 L2 Parse (含 GROBID)
+```bash
+docker compose exec -T api python3 -c "
+import asyncio
+from uuid import UUID
+from backend.database import async_session
+from backend.services.parse_service import parse_paper_pdf
+async def main():
+    async with async_session() as s:
+        a = await parse_paper_pdf(s, UUID('PAPER_ID'))
+        if a:
+            spans = a.evidence_spans or {}
+            print('Parsers:', spans.get('parse_metadata',{}).get('parsers_used'))
+            print('GROBID refs:', len(spans.get('grobid_references',[])))
+            print('Formulas:', len(a.extracted_formulas or []))
+            await s.commit()
+asyncio.run(main())
+"
+```
 
-## 数据库新表 (v2 新增)
+---
 
-| 表 | 用途 |
-|----|------|
-| metadata_observations | 多源元数据观察记录 |
-| canonical_paper_metadata | 元数据冲突解决结果 |
-| taxonomy_nodes | 分类节点 (75个种子) |
-| taxonomy_edges | 分类关系边 (14条) |
-| paper_facets | 论文-分类关联 |
-| problem_nodes | 任务下的共性问题 |
-| problem_claims | 论文-问题关联 |
-| method_nodes | 方法节点 |
-| method_slots | 方法组件 |
-| method_edges | 方法演化边 |
-| method_applications | 论文-方法使用关系 |
+## 论文数据清理 (级联删除)
+
+papers 表被 20+ 个表引用，简单 DELETE 会失败。使用完整脚本：
+
+```sql
+DO $$ DECLARE pid UUID := 'YOUR_PAPER_ID'; BEGIN
+  DELETE FROM evidence_units WHERE delta_card_id IN (SELECT id FROM delta_cards WHERE paper_id=pid);
+  DELETE FROM graph_assertion_evidence WHERE assertion_id IN (SELECT id FROM graph_assertions WHERE from_node_id IN (SELECT id FROM graph_nodes WHERE ref_id IN (SELECT id FROM idea_deltas WHERE paper_id=pid)));
+  DELETE FROM graph_assertions WHERE from_node_id IN (SELECT id FROM graph_nodes WHERE ref_id IN (SELECT id FROM idea_deltas WHERE paper_id=pid));
+  DELETE FROM graph_nodes WHERE ref_id IN (SELECT id FROM idea_deltas WHERE paper_id=pid);
+  DELETE FROM contribution_to_canonical_idea WHERE idea_delta_id IN (SELECT id FROM idea_deltas WHERE paper_id=pid);
+  DELETE FROM idea_deltas WHERE paper_id=pid;
+  DELETE FROM model_runs WHERE paper_id=pid;
+  DELETE FROM delta_card_lineage WHERE child_delta_card_id IN (SELECT id FROM delta_cards WHERE paper_id=pid);
+  DELETE FROM delta_cards WHERE paper_id=pid;
+  DELETE FROM paper_bottleneck_claims WHERE paper_id=pid;
+  DELETE FROM method_deltas WHERE paper_id=pid;
+  DELETE FROM paper_analyses WHERE paper_id=pid;
+  DELETE FROM paper_assets WHERE paper_id=pid;
+  DELETE FROM paper_versions WHERE paper_id=pid;
+  DELETE FROM metadata_observations WHERE entity_id=pid;
+  DELETE FROM canonical_paper_metadata WHERE paper_id=pid;
+  DELETE FROM papers WHERE id=pid;
+END $$;
+```
+
+---
+
+## 常见错误速查
+
+| 错误 | 原因 | 解决 |
+|------|------|------|
+| `restart` 后内存限制没变 | restart 不应用 compose 改动 | `up -d --force-recreate api` |
+| GROBID OOM 循环重启 | 2GB 不够 | 给 3GB: `--memory 3g` |
+| Docker pull 403 | 镜像源被墙 | Docker daemon proxy (见上) |
+| arXiv title 是 "2507.02259" | ingest 时没有 title | 已修复：enrich 自动用 arXiv 返回的标题 |
+| Pipeline HTTP 超时 | LLM 调用慢 | 容器内直接跑 Python (见上) |
+| VLM 400 "Request too large" | 没用 streaming | 已修复：所有 VLM 用 OpenAI SDK streaming |
+| alembic migration KeyError | 版本链不匹配 | 服务器 DB 在 `015`，新 migration 需 `down_revision="015"` |
+| compose YAML 格式坏 | sed/python 修改出错 | 改前备份，改后 `python3 -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"` |
+
+---
+
+## 数据库
+
+- **当前 alembic 版本**: `015` (v2 表通过 SQL 直接创建，未走 alembic)
+- **v2 新增 11 张表**: metadata_observations, canonical_paper_metadata, taxonomy_nodes/edges, paper_facets, problem_nodes/claims, method_nodes/slots/edges/applications
+- **Taxonomy 种子**: 75 个节点 (10 个维度), 14 条边
+
+### 重置种子数据
+```bash
+docker compose exec -T -e PYTHONPATH=/app api python -m migration.seed_taxonomy
+```
+
+---
+
+## 已验证的提取能力 (MemAgent 论文 2507.02259)
+
+| 数据 | 无 GROBID | 有 GROBID |
+|------|----------|----------|
+| Title | ✅ | ✅ |
+| Abstract | ✅ | ✅ |
+| Authors | ✅ (11, 无机构) | ✅ (12, **含机构**) |
+| Year/Venue | ✅ | ✅ |
+| Citations | ✅ (116) | ✅ |
+| Code/Data URL | ✅ | ✅ |
+| Sections | 7 | 7 |
+| **引用 (结构化)** | **0** | **19 条** |
+| **公式** | **4** | **13** |
+| 图表 | 5 | 5 |
+| L3 Skim | ✅ | ✅ |
+| L4 Deep | ✅ | ✅ |
+| VLM (Vision) | ✅ (op-4.6) | ✅ |
