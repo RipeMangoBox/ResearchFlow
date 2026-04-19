@@ -246,7 +246,10 @@ async def run_full_pipeline(
 
     # Step 5.5: Post-L4 — fill paper fields from analysis + assign taxonomy
     try:
-        await session.commit()  # Commit any pending changes first
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
         await session.refresh(paper)
         # Get latest L4 analysis
         latest_l4 = (await session.execute(
@@ -282,6 +285,8 @@ async def run_full_pipeline(
             # Assign role_in_kb
             if not paper.role_in_kb:
                 paper.role_in_kb = "extension"  # default
+
+        await session.flush()
 
         # Taxonomy assignment — map paper fields to taxonomy facets
         from backend.models.taxonomy import TaxonomyNode, PaperFacet
@@ -366,6 +371,10 @@ async def run_full_pipeline(
     except Exception as e:
         logger.warning(f"Post-L4 processing failed for {paper_id}: {e}")
         progress["steps"]["post_l4"] = f"error: {str(e)[:100]}"
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
     # Step 6: Discover related papers (references + citations via S2)
     try:
