@@ -360,38 +360,38 @@ async def score_candidate(
     # Persist CandidateScore
     cs = CandidateScore(
         candidate_id=candidate_id,
-        discovery_score=score_result["score"],
-        discovery_breakdown=score_result.get("breakdown"),
-        hard_caps_applied=score_result.get("hard_caps"),
-        boosts_applied=score_result.get("boosts"),
-        penalties_applied=score_result.get("penalties"),
-        decision=score_result.get("decision", "defer"),
-        decision_reason=score_result.get("reason"),
-        score_version=score_result.get("version", 1),
+        discovery_score=score_result.total,
+        discovery_breakdown=score_result.breakdown,
+        hard_caps_applied=score_result.hard_caps_applied,
+        boosts_applied=score_result.boosts_applied,
+        penalties_applied=score_result.penalties_applied,
+        decision=score_result.decision,
     )
     session.add(cs)
 
     # Persist individual ScoreSignals
+    breakdown = score_result.breakdown or {}
     for signal_name, signal_value in signals.items():
         ss = ScoreSignal(
             entity_type="candidate",
             entity_id=candidate_id,
             signal_name=signal_name,
-            signal_value={"raw": signal_value},
-            signal_strength=score_result.get("breakdown", {}).get(signal_name),
-            producer="heuristic",
+            signal_value={"raw": signal_value} if not isinstance(signal_value, dict) else signal_value,
+            signal_strength=breakdown.get(signal_name),
+            producer="deterministic",
         )
         session.add(ss)
 
     # Update candidate status based on decision
-    decision = score_result.get("decision", "defer")
-    if decision == "accept":
-        candidate.status = "accepted"
-    elif decision == "reject":
-        candidate.status = "rejected"
-        candidate.reject_reason = score_result.get("reason", "below threshold")
+    decision = score_result.decision or "metadata_only"
+    if decision == "shallow_ingest":
+        candidate.status = "scored"
+    elif decision == "candidate_pool":
+        candidate.status = "scored"
+    elif decision == "archive":
+        candidate.status = "archived"
     else:
-        candidate.status = "scoring"
+        candidate.status = "metadata_resolved"
 
     await session.flush()
     await session.refresh(cs)

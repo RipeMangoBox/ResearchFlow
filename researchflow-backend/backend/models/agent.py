@@ -70,8 +70,8 @@ class AgentRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        Index("idx_ar_paper_id", "paper_id"),
-        Index("idx_ar_candidate_id", "candidate_id"),
+        Index("ix_ar_paper", "paper_id"),
+        Index("ix_ar_candidate", "candidate_id"),
     )
 
 
@@ -109,8 +109,8 @@ class AgentBlackboardItem(Base):
     )
 
     __table_args__ = (
-        Index("idx_abi_paper_type", "paper_id", "item_type"),
-        Index("idx_abi_candidate_type", "candidate_id", "item_type"),
+        Index("ix_abi_paper_type", "paper_id", "item_type"),
+        Index("ix_abi_candidate_type", "candidate_id", "item_type"),
     )
 
 
@@ -149,8 +149,8 @@ class PaperExtraction(Base):
 
     __table_args__ = (
         UniqueConstraint("paper_id", "extraction_type", "extraction_version",
-                         name="uq_pe_paper_type_version"),
-        Index("idx_pe_paper_type", "paper_id", "extraction_type"),
+                         name="uq_extraction_paper_type_ver"),
+        Index("ix_pe_paper_type", "paper_id", "extraction_type"),
     )
 
 
@@ -200,5 +200,5 @@ class ReferenceRoleMap(Base):
     )
 
     __table_args__ = (
-        Index("idx_rrm_paper_id", "paper_id"),
+        Index("ix_rrm_paper", "paper_id"),
     )

@@ -182,8 +182,8 @@ async def refresh_citation_counts(session: AsyncSession, *, limit: int = 50) -> 
     # States >= L3_SKIMMED
     advanced_states = [
         PaperState.L3_SKIMMED,
-        PaperState.L4_ANALYZED,
-        PaperState.L5_FULLY_ANALYZED,
+        PaperState.L4_DEEP,
+        PaperState.CHECKED,
     ]
 
     papers = (await session.execute(

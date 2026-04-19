@@ -71,8 +71,11 @@ GRPO (基线, depth=0, 7 篇下游)
 90_Views/          静态 Markdown 表格 (不依赖 Dataview)
 ```
 
-### MCP 集成 (23 个工具)
-完整 MCP 服务器：23 个工具 + 6 个资源 + 4 个提示模板。Claude Code 自动发现 — 用自然语言交互：
+### 候选队列 + 多 Agent 管线 (V6)
+5 级吸收：`new → shallow → reference_done → deep → graph_ready`。16 个专用 LLM Agent（12 个 prompt 文件）配合 Context Pack Builder。4 层评分引擎（DiscoveryScore → DeepIngestScore → GraphPromotionScore → AnchorScore）。节点/边 profile 用于知识图谱实体画像。冷启动工作流与增量同步（7 个函数）。
+
+### MCP 集成 (35 个工具)
+完整 MCP 服务器：35 个工具 + 6 个资源 + 4 个提示模板。Claude Code 自动发现 — 用自然语言交互：
 
 ```
 > 搜索 "reward hacking in RLHF" 相关论文
@@ -94,14 +97,17 @@ Next.js 15 前端：论文管理、搜索、图谱可视化、演化链查看、
 
 | 组件 | 数量 |
 |------|------|
-| 数据库表 | 42 + 4 物化视图 |
-| API 端点 | 100+ (16 个路由器) |
-| MCP | 23 工具 + 6 资源 + 4 提示模板 |
-| Service 模块 | 45 |
+| 数据库表 | 58 + 4 物化视图 |
+| API 端点 | 130 (16 个路由器) |
+| MCP | 35 工具 + 6 资源 + 4 提示模板 |
+| Service 模块 | 55 |
+| Worker 任务 | 22 |
+| ORM 模型文件 | 24 (含 15 个 V6 类) |
+| Agent Prompt | 12 |
 | Claude Code Skills | 21 |
 | 元数据 API | 8 (arXiv/Crossref/OpenAlex/S2/DBLP/OpenReview/GitHub/HF) |
 | 内置范式 | 4 (RL/VLM/Agent/MotionGen) + LLM 动态发现 |
-| 数据库迁移 | 15 个版本 |
+| 数据库迁移 | 16 个版本 |
 | 枚举类型 | 9 个 (PaperState 15 个状态值等) |
 
 ## 快速开始
@@ -175,15 +181,15 @@ rsync -avz --delete -e ssh \
 ```
 researchflow-backend/            # 核心后端 (唯一写入目标)
   backend/
-    api/                         #   16 个路由器 (100+ 端点)
-    models/                      #   20 个 ORM 模型 (42 张表)
-    services/                    #   45 个服务模块
-    mcp/                         #   MCP 服务器 (23 工具 + 6 资源 + 4 提示)
+    api/                         #   16 个路由器 (130 端点)
+    models/                      #   24 个 ORM 模型文件 (58 张表)
+    services/                    #   55 个服务模块
+    mcp/                         #   MCP 服务器 (35 工具 + 6 资源 + 4 提示)
     workers/                     #   ARQ 后台任务队列
     utils/                       #   PDF 提取、GROBID 客户端、frontmatter
-  alembic/                       #   15 次数据库迁移
+  alembic/                       #   16 次数据库迁移
   frontend/                      #   Next.js 15 + Tailwind Web 控制台
-  ARCHITECTURE.md                #   完整技术文档 (v5)
+  ARCHITECTURE.md                #   完整技术文档 (v6)
   DEPLOY.md                      #   生产部署指南
 obsidian-vault/                  # 自动生成的 Obsidian vault (只读)
 paperAnalysis/                   # 导出的分析笔记 (只读)
@@ -215,8 +221,8 @@ AGENTS.md                       # Agent/MCP 接入指南
 
 | 文档 | 读者 | 内容 |
 |------|------|------|
-| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | 开发者 | 数据模型 · 四层提取 · 6 步管线 · DB Schema · 全部 API · 45 个 Service |
-| [AGENTS.md](AGENTS.md) | Agent 开发 | 23 MCP 工具 · 6 资源 · 4 提示 · 21 Skills · 使用规则 |
+| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | 开发者 | 数据模型 · 四层提取 · 6 步管线 · DB Schema · 全部 API · 55 个 Service |
+| [AGENTS.md](AGENTS.md) | Agent 开发 | 35 MCP 工具 · 6 资源 · 4 提示 · 21 Skills · 使用规则 |
 | [DEPLOY.md](researchflow-backend/DEPLOY.md) | 运维 | Docker 配置 · 容器架构 · 日常部署 · 代理 · 故障排查 |
 
 ## License

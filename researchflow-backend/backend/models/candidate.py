@@ -97,10 +97,11 @@ class PaperCandidate(Base):
     )
 
     __table_args__ = (
-        Index("idx_pc_arxiv_id", "arxiv_id"),
-        Index("idx_pc_doi", "doi"),
-        Index("idx_pc_status", "status"),
-        Index("idx_pc_status_absorption", "status", "absorption_level"),
+        Index("ix_pc_arxiv_id", "arxiv_id"),
+        Index("ix_pc_doi", "doi"),
+        Index("ix_pc_status_absorption", "status", "absorption_level"),
+        Index("ix_pc_discovered_from", "discovered_from_paper_id"),
+        Index("ix_pc_domain", "discovered_from_domain_id", "status"),
     )
 
 
@@ -172,5 +173,5 @@ class ScoreSignal(Base):
     )
 
     __table_args__ = (
-        Index("idx_ss_entity", "entity_type", "entity_id"),
+        Index("ix_ss_entity", "entity_type", "entity_id"),
     )

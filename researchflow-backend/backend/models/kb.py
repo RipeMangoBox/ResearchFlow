@@ -10,10 +10,12 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
     Index,
+    Integer,
     SmallInteger,
     String,
     Text,
@@ -159,8 +161,8 @@ class KBNodeProfile(Base):
 
     __table_args__ = (
         UniqueConstraint("entity_type", "entity_id", "profile_kind", "lang",
-                         name="uq_knp_entity_kind_lang"),
-        Index("idx_knp_entity", "entity_type", "entity_id"),
+                         name="uq_node_profile_entity"),
+        Index("ix_knp_entity", "entity_type", "entity_id"),
     )
 
 
@@ -213,8 +215,8 @@ class KBEdgeProfile(Base):
     )
 
     __table_args__ = (
-        Index("idx_kep_source", "source_entity_type", "source_entity_id"),
-        Index("idx_kep_target", "target_entity_type", "target_entity_id"),
+        Index("ix_kep_source", "source_entity_type", "source_entity_id"),
+        Index("ix_kep_target", "target_entity_type", "target_entity_id"),
     )
 
 
@@ -314,5 +316,46 @@ class ReviewQueueItem(Base):
     )
 
     __table_args__ = (
-        Index("idx_rqi_status_priority", "status", "priority_score"),
+        Index("ix_rqi_status_priority", "status", "priority_score"),
+    )
+
+
+class EvidenceItem(Base):
+    """Fine-grained evidence index — paragraphs, tables, formulas, figures.
+
+    Each item is a specific piece of evidence extracted from a paper PDF,
+    indexed for retrieval by agents when building context packs.
+    """
+    __tablename__ = "evidence_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    paper_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    # pdf_text / figure / table / formula / abstract / caption / webpage / repo_readme
+    source_id: Mapped[str | None] = mapped_column(String(100))
+    # fig_ref, table_ref, formula_idx, etc.
+
+    section_name: Mapped[str | None] = mapped_column(String(50))
+    page: Mapped[int | None] = mapped_column(SmallInteger)
+    bbox: Mapped[dict | None] = mapped_column(JSONB)
+    # {x0, y0, x1, y1}
+
+    text: Mapped[str | None] = mapped_column(Text)
+    image_object_key: Mapped[str | None] = mapped_column(Text)
+    table_html: Mapped[str | None] = mapped_column(Text)
+    formula_latex: Mapped[str | None] = mapped_column(Text)
+    token_count: Mapped[int | None] = mapped_column(Integer)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_ei_paper", "paper_id"),
+        Index("ix_ei_paper_type", "paper_id", "source_type"),
     )

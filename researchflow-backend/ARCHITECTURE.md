@@ -1,4 +1,4 @@
-# ResearchFlow Architecture v5.0
+# ResearchFlow Architecture v6.0
 
 ## 1. 设计原则
 
@@ -14,8 +14,8 @@
 │                        Core Backend                                 │
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
-│  │ 16 API Router │  │ 23 MCP 工具  │  │ 45 Service 模块           │ │
-│  │ (100+ 端点)   │  │ 6 资源 4 提示 │  │                           │ │
+│  │ 16 API Router │  │ 35 MCP 工具  │  │ 55 Service 模块           │ │
+│  │ (130 端点)    │  │ 6 资源 4 提示 │  │                           │ │
 │  └──────────────┘  └──────────────┘  └───────────────────────────┘ │
 │                                                                     │
 │  PostgreSQL 16 (pgvector) + Redis 7 + 对象存储 (COS/OSS)           │
@@ -50,7 +50,7 @@ Layer 3: Claude VLM (API, 按需)
 
 Layer 4: Agent 编排
 ├── Skills: 21 个领域知识 + 工作流技能
-├── MCP Tools: 23 个数据操作接口
+├── MCP Tools: 35 个数据操作接口
 └── Review Gates: 低置信度 → 人工审核
 ```
 
@@ -458,7 +458,7 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 
 ---
 
-## 8. 数据库 Schema (42 表 + 4 物化视图, 15 次迁移)
+## 8. 数据库 Schema (58 表 + 4 物化视图, 16 次迁移)
 
 ### 核心表
 
@@ -566,7 +566,7 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 
 ---
 
-## 9. API 路由总览 (16 Router, 100+ 端点)
+## 9. API 路由总览 (16 Router, 130 端点)
 
 | Router | 前缀 | 关键端点 |
 |--------|------|---------|
@@ -589,7 +589,7 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 
 ---
 
-## 10. Service 模块 (45 个)
+## 10. Service 模块 (55 个)
 
 | 文件 | 职责 |
 |------|------|
@@ -637,10 +637,20 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 | **export_service.py** | 通用导出 |
 | **openreview_adapter.py** | OpenReview API 集成 |
 | **dblp_adapter.py** | DBLP 元数据查询 |
+| **candidate_service.py** | V6 候选队列管理 (5 级吸收 + 去重 + 批量评分) |
+| **scoring_engine.py** | V6 4 层评分引擎 (Discovery/DeepIngest/GraphPromotion/Anchor) + hard caps + boosts |
+| **agent_runner.py** | V6 12 Agent prompt 模板 + LLM 调用 + Blackboard 写入 + AgentRun 追踪 |
+| **context_pack_builder.py** | V6 10 种 Agent 上下文包 (Global→Domain→Paper→Run 4 层, per-agent token 预算) |
+| **ingest_workflow.py** | V6 管线编排 (import_and_score → shallow → deep → profile → report) |
+| **node_profile_service.py** | V6 节点 Profile 生成/刷新/staleness (kb_node_profiles) |
+| **edge_profile_service.py** | V6 边 Profile 生成/批量生成 (kb_edge_profiles) |
+| **cold_start_service.py** | V6 冷启动 (DomainManifest → skeleton → arXiv/S2 harvest → anchor) |
+| **incremental_sync_service.py** | V6 增量同步 (arXiv daily + citation refresh + awesome diff + lineage detect + dedup) |
+| **vault_export_v6.py** | V6 Obsidian 导出 (注入 node/edge profile + Lab 页面) |
 
 ---
 
-## 11. MCP Server (23 工具 + 6 资源 + 4 提示)
+## 11. MCP Server (35 工具 + 6 资源 + 4 提示)
 
 ### Tools
 
@@ -668,6 +678,18 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 | `get_paper_citations` | GROBID refs + S2 citing papers |
 | `get_paper_figures` | 图表 + OSS URLs + VLM 描述 |
 | `get_metadata_conflicts` | 多源元数据冲突查看 |
+| `rf_domain_cold_start` | V6: 基于 domain manifest 冷启动 |
+| `rf_candidate_list` | V6: 查看候选队列 (筛选/排序) |
+| `rf_candidate_promote` | V6: 提升候选到指定 absorption level |
+| `rf_candidate_reject` | V6: 拒绝候选 + 记录原因 |
+| `rf_paper_build_neighborhood` | V6: S2 邻域检索 → 候选 (不直接 ingest) |
+| `rf_node_profile_get` | V6: 获取节点 Profile |
+| `rf_node_profile_refresh` | V6: 刷新节点 Profile |
+| `rf_edge_profile_get` | V6: 获取边 Profile |
+| `rf_graph_get_subgraph` | V6: 获取子图 (节点+边+profiles) |
+| `rf_review_queue` | V6: 查看审核队列 |
+| `rf_score_explain` | V6: 解释候选评分明细 |
+| `rf_run_v6_pipeline` | V6: 完整管线 (import→score→shallow→deep→profile→report) |
 
 ### Resources
 
@@ -767,3 +789,97 @@ GET /explore/{id}
 | 元数据 | arXiv + Crossref + OpenAlex + S2 + DBLP + OpenReview + GitHub + HuggingFace |
 | 对象存储 | Tencent COS / Alibaba OSS / Local |
 | 部署 | Docker Compose + Caddy (自动 HTTPS) |
+
+---
+
+## 15. V6: Candidate Queue + Multi-Agent Pipeline
+
+### 15.1 paper_candidates 表与 5 级吸收
+
+候选论文不再直接进入 papers 表，而是经过分级吸收：
+
+```
+new → shallow → reference_done → deep → graph_ready
+ │       │           │              │         │
+ │   ShallowPaper  ReferenceRole  6 deep    Profile
+ │   agent         agent          agents    + promote
+ │                                          to graph
+```
+
+每级吸收由对应 agent 完成，状态机确保幂等重试。
+
+### 15.2 4 层评分引擎
+
+| 评分 | 计算时机 | 因素 | 用途 |
+|------|---------|------|------|
+| **DiscoveryScore** | 候选入队时 | 来源可信度 + 引用信号 + 时效性 | 决定是否值得 shallow 分析 |
+| **DeepIngestScore** | shallow 完成后 | ShallowPaper 输出 + 方法新颖度 + 领域相关度 | 决定是否投入 deep agent |
+| **GraphPromotionScore** | deep 完成后 | 6 deep agent 输出质量 + 证据强度 + 图谱互补性 | 决定是否晋升到 graph |
+| **AnchorScore** | 入图后 | 被引用次数 + 下游方法数 + profile 丰富度 | 锚点论文识别 |
+
+### 15.3 12 Agent Prompt (agent_runner.py)
+
+所有 prompt 定义在 `agent_runner.py` 的 `AGENT_PROMPTS` dict 中:
+
+| Agent | Key | 阶段 | 输出 Schema | Token 预算 |
+|-------|-----|------|------------|-----------|
+| ShallowPaperAgent | `shallow_paper` | shallow | PaperEssence + TaskFacet + MechanismFacet | 6-12K |
+| ReferenceRoleAgent | `reference_role` | shallow | ReferenceRoleMap (12 种角色) | 10-30K |
+| MethodDeltaAgent-lite | `method_delta_lite` | shallow | 初步 MethodDelta | 8-15K |
+| ScoreAgent | `score` | shallow | score_signals (结构化信号) | 4-8K |
+| MethodDeltaAgent-full | `method_delta_full` | deep | 完整 MethodDelta + pipeline_modules | 15-30K |
+| ExperimentAgent | `experiment` | deep | ExperimentMatrix + ablation + costs | 10-25K |
+| FormulaFigureAgent | `formula_figure` | deep | key_formulas + figure_roles + derivation | 15-30K |
+| GraphCandidateAgent | `graph_candidate` | deep | node_candidates + edge_candidates + lineage | 10-20K |
+| NodeProfileAgent | `node_profile` | profile | one_liner + short_intro + detailed | 8-15K |
+| EdgeProfileAgent | `edge_profile` | profile | contextual one_liner + summary | 6-12K |
+| PaperReportAgent | `paper_report` | report | 10 section 结构化报告 | 30-80K |
+| QualityAuditAgent | `quality_audit` | audit | issues + quality_score + review_items | 8-15K |
+
+Context Pack Builder 为每个 agent 组装不同上下文 (Global→Domain→Paper→Run 4 层)。
+
+### 15.4 kb_node_profiles + kb_edge_profiles
+
+知识图谱节点和边不再只是 ID + label，而是拥有结构化 profile：
+
+- **kb_node_profiles**: 方法节点的能力矩阵、适用场景、局限性、代表论文
+- **kb_edge_profiles**: 边的变更描述、证据支持、置信度、影响范围
+
+Profile 由 NodeProfile / EdgeProfile agent 生成，随新论文增量更新。
+
+### 15.5 冷启动工作流 (cold_start_service.py)
+
+```
+POST /candidates/domains/cold-start
+{
+    "name": "video_rl",
+    "scope": { "tasks": [...], "seed_methods": [...], "modalities": [...], ... }
+}
+  → Save DomainSpec + skeleton taxonomy/method nodes
+  → Query expansion (tasks × methods × modalities)
+  → arXiv API harvest → paper_candidates
+  → S2 API harvest → paper_candidates
+  → Batch DiscoveryScore (deterministic)
+  → Auto-promote top K (budget_deep_ingest)
+  → Deep ingest anchors (worker 异步)
+```
+
+### 15.6 增量同步 (incremental_sync_service.py, 7 个函数)
+
+| 函数 | 频率 | 功能 |
+|------|------|------|
+| `sync_arxiv_daily()` | 每日 10:00 | 按 domain scope 搜索 arXiv 近 2 天新论文 → 候选 |
+| `refresh_citation_counts()` | 每周三 03:00 | S2 API 刷新 L3+ 论文引用数，检测显著增长 |
+| `detect_awesome_repo_changes()` | 每周四 04:00 | GitHub README diff → 新论文候选 |
+| `detect_lineage_chains()` | 每周五 05:00 | 从 delta_card_lineage 检测 ≥3 节点演化链 |
+| `recompute_node_scores()` | 每周六 04:00 | 重算 GraphNodeCandidate 分数，≥85 自动晋升 |
+| `detect_duplicate_nodes()` | 每月 1 日 02:00 | 名称归一化去重 → review_queue |
+| `cleanup_stale_candidates()` | 每月 15 日 02:00 | 归档 90 天未处理的候选 |
+
+### 15.7 新 API 端点
+
+| Router | 前缀 | 关键端点 |
+|--------|------|---------|
+| candidates | /candidates | discover/{paper_id}, list, {id}/score, score-batch, {id}/promote, {id}/reject, auto-promote, stats, domains/cold-start |
+| pipeline (v6) | /pipeline/v6 | run, shallow/{candidate_id}, deep/{paper_id} |
+| pipeline (export) | /pipeline/export | obsidian-vault-v6 |

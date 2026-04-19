@@ -7,7 +7,7 @@ Core backend for ResearchFlow. See [root README](../README.md) for project overv
 ```bash
 cp .env.example .env     # Set ANTHROPIC_API_KEY (or OPENAI_API_KEY)
 docker compose up -d     # Start all services
-docker compose exec api alembic upgrade head  # Run 15 migrations
+docker compose exec api alembic upgrade head  # Run 16 migrations
 ```
 
 Verify: `curl localhost:8000/api/v1/health` → `{"status": "ok"}`
@@ -19,19 +19,19 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the complete technical reference:
 - 6-step L4 analysis pipeline with 3 defense lines
 - 10-step metadata enrichment (8 APIs)
 - Method evolution DAG + faceted taxonomy
-- All 100+ API routes, 42 DB tables + 4 materialized views, 45 services
+- All 130 API routes, 58 DB tables + 4 materialized views, 55 services
 
 ## Key directories
 
 ```
 backend/
-  api/          16 routers (100+ routes)
-  services/     45 service modules
-  models/       20 ORM models (42 tables + 4 materialized views)
-  mcp/          MCP server (23 tools, 6 resources, 4 prompts)
-  workers/      ARQ background task queue
+  api/          16 routers (130 routes)
+  services/     55 service modules
+  models/       24 ORM model files (58 tables + 4 materialized views)
+  mcp/          MCP server (35 tools, 6 resources, 4 prompts)
+  workers/      ARQ background task queue (22 tasks)
   utils/        PDF extraction, GROBID client, frontmatter
-alembic/        Migrations 001–015
+alembic/        Migrations 001–016
 frontend/       Next.js 15 web UI
 tests/          pytest suite
 compatibility/  DB → Markdown export pipeline

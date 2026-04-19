@@ -31,7 +31,7 @@ from backend.models.candidate import PaperCandidate, CandidateScore, ScoreSignal
 from backend.models.agent import AgentRun, AgentBlackboardItem, PaperExtraction, ReferenceRoleMap
 from backend.models.kb import (
     GraphNodeCandidate, GraphEdgeCandidate, KBNodeProfile, KBEdgeProfile,
-    PaperReport, PaperReportSection, ReviewQueueItem,
+    PaperReport, PaperReportSection, ReviewQueueItem, EvidenceItem,
 )
 
 __all__ = [
@@ -59,5 +59,5 @@ __all__ = [
     "PaperCandidate", "CandidateScore", "ScoreSignal",
     "AgentRun", "AgentBlackboardItem", "PaperExtraction", "ReferenceRoleMap",
     "GraphNodeCandidate", "GraphEdgeCandidate", "KBNodeProfile", "KBEdgeProfile",
-    "PaperReport", "PaperReportSection", "ReviewQueueItem",
+    "PaperReport", "PaperReportSection", "ReviewQueueItem", "EvidenceItem",
 ]

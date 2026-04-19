@@ -6,7 +6,7 @@
 
 **PostgreSQL is the only write target.** `paperAnalysis/`, `paperCollection/`, `obsidian-vault/` are read-only exports. For queries, use `/api/v1/search/*`, not local files.
 
-## MCP tools (23)
+## MCP tools (35)
 
 | Tool | What it does |
 |------|-------------|
@@ -32,6 +32,18 @@
 | `get_paper_citations` | GROBID refs + S2 citing papers |
 | `get_paper_figures` | Extracted figures/tables + OSS URLs + VLM descriptions |
 | `get_metadata_conflicts` | View unresolved multi-source metadata conflicts |
+| `rf_domain_cold_start` | V6: Cold-start a domain from manifest |
+| `rf_candidate_list` | V6: List candidates with filters/scores |
+| `rf_candidate_promote` | V6: Promote candidate to Paper at specified level |
+| `rf_candidate_reject` | V6: Reject candidate with reason |
+| `rf_paper_build_neighborhood` | V6: S2 neighborhood discovery → candidates |
+| `rf_node_profile_get` | V6: Get node profile (T/M/C/D/L/Lab) |
+| `rf_node_profile_refresh` | V6: Regenerate node profile |
+| `rf_edge_profile_get` | V6: Get edge contextual description |
+| `rf_graph_get_subgraph` | V6: Get subgraph with profiles |
+| `rf_review_queue` | V6: View review queue items |
+| `rf_score_explain` | V6: Explain scoring breakdown for candidate |
+| `rf_run_v6_pipeline` | V6: Full pipeline (import→score→shallow→deep→report) |
 
 ## MCP resources (6)
 

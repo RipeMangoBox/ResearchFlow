@@ -71,8 +71,11 @@ One-click export to a structured Obsidian vault with controlled wikilinks (6-10 
 90_Views/          Static Markdown tables (no Dataview dependency)
 ```
 
-### MCP Integration (23 tools)
-Full MCP server with 23 tools + 6 resources + 4 prompt templates. Claude Code auto-discovers it — just talk naturally:
+### Candidate Queue + Multi-Agent Pipeline (V6)
+5-level absorption: `new → shallow → reference_done → deep → graph_ready`. 16 specialized LLM agents (12 prompt files) with Context Pack Builder. 4-tier scoring engine (DiscoveryScore → DeepIngestScore → GraphPromotionScore → AnchorScore). Node/edge profiles for knowledge graph entities. Cold start workflow and incremental sync (7 functions).
+
+### MCP Integration (35 tools)
+Full MCP server with 35 tools + 6 resources + 4 prompt templates. Claude Code auto-discovers it — just talk naturally:
 
 ```
 > Search for papers about "reward hacking in RLHF"
@@ -94,14 +97,17 @@ Next.js 15 frontend with paper management, search, graph visualization, lineage 
 
 | Component | Count |
 |-----------|-------|
-| Database tables | 42 + 4 materialized views |
-| API endpoints | 100+ across 16 routers |
-| MCP | 23 tools + 6 resources + 4 prompts |
-| Services | 45 modules |
+| Database tables | 58 + 4 materialized views |
+| API endpoints | 130 across 16 routers |
+| MCP | 35 tools + 6 resources + 4 prompts |
+| Services | 55 modules |
+| Worker tasks | 22 |
+| ORM model files | 24 (15 V6 classes) |
+| Agent prompts | 12 |
 | Claude Code skills | 21 |
 | Metadata APIs | 8 (arXiv, Crossref, OpenAlex, S2, DBLP, OpenReview, GitHub, HF) |
 | Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM dynamic discovery |
-| DB migrations | 15 versions |
+| DB migrations | 16 versions |
 | Enums | 9 types (PaperState with 15 states, Tier, Importance, etc.) |
 
 ## Quick Start
@@ -177,15 +183,15 @@ rsync -avz --delete -e ssh \
 ```
 researchflow-backend/            # Core backend (single source of truth)
   backend/
-    api/                         #   16 routers (100+ endpoints)
-    models/                      #   20 ORM models (42 tables)
-    services/                    #   45 service modules
-    mcp/                         #   MCP server (23 tools + 6 resources + 4 prompts)
+    api/                         #   16 routers (130 endpoints)
+    models/                      #   24 ORM model files (58 tables)
+    services/                    #   55 service modules
+    mcp/                         #   MCP server (35 tools + 6 resources + 4 prompts)
     workers/                     #   ARQ background task queue
     utils/                       #   PDF extraction, GROBID client, frontmatter
-  alembic/                       #   15 database migrations
+  alembic/                       #   16 database migrations
   frontend/                      #   Next.js 15 + Tailwind web dashboard
-  ARCHITECTURE.md                #   Complete technical reference (v5)
+  ARCHITECTURE.md                #   Complete technical reference (v6)
   DEPLOY.md                      #   Production deployment guide
 obsidian-vault/                  # Auto-generated Obsidian vault (read-only)
 paperAnalysis/                   # Exported analysis Markdown (read-only)
@@ -217,8 +223,8 @@ AGENTS.md                       # Agent/MCP integration guide
 
 | Document | Audience | Content |
 |----------|----------|---------|
-| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | Developers | Data model, 4-layer extraction, 6-step pipeline, DB schema, all APIs, 45 services |
-| [AGENTS.md](AGENTS.md) | Agent builders | 23 MCP tools, 6 resources, 4 prompts, 21 skills, working rules |
+| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | Developers | Data model, 4-layer extraction, 6-step pipeline, DB schema, all APIs, 55 services |
+| [AGENTS.md](AGENTS.md) | Agent builders | 35 MCP tools, 6 resources, 4 prompts, 21 skills, working rules |
 | [DEPLOY.md](researchflow-backend/DEPLOY.md) | Ops | Docker setup, container architecture, daily deployment, proxy, troubleshooting |
 
 ## License
