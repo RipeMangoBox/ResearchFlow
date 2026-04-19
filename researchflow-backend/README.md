@@ -6,9 +6,8 @@ Core backend for ResearchFlow. See [root README](../README.md) for project overv
 
 ```bash
 cp .env.example .env     # Set ANTHROPIC_API_KEY (or OPENAI_API_KEY)
-make db                   # Start PostgreSQL + Redis
-make migrate              # Run 11 Alembic migrations (42 tables + 4 materialized views)
-make up                   # Start API + worker + frontend
+docker compose up -d     # Start all services
+docker compose exec api alembic upgrade head  # Run 15 migrations
 ```
 
 Verify: `curl localhost:8000/api/v1/health` → `{"status": "ok"}`
@@ -16,21 +15,23 @@ Verify: `curl localhost:8000/api/v1/health` → `{"status": "ok"}`
 ## Architecture
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the complete technical reference:
-- Knowledge graph structure (DeltaCard → IdeaDelta → DAG)
-- 16-step analysis pipeline
-- Paper filtering & method classification
-- Research exploration sessions
-- All 96 API routes & 42 DB tables + 4 materialized views
+- 4-layer extraction architecture (CPU → API → VLM → Agent)
+- 6-step L4 analysis pipeline with 3 defense lines
+- 10-step metadata enrichment (8 APIs)
+- Method evolution DAG + faceted taxonomy
+- All 100+ API routes, 42 DB tables + 4 materialized views, 45 services
 
 ## Key directories
 
 ```
 backend/
-  api/          13 routers (96 routes)
-  services/     30 service modules
-  models/       ORM models (42 tables)
-  mcp/          MCP server (18 tools, 6 resources, 4 prompts)
-alembic/        Migrations 001–011
+  api/          16 routers (100+ routes)
+  services/     45 service modules
+  models/       20 ORM models (42 tables + 4 materialized views)
+  mcp/          MCP server (23 tools, 6 resources, 4 prompts)
+  workers/      ARQ background task queue
+  utils/        PDF extraction, GROBID client, frontmatter
+alembic/        Migrations 001–015
 frontend/       Next.js 15 web UI
 tests/          pytest suite
 compatibility/  DB → Markdown export pipeline
@@ -38,4 +39,4 @@ compatibility/  DB → Markdown export pipeline
 
 ## Deployment
 
-See **[DEPLOY_GUIDE.md](DEPLOY_GUIDE.md)** for cloud setup (Docker Compose + Caddy).
+See **[DEPLOY.md](DEPLOY.md)** for production setup (Docker Compose + Caddy).

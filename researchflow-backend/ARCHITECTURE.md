@@ -1,6 +1,6 @@
-# ResearchFlow Architecture v4.0
+# ResearchFlow Architecture v5.0
 
-## 1. 一句话定义
+## 1. 设计原则
 
 **PostgreSQL 是唯一真相源。DeltaCard 是不可变中间真相层。一切 UI/导出/Agent 都是投影。**
 
@@ -13,19 +13,52 @@
 ┌──────────────────────────────────▼──────────────────────────────────┐
 │                        Core Backend                                 │
 │                                                                     │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │ 99 API 路由  │  │ 22 MCP 工具  │  │ 34 Service 模块            │ │
-│  └─────────────┘  └──────────────┘  └────────────────────────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
+│  │ 16 API Router │  │ 23 MCP 工具  │  │ 45 Service 模块           │ │
+│  │ (100+ 端点)   │  │ 6 资源 4 提示 │  │                           │ │
+│  └──────────────┘  └──────────────┘  └───────────────────────────┘ │
 │                                                                     │
-│  PostgreSQL (42 表 + 4 物化视图) + pgvector + Redis + 对象存储       │
+│  PostgreSQL 16 (pgvector) + Redis 7 + 对象存储 (COS/OSS)           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. 知识库结构：不是论文列表，是方法演化图谱
+## 2. 四层提取架构
 
-### 2.1 核心数据模型
+```
+Layer 1: 确定性后端 (CPU, 免费)
+├── PyMuPDF: 文本/section/图片/caption 提取
+├── GROBID (Docker): 结构化 authors/affiliations/references/formulas
+├── 公式区域检测: 数学符号聚类 + 区域截图
+└── Figure 区域检测: caption 锚定 + 向上扫描
+
+Layer 2: 来源适配器 (8 个 API)
+├── arXiv API: title/abstract/authors/year/keywords/comments
+├── Crossref: DOI/venue/year
+├── OpenAlex: venue/citations/open_access
+├── Semantic Scholar: citations/recommendations
+├── DBLP: 会议 proceedings 验证
+├── OpenReview (SDK): decisions/reviews/scores
+├── GitHub: code repo search + README 分析
+└── HuggingFace: models + datasets discovery
+
+Layer 3: Claude VLM (API, 按需)
+├── Figure 分类 + 补漏: 1 次调用/篇 (~$0.02)
+├── Formula OCR → LaTeX: 1 次调用/篇
+└── Acceptance 冲突判断: 按需
+
+Layer 4: Agent 编排
+├── Skills: 21 个领域知识 + 工作流技能
+├── MCP Tools: 23 个数据操作接口
+└── Review Gates: 低置信度 → 人工审核
+```
+
+---
+
+## 3. 核心数据模型
+
+### 3.1 实体关系
 
 ```
 Paper (容器, current_delta_card_id 指向当前发布版)
@@ -50,7 +83,7 @@ ParadigmTemplate / Slot / MechanismFamily (领域本体)
 TaxonomyVersion (所有 ontology 变更的版本快照)
 ```
 
-### 2.2 方法演化 DAG (核心创新)
+### 3.2 方法演化 DAG (核心创新)
 
 论文之间不是扁平列表，而是 **有向无环图 (DAG)**:
 
@@ -61,26 +94,89 @@ GRPO (depth=0, baseline=true, downstream=7)
 │   └── GRPO-LP+KL (depth=2, parent=[GRPO+LP])
 ├── GRPO+tree (depth=1, parent=[GRPO])
 └── GDPO (depth=1, parent=[GRPO, DPO])  ← 多继承: 两个范式组合
-    └─�� GDPO+image_thinking (depth=2, parent=[GDPO])
+    └── GDPO+image_thinking (depth=2, parent=[GDPO])
 ```
 
-**v3.2 升级规则 (candidate → review → publish)**:
+**升级规则 (candidate → review → publish)**:
 - 当一个改进被 ≥3 篇论文用作 baseline → `is_established_baseline = true`
 - 当它还具有结构性 (`structurality_score ≥ 0.6`) → 候选新范式版本
 - `builds_on` 边默认为 `candidate` 状态，需审核后发布
-- 自动发现的范式创建 `ParadigmCandidate`，不直接创建 `ParadigmTemplate`
-- 通过 `POST /reviews/candidates/paradigms/{id}/promote` 审核后升级
+- 自动发现的范式创建 `ParadigmCandidate`，通过 `POST /reviews/candidates/paradigms/{id}/promote` 审核升级
 - 所有 ontology 变更记录在 `taxonomy_versions` 表中
 
-### 2.3 论文过滤评分
+### 3.3 Faceted Taxonomy DAG
+
+```
+taxonomy_nodes (75 个种子节点)
+├── dimension: domain/modality/task/subtask/learning_paradigm/scenario/
+│              constraint/mechanism/method_baseline/model_family/
+│              dataset/benchmark/metric/lab/venue
+├── name + name_zh + aliases
+└── status: candidate / reviewed / canonical
+
+taxonomy_edges (14 条种子边)
+├── parent_id → child_id
+├── relation_type: is_a / part_of / uses / optimizes / applies_to
+└── 例: RL → RLHF (is_a), Video Understanding → Long Video QA (part_of)
+
+paper_facets (论文的多维标签)
+├── paper_id + node_id + facet_role
+├── facet_role: primary_task / modality / paradigm / mechanism / baseline
+└── 一篇论文可同时是: Video + VQA + RL + GRPO-derived + Reward Design
+```
+
+### 3.4 Method Evolution 模型
+
+```
+method_nodes
+├── name, type (algorithm/recipe/model_family/system)
+├── maturity: seed → emerging → established_baseline
+├── downstream_count (≥3 → promote)
+└── 从 Paper 中抽象出来的"方法"概念
+
+method_slots
+├── method_id + slot_name
+└── 例 GRPO: reward_function, advantage_estimator, policy_update
+
+method_edges
+├── parent → child + relation_type
+├── applies_to_domain / modifies_slot / combines_with / replaces
+├── changed_slot_ids + delta_description
+└── 区分三种关系: 应用(A) / 改进(B) / 组合(C)
+```
+
+### 3.5 Metadata Observation Ledger
+
+多源元数据不直接覆盖 Paper 字段，走观察账本 + canonical resolver：
+
+```
+metadata_observations
+├── entity_type: paper / author / venue
+├── field_name: venue / status / authors / citation_count / code_url
+├── value_json: JSONB (原始值)
+├── source: arxiv / crossref / openalex / semantic_scholar / dblp / openreview / github
+├── authority_rank: 1=最高权威, 10=最低
+
+canonical_paper_metadata
+├── 从 observations 中 resolve 的 canonical 值
+├── unresolved_conflicts: [{field, sources, values}]
+└── resolver_version
+
+权威优先级:
+  会议中稿: official_conf > openreview > dblp > crossref > arxiv > s2
+  引用数: s2 > openalex > crossref > google_scholar
+  作者机构: pdf_grobid > openalex > crossref > s2
+```
+
+### 3.6 论文过滤评分
 
 每篇论文入库后自动计算 4 个分数:
 
 | 分数 | 权重因素 | 用途 |
 |------|---------|------|
-| **keep_score** | Tier(开数据>开代码>中稿>预印本) + 顶会 + 重要度 + 时间衰减 | 是否值得入库 |
+| **keep_score** | Tier + 顶会 + 重要度 + 时间衰减 | 是否值得入库 |
 | **analysis_priority** | 重要度 + 开源资产 + 有PDF + 顶会 + 新鲜度 | 分析优先级排序 |
-| **structurality_score** | 关键词信号 + L4分析的 method_category | 结构性改进 vs 插件 |
+| **structurality_score** | 关键词信号 + L4 LLM 输出 | 结构性 vs 插件 (A/B/C/D 分级) |
 | **extensionability_score** | 跨域关键词 + 多任务标签 + 开源资产 | 可扩展性 |
 
 **方法分类标签** (L4 自动提取):
@@ -97,9 +193,9 @@ improvement/component_replacement — 替换核心组件
 
 ---
 
-## 3. 完整流程: 从零到知识图谱
+## 4. 完整流程: 从零到知识图谱
 
-### 3.1 冷启动: 给一个领域，从零构建
+### 4.1 冷启动: 给一个领域，从零构建
 
 ```
 用户: "我要研究 RLHF for VLM"
@@ -114,12 +210,12 @@ improvement/component_replacement — 替换核心组件
          │  triage → download → enrich → L2 → L3 → L4 (6步) → graph
          ▼
 [Step 3] POST /pipeline/export/obsidian-vault
-         │  → 生成 5 类笔记的 Obsidian vault
+         │  → 生成 Obsidian vault
          ▼
 [Step 4] rsync 同步到本地 Obsidian
 ```
 
-### 3.2 外层管线: 单篇论文从入库到图谱
+### 4.2 单篇论文完整 Pipeline
 
 入口: `pipeline_service.run_full_pipeline(paper_id)`
 
@@ -130,156 +226,134 @@ POST /pipeline/{paper_id}/run  (或 /pipeline/batch?limit=N)
  │
  ├─ Step 0: triage_paper()                          [triage_service]
  │    计算 keep_score / analysis_priority / tier
- │    基于: venue + open_code + open_data + 时间衰减
  │
  ├─ Step 1: download_arxiv_pdf()                    [pipeline_service]
  │    有 arxiv_id 且没下过 → 下载 PDF 到本地 + 对象存储
  │
- ├─ Step 2: enrich_paper()                          [enrich_service]
- │    缺 abstract/authors → 查 arXiv API / Crossref 补全
+ ├─ Step 2: enrich_paper() — 10 步元数据补全         [enrich_service]
+ │    2.1 arXiv API → title/abstract/authors/year/keywords/comments
+ │    2.2 arXiv comments → 会议中稿解析 ("Accepted at ICLR 2025")
+ │    2.3 Crossref → DOI/venue/year (跳过 placeholder title)
+ │    2.4 OpenAlex → venue/citations/open_access
+ │    2.5 Semantic Scholar → citation_count/venue
+ │    2.6 GitHub → code_url + README 中稿/数据集提取
+ │    2.7 HuggingFace → models + datasets
+ │    2.8 GitHub README → acceptance + dataset links
+ │    2.9 Project page → acceptance check
+ │    2.10 PDF 首页文本 → acceptance detection
+ │    * 所有结果写 metadata_observations (观察账本)
+ │    * Placeholder title 保护：不用 arxiv ID 搜其他 API
  │
- ├─ Step 3: parse_paper_pdf()                       [parse_service]
- │    pymupdf 提取 PDF 章节文本 → paper_analyses (level=l2_parse)
- │    产出: extracted_sections {intro, method, results, conclusion, ...}
+ ├─ Step 2.5: venue_resolution                      [venue_resolver_service]
+ │    → OpenReview SDK (ICLR/NeurIPS decisions + review scores)
+ │    → DBLP proceedings lookup
+ │    → LLM 冲突判断 (多源不一致时)
+ │    → canonical resolver (按 authority_rank 选最优)
  │
- ├─ Step 4: skim_paper()                            [analysis_service]
+ ├─ Step 3: parse_paper_pdf() — L2 Parser Ensemble  [parse_service]
+ │    → GROBID: authors(含机构) + references(结构化) + formulas(坐标)
+ │    → PyMuPDF: sections + figure images + captions
+ │    → Figure extraction: caption 锚定 + VLM 分类补漏
+ │    → Formula extraction: 区域检测 + 合并 + VLM OCR → LaTeX
+ │    → 结果合并，冲突标记
+ │
+ ├─ Step 4: skim_paper() — L3                       [analysis_service]
  │    1 次 LLM 调用 (abstract + 关键章节, ≤8K tokens)
- │    产出: problem_summary, changed_slots, is_plugin_patch, worth_deep_read
- │    → paper.state = l3_skimmed
+ │    产出: problem_summary, method_summary, worth_deep_read, is_plugin_patch
  │
- └─ Step 5: deep_analyze_paper()                    [analysis_service]
-      L4 深度分析 — 6 步管线 (见下方详解)
-      → paper.state = l4_deep
+ ├─ Step 5: deep_analyze_paper() — L4 (6 步)        [analysis_service]
+ │    详见 §4.3
+ │
+ ├─ Step 5.5: Post-L4 回填                           [pipeline_service]
+ │    → 回填 paper 字段: core_operator, primary_logic, claims
+ │    → 推断 ring (baseline/structural/plugin)
+ │    → 设置 role_in_kb
+ │    → Taxonomy assignment: tags/category/keywords → paper_facets
+ │
+ └─ Step 6: citation_discovery                       [discovery_service]
+      → S2 references + citations → 自动 ingest
 ```
 
-### 3.3 L4 深度分析: 6 步管线 (核心)
+### 4.3 L4 深度分析: 6 步管线 (核心)
 
 入口: `analysis_service.deep_analyze_paper(paper_id)`
 
-旧版用 1 次 LLM 调用输出 23 个字段；v4.0 拆成 6 个独立步骤，各自可重试:
-
 ```
 deep_analyze_paper(paper_id)
- │
  │  从 L2 提取的章节文本拼接全文 (≤25K tokens)
- │
  ▼
 ┌─ Step 1: extract_evidence ──────────────────────────────────────┐
 │  文件: analysis_steps.py → run_step1_extract_evidence()          │
-│  LLM 调用 #1 (独立 prompt, ≤3000 output tokens)                  │
+│  LLM 调用 #1                                                    │
 │                                                                  │
 │  ★ 防线 #1: 强制阅读顺序                                         │
 │    Prompt: "FIRST read Method → THEN Experiments → ONLY THEN     │
 │    Abstract. Do NOT take the abstract at face value."             │
 │                                                                  │
-│  输出 JSON:                                                      │
+│  输出:                                                           │
 │    key_equations[]:    核心公式 (≤4), 含 slot_affected            │
 │    key_figures[]:      关键图表 (≤4), 含 evidence_for             │
-│    evidence_units[]:   证据锚点 (3-8个), 每个含:                   │
+│    evidence_units[]:   证据锚点 (3-8), 每个含:                     │
 │      atom_type, claim, confidence, basis, source_section          │
 │    narrative_vs_substance: abstract 是否与实验吻合                  │
-│    baseline_fairness:  baseline 是否最强? 是否故意漏比?             │
+│    baseline_fairness:  baseline 是否最强?                         │
 │    paper_type:         method/survey/benchmark/position/...       │
 │                                                                  │
-│  失败 → 自动重试 (最多 2 次), 检查 required_fields                │
+│  失败 → 自动重试 (最多 2 次)                                       │
 └──────────────────────────────────────────────────────────────────┘
- │ step1_data
+ │
  ▼
 ┌─ Step 2: build_delta_card ──────────────────────────────────────┐
 │  文件: analysis_steps.py → run_step2_build_delta()               │
-│  LLM 调用 #2 (独立 prompt, ≤4096 output tokens)                  │
-│  输入: 全文 + Step 1 证据 JSON 作为 grounding                      │
+│  LLM 调用 #2, 输入: 全文 + Step 1 证据作 grounding                │
 │                                                                  │
-│  ★ 关键: Step 1 的证据防止 Step 2 hallucinate                     │
-│                                                                  │
-│  输出 JSON:                                                      │
+│  输出:                                                           │
 │    problem_summary:    问题与挑战 (200-400 字, 中文)               │
 │    method_summary:     方法与洞察 (400-600 字, 中文)               │
 │    evidence_summary:   证据与局限 (200-400 字, 中文)               │
 │    core_intuition:     核心直觉 (100-200 字)                      │
 │    changed_slots[]:    改了哪些 slot                              │
 │    unchanged_slots[]:  没改的 slot                                │
-│    structurality_score: 0.0-1.0  ← ★ 决定 A/B/C/D 分级           │
+│    structurality_score: 0.0-1.0  ← 决定 A/B/C/D 分级             │
 │    delta_card:         {paradigm, slots, is_structural}           │
 │    bottleneck_addressed: {title, description, is_fundamental}     │
 │    same_family_method: 方法族名称                                  │
-│    confidence_notes[]: 逐条置信度分析                               │
 │                                                                  │
 │  失败 → 自动重试 (最多 2 次)                                       │
 └──────────────────────────────────────────────────────────────────┘
- │ merge_step_outputs(step1, step2) → analysis_data
- ▼
-┌─ 持久化 ────────────────────────────────────────────────────────┐
-│  保存 PaperAnalysis (level=l4_deep, schema_version=v2)           │
-│  保存 MethodDelta (legacy 兼容)                                   │
-│  更新 paper.state → l4_deep                                      │
-│  更新 paper.structurality_score ← LLM 输出 (决定 A/B/C/D)        │
-│  更新 paper.tags ← method/*, improvement/*                       │
-│                                                                  │
-│  _maybe_create_bottleneck()                                      │
-│    → 查 DB 是否已有同名瓶颈 → 有则关联, 无则创建                    │
-│    → 创建 PaperBottleneckClaim (论文声称解决此瓶颈)                  │
-│                                                                  │
-│  _build_idea_graph()                                             │
-│    → assign_paradigm(): 匹配范式 (静态→模糊→LLM发现)               │
-│    → run_delta_card_pipeline():                                  │
-│       build_delta_card → persist_evidence → derive_idea_delta     │
-│       → propose_assertions → check_and_publish                   │
-│       门控: evidence_refs ≥ 2 → DeltaCard 发布                    │
-│       门控: min(confidence) ≥ 0.85 → IdeaDelta 自动发布            │
-│    → 更新 paper.current_delta_card_id                             │
-└──────────────────────────────────────────────────────────────────┘
- │ 以下每步独立 try/except + session.rollback(), 互不阻断
+ │ merge → 持久化: PaperAnalysis + MethodDelta + DeltaCard +
+ │                  Evidence + IdeaDelta + GraphAssertions
  ▼
 ┌─ Step 3: build_compare_set ─────────────────────────────────────┐
-│  文件: baseline_comparator_service.py                             │
-│  纯 DB 查询, 无 LLM 调用                                          │
-│                                                                  │
+│  baseline_comparator_service.py (纯 DB, 无 LLM)                  │
 │  ★ 防线 #2: "比较集不是论文自己说了算"                               │
 │  4 个来源:                                                        │
-│    ① domain_baseline:  同范式已确立基线 (is_established_baseline)   │
+│    ① domain_baseline:  同范式已确立基线                              │
 │    ② same_mechanism:   同 mechanism_family 的论文                  │
 │    ③ strong_peer:      同 category 同时期高 structurality 论文      │
 │    ④ self_reported:    论文自述的 baseline_paper_titles             │
-│                                                                  │
-│  → 更新 DeltaCard.baseline_paper_ids                               │
 └──────────────────────────────────────────────────────────────────┘
  │
  ▼
 ┌─ Step 4: propose_lineage ───────────────────────────────────────┐
-│  文件: evolution_service.py → link_to_parent_baselines()          │
-│  纯 DB 查询 + 写入                                                │
-│                                                                  │
-│  查找父节点策略:                                                    │
-│    ① 同 paradigm name 已发布的 DeltaCard                           │
-│    ② 同 mechanism_family 的 DeltaCard                              │
-│    ③ 同 frame 已确立基线                                            │
-│                                                                  │
-│  → 创建 DeltaCardLineage (status=candidate, relation=builds_on)   │
-│  → 创建 builds_on GraphAssertion (candidate, 需审核)                │
-│  → 更新 parent.downstream_count += 1                               │
-│  → downstream ≥ 3 → parent.is_established_baseline = true          │
-│  → 创建 ReviewTask (自动审核任务)                                    │
+│  evolution_service.py (纯 DB)                                     │
+│  查找父节点 → 创建 DeltaCardLineage (candidate)                    │
+│  → 创建 builds_on GraphAssertion                                  │
+│  → downstream ≥ 3 → parent.is_established_baseline = true         │
+│  → 创建 ReviewTask                                                │
 └──────────────────────────────────────────────────────────────────┘
  │
  ▼
 ┌─ Step 5: synthesize_concept ────────────────────────────────────┐
-│  文件: concept_synthesizer_service.py                             │
-│  纯 DB 查询 + 写入                                                │
-│                                                                  │
+│  concept_synthesizer_service.py (纯 DB)                           │
 │  ① same_family_method → 找/建 MechanismFamily                     │
-│     精确匹配 → 别名匹配 → 新建                                      │
 │  ② core_intuition → 找/建 CanonicalIdea                           │
-│     精确匹配 → 同 mechanism 匹配 → 新建                              │
 │  ③ 创建 ContributionToCanonicalIdea 链接                           │
-│     contribution_type: origin(≥0.7) / extension(≥0.4) / instance  │
-│  → paper.mechanism_family = 方法族名称                               │
 └──────────────────────────────────────────────────────────────────┘
  │
  ▼
 ┌─ Step 6: reconcile_neighbors ───────────────────────────────────┐
-│  文件: incremental_reconciler_service.py                          │
-│                                                                  │
+│  incremental_reconciler_service.py                                │
 │  ① refresh_connections(): 更新 same_family_paper_ids               │
 │  ② 将新论文加入邻居 DeltaCard 的 same_family 列表                    │
 │  ③ structurality ≥ 0.6 → 检查 baseline 候选                       │
@@ -291,62 +365,26 @@ deep_analyze_paper(paper_id)
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.4 三道防线
+### 4.4 三道防线
 
 | # | 防线 | 机制 | 对应步骤 |
 |---|------|------|---------|
-| 1 | **先看改动不先听故事** | Step 1 prompt 强制: FIRST Method → THEN Experiments → ONLY THEN Abstract | Step 1 |
-| 2 | **比较集不是论文自己说了算** | 从 DB 查 4 个来源自动补齐比较集, 不只用论文自述 | Step 3 |
+| 1 | **先看改动不先听故事** | Prompt 强制: FIRST Method → THEN Experiments → ONLY THEN Abstract | Step 1 |
+| 2 | **比较集不是论文自己说了算** | 从 DB 查 4 个来源自动补齐比较集 | Step 3 |
 | 3 | **高价值结论必须有证据锚点** | DeltaCard 发布门控: evidence_refs ≥ 2 | 持久化阶段 |
 
-### 3.5 容错机制
+### 4.5 容错机制
 
 - **Step 1+2 (LLM)**: 缺 required_fields → 自动重试 (最多 2 次), 仍缺则用 partial data 继续
-- **Step 3-6 (DB)**: 每步独立 `try/except + session.rollback()`, 单步失败不阻断后续步骤
+- **Step 3-6 (DB)**: 每步独立 `try/except + session.rollback()`, 单步失败不阻断后续
 - **LLM 返回非 JSON**: 自动去 markdown fence → 找 `{...}` → retry
-- **Session 级容错**: DB 错误后 rollback 恢复 session, 后续步骤可继续
-
-### 3.6 Service 文件对照
-
-| 文件 | 职责 | 调用方 |
-|------|------|--------|
-| `pipeline_service.py` | 外层编排 (triage→download→enrich→L2→L3→L4) | API `/pipeline/*` |
-| `analysis_service.py` | L3 skim + L4 deep 6步编排器 | pipeline_service |
-| `analysis_steps.py` | Step 1+2 的 prompt + JSON 解析 + retry + merge | analysis_service |
-| `baseline_comparator_service.py` | Step 3: 4源比较集 | analysis_service |
-| `evolution_service.py` | Step 4: 方法演化 DAG + baseline 晋升 | analysis_service |
-| `concept_synthesizer_service.py` | Step 5: MechanismFamily + CanonicalIdea | analysis_service |
-| `incremental_reconciler_service.py` | Step 6: 反向更新邻居 | analysis_service |
-| `delta_card_service.py` | DeltaCard → Evidence → IdeaDelta → Assertions | analysis_service |
-| `frame_assign_service.py` | 范式匹配 (静态→模糊→LLM发现) | delta_card_service |
-| `export_service.py` | Obsidian vault 导出 (5类笔记) | API `/pipeline/export/*` |
-
-### 3.7 研究探索: 多跳认知迭代
-
-```
-POST /explore/start {"query": "RL advantage disappearance"}
-         │
-POST /explore/{id}/search {"query": "not plugin, fundamental"}
-         │  → 搜索 + 自动分类: structural=1, plugin=6
-         │  → gap分析: "缺少根本性改进，试试相邻领域"
-         │
-POST /explore/{id}/step {"step_type": "pivot",
-         │                "rejected_reason": "都是插件型"}
-         │  → 记录pivot + 建议: "seek_fundamental"
-         │
-POST /explore/{id}/search {"query": "think with image agentic GDPO"}
-         │  → 继续探索，系统记住拒绝模式
-         │
-GET /explore/{id}
-         └→ 完整路径: initial → refine → pivot → broaden
-            + 论文按 method/ 分类 + 下一步建议
-```
+- **Session 级容错**: DB 错误后 rollback 恢复 session
 
 ---
 
-## 4. 图谱断言模型
+## 5. 图谱断言模型
 
-### 4.1 GraphAssertion 生命周期
+### 5.1 GraphAssertion 生命周期
 
 ```
 candidate ──→ published ──→ deprecated/superseded
@@ -365,17 +403,17 @@ candidate ──→ published ──→ deprecated/superseded
 | transferable_to | **否** | 跨域迁移 |
 | patch_of | **否** | 一个方法是另一个的插件 |
 
-### 4.2 发布门控
+### 5.2 发布门控
 
 | 对象 | 发布条件 |
 |------|---------|
 | DeltaCard | frame_id + changed_slots + evidence_refs ≥ 2 |
 | IdeaDelta | evidence_count ≥ 2 + min(confidence) ≥ 0.85 |
-| 高价值断言 | 需要 ReviewTask 审核通��� |
+| 高价值断言 | 需要 ReviewTask 审核通过 |
 
 ---
 
-## 5. 领域范式动态发现
+## 6. 领域范式动态发现
 
 ```python
 assign_paradigm(category, tags, title, abstract)
@@ -396,161 +434,266 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 
 ---
 
-## 6. 数据库 Schema 总览 (42 表 + 4 物化视图, 11 次迁移)
+## 7. Figure/Formula 提取
+
+### 图表提取流程
+
+```
+1. PyMuPDF caption 文本扫描 → 找到 "Figure X." / "Table X."
+2. 向上扫描找最近的正文文本 → 确定图的上边界
+3. caption 宽度判断: >55% 页宽 = 全宽图, 否则列宽
+4. 裁剪区域 → 2.5x 高清 PNG → OSS 上传
+5. VLM (1 次调用): 分类 + 补漏漏检的图
+6. VLM 返回: label, semantic_role, description (中文)
+```
+
+### 公式提取流程
+
+```
+1. GROBID 检测 <formula> 坐标 (优先) 或数学符号聚类 (fallback)
+2. bbox 横向扩展到文本列宽 (包含公式编号)
+3. 相邻公式行合并 (多行方程)
+4. 3x 高清截图 → VLM OCR → LaTeX
+```
+
+---
+
+## 8. 数据库 Schema (42 表 + 4 物化视图, 15 次迁移)
 
 ### 核心表
 
-| 表 | 行数概念 | 说明 |
-|----|---------|------|
-| papers | 每篇论文 1 行 | 60+ 列: 元数据 + 评分 + 状态 + current_delta_card_id |
-| delta_cards | 每篇论文 N 行 (append-only) | 不可变快照 + analysis_run_id/source_asset_hash |
-| idea_deltas | 每篇论文 1+ 行 | 可复用知识原子 |
-| evidence_units | 每篇 2-5 行 | 证据单元 (实验/代码/推理) |
-| graph_assertions | 每篇 4-8 行 | 图谱边 + 生命周期 |
-| graph_nodes | 每个实体 1 行 | 统一节点注册 |
-| paradigm_templates | 每个领域 1-3 行 | 范式模板 + 版本演化 |
-| slots | 每范式 4-8 行 | 可替换组件 |
-| mechanism_families | ~20 行 | 机制族 (层级结构) |
-| project_bottlenecks | 每瓶颈 1 行 | 全局瓶颈本体 |
-| review_tasks | 待审核项 | 审核队列 (自动 + 人工) |
-| aliases | 别名映射 | 实体归一 |
-| **paper_bottleneck_claims** | 每篇 0-3 行 | **v3.2** 论文级瓶颈声称 |
-| **project_focus_bottlenecks** | 每项目 N 行 | **v3.2** 项目级关注瓶颈 (带负约束) |
-| **canonical_ideas** | 跨论文概念 | **v3.2** 归一概念层 |
-| **contribution_to_canonical_idea** | 1:N 映射 | **v3.2** 论文贡献→概念 |
-| **delta_card_lineage** | 每对 1 行 | **v3.2** 独立演化 DAG (candidate 默认) |
-| **paradigm_candidates** | 候选项 | **v3.2** 候选范式 (需审核) |
-| **slot_candidates** | 候选项 | **v3.2** 候选槽位 |
-| **mechanism_candidates** | 候选项 | **v3.2** 候选机制族 |
-| **taxonomy_versions** | 每次变更 1 行 | **v3.2** ontology 变更快照 |
-| **search_branches** | 探索分支 | **v3.2** 搜索会话中的分支决策 |
-| **render_artifacts** | 输出制品 | **v3.2** 报告/摘要/导出追踪 |
+| 表 | 说明 |
+|----|------|
+| papers | 60+ 列: 元数据 + 评分 + 状态 + current_delta_card_id + embedding (pgvector 1536d) |
+| delta_cards | 不可变快照 (append-only) + analysis_run_id/source_asset_hash |
+| idea_deltas | 可复用知识原子 |
+| evidence_units | 证据单元 (实验/代码/推理) |
+| evidence_links | 证据关联 |
+| graph_assertions | 图谱边 + 生命周期 |
+| graph_nodes | 统一节点注册 |
+| graph_edges | 图谱边 (legacy) |
+
+### 领域本体
+
+| 表 | 说明 |
+|----|------|
+| paradigm_templates | 范式模板 + 版本演化 |
+| slots | 可替换组件 (每范式 4-8 个) |
+| mechanism_families | 机制族 (层级结构) |
+| domains | 领域定义 |
+| project_bottlenecks | 全局瓶颈本体 |
+| paper_bottleneck_claims | 论文级瓶颈声称 |
+| project_focus_bottlenecks | 项目级关注瓶颈 (带负约束) |
+
+### 跨论文概念
+
+| 表 | 说明 |
+|----|------|
+| canonical_ideas | 跨论文归一概念 |
+| contribution_to_canonical_idea | 论文贡献→概念映射 |
+| delta_card_lineage | 独立演化 DAG (candidate 默认) |
+
+### 审核与候选
+
+| 表 | 说明 |
+|----|------|
+| review_tasks | 审核队列 (自动 + 人工) |
+| assertion_overrides | 人工覆写 |
+| paradigm_candidates | 候选范式 (需审核) |
+| slot_candidates | 候选槽位 |
+| mechanism_candidates | 候选机制族 |
+
+### Faceted Taxonomy
+
+| 表 | 说明 |
+|----|------|
+| taxonomy_nodes | 75 个种子节点, 15 个维度 |
+| taxonomy_edges | 层级关系 (is_a/part_of/uses/optimizes) |
+| taxonomy_versions | ontology 变更快照 |
+| paper_facets | 论文多维标签 |
+| problem_nodes | 任务下的共性问题 |
+| problem_claims | 论文对问题的声称 |
+
+### Method Evolution
+
+| 表 | 说明 |
+|----|------|
+| method_nodes | 方法节点 (algorithm/recipe/model_family/system) |
+| method_slots | 方法的可替换组件 |
+| method_edges | 方法间关系 (applies_to/modifies_slot/combines_with/replaces) |
+| method_applications | 论文对方法的使用 (baseline/proposed/component) |
 
 ### 支撑表
 
-paper_analyses, paper_assets, paper_versions, method_deltas (legacy),
-graph_edges (legacy), implementation_units, transfer_atoms, search_sessions,
-reading_plans, direction_cards, digests, jobs, model_runs, execution_memories,
-user_feedback, user_bookmarks, user_events, human_overrides, graph_assertion_evidence
+paper_analyses, paper_assets, paper_versions, method_deltas,
+metadata_observations, canonical_paper_metadata,
+digests, digest_entries, directions, direction_insights,
+research_sessions, exploration_steps, search_branches,
+bookmarks, feedback, render_artifacts, aliases
 
 ### 物化视图 (CQRS-lite)
 
-| 视图 | 说明 | 刷新 |
-|------|------|------|
-| paper_search_docs | 论文 + DeltaCard + 证据数 去规范化 | `POST /search/refresh-views` |
-| idea_search_docs | IdeaDelta + 论文 + DeltaCard 去规范化 | 同上 |
-| lineage_view | 方法演化 DAG + 论文标题展平 | 同上 |
-| review_queue_view | 待审核项 + 目标摘要 | 同上 |
+| 视图 | 说明 |
+|------|------|
+| paper_search_docs | 论文 + DeltaCard + 证据数 去规范化 |
+| idea_search_docs | IdeaDelta + 论文 + DeltaCard 去规范化 |
+| lineage_view | 方法演化 DAG + 论文标题展平 |
+| review_queue_view | 待审核项 + 目标摘要 |
+
+刷新: `POST /search/refresh-views`
+
+### PaperState 状态机
+
+```
+EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
+  → L1_METADATA → L2_PARSED → L3_SKIMMED → L4_DEEP → CHECKED
+  (分支: SKIP | MISSING | TOO_LARGE | ANALYSIS_MISMATCH | ARCHIVED_OR_EXPIRED)
+```
+
+### 枚举类型 (9 个)
+
+| 枚举 | 值 |
+|------|---|
+| PaperState | 15 个状态值 |
+| Importance | S, A, B, C, D |
+| AnalysisLevel | L1_METADATA, L2_PARSE, L3_SKIM, L4_DEEP |
+| AssetType | RAW_PDF, RAW_HTML, EXTRACTED_TEXT, FIGURE, CODE_SNAPSHOT, SKIM_REPORT, DEEP_REPORT, EXPORTED_MD |
+| PeriodType | DAY, WEEK, MONTH |
+| JobStatus | PENDING, RUNNING, COMPLETED, FAILED, CANCELLED |
+| FeedbackType | CORRECTION, CONFIRMATION, REJECTION, TAG_EDIT |
+| Tier | A_OPEN_DATA, B_OPEN_CODE, C_ACCEPTED_NO_CODE, D_PREPRINT |
+| EvidenceBasis | CODE_VERIFIED, EXPERIMENT_BACKED, TEXT_STATED, INFERRED, SPECULATIVE |
 
 ---
 
-## 7. API 路由总览 (99 路由, 14 Router)
+## 9. API 路由总览 (16 Router, 100+ 端点)
 
 | Router | 前缀 | 关键端点 |
 |--------|------|---------|
-| pipeline | /pipeline | `run`, `batch`, `init-domain`, `discover`, `build-domain`, `lineage`, `evolution` |
-| explore | /explore | `start`, `step`, `search`, `summary` |
-| assertions | /assertions | CRUD + `aliases` |
-| graph | /graph | `stats`, `quality`, `ideas`, `paradigms`, `mechanisms` |
-| search | /search | `hybrid`, `ideas`, `bottlenecks`, `mechanisms`, `transfers`, **`query`** (意图路由), **`refresh-views`** |
-| **reviews** | /reviews | **v3.2** 队列CRUD, `approve`, `reject`, `assign`, `override`, `candidates/paradigms`, `candidates/lineage` |
-| papers | /papers | CRUD + 列表 + 过滤 |
-| import | /import | `links`, `pdf`, `parse` |
-| analyses | /analyses | `skim`, `deep`, `batch` |
-| reports | /reports | `generate` (quick/briefing/deep) |
-| digests | /digests | day/week/month 摘要 |
-| directions | /directions | 方向提议 + 展开 |
-| feedback | /feedback | 纠错/确认/标签修改 |
-| health | / | 健康检查 |
+| papers | /papers | CRUD, triage, triage-all, enrich, search, download-pdf |
+| import | /import | links, accept, pdf, parse, cleanup-expired |
+| analyses | /analyses | skim, deep, skim-batch |
+| pipeline | /pipeline | run, batch, init-domain, discover, build-domain, download-pdf, lineage, evolution, export/obsidian-vault, export/build-collection-index, sync-domain, refresh-connections |
+| search | /search | hybrid, ideas, bottlenecks, mechanisms, transfers, query, refresh-views, embeddings/generate, reading-plan |
+| graph | /graph | stats, ideas, edges, citations, bottleneck, mechanism, transfers, synthesis, paradigms, mechanisms, quality, admin-stats, vis-data |
+| reviews | /reviews | CRUD, approve, reject, assign, override, candidates/paradigms (promote/reject), candidates/lineage |
+| assertions | /assertions | reviews/queue, reviews/stats, approve, reject, overrides, aliases, node, propose, audit, publish |
+| explore | /explore | start, step, search, summary |
+| taxonomy | /taxonomy | nodes, tree, dimensions, paper/{id}/facets, problems |
+| methods | /methods | nodes, nodes/{id}, lineage/{id} |
+| reports | /reports | generate |
+| digests | /digests | generate, latest |
+| directions | /directions | propose, expand, list |
+| feedback | /feedback | feedback CRUD, bookmarks CRUD |
+| bottlenecks | /bottlenecks | normalize, merge-duplicates, unlinked-claims, focus |
 
 ---
 
-## 8. Obsidian Vault 导出 (v4.0)
+## 10. Service 模块 (45 个)
+
+| 文件 | 职责 |
+|------|------|
+| **pipeline_service.py** | 外层编排 (triage→download→enrich→L2→L3→L4→post-L4→discovery) |
+| **analysis_service.py** | L3 skim + L4 deep 6步编排器 |
+| **analysis_steps.py** | Step 1+2 的 prompt + JSON 解析 + retry + merge |
+| **baseline_comparator_service.py** | Step 3: 4源比较集 |
+| **evolution_service.py** | Step 4: 方法演化 DAG + baseline 晋升 |
+| **concept_synthesizer_service.py** | Step 5: MechanismFamily + CanonicalIdea |
+| **incremental_reconciler_service.py** | Step 6: 反向更新邻居 |
+| **delta_card_service.py** | DeltaCard → Evidence → IdeaDelta → Assertions |
+| **frame_assign_service.py** | 范式匹配 (静态→模糊→LLM发现) |
+| **parse_service.py** | L2 PDF 解析 (GROBID + PyMuPDF ensemble) |
+| **enrich_service.py** | 10 步元数据补全 (8 个 API) |
+| **triage_service.py** | 论文评分 (4 维) |
+| **venue_resolver_service.py** | 会议中稿检测 (OpenReview + DBLP + arXiv) |
+| **metadata_resolver_service.py** | 多源元数据 canonical resolve |
+| **figure_extraction_service.py** | 图表提取 (caption 锚定 + VLM) |
+| **formula_extraction_service.py** | 公式提取 (GROBID + VLM OCR) |
+| **vlm_extraction_service.py** | Vision-Language Model 调用 |
+| **search_service.py** | 混合搜索 (keyword + semantic + structured) |
+| **embedding_service.py** | 向量嵌入生成管理 |
+| **query_router_service.py** | 意图路由 (自然语言→对应搜索) |
+| **reading_planner.py** | 分层阅读计划 |
+| **graph_service.py** | 图谱构建维护 |
+| **graph_query_service.py** | 复杂图谱查询 |
+| **discovery_service.py** | 论文发现 (Semantic Scholar) |
+| **exploration_service.py** | 交互式探索会话 |
+| **domain_init_service.py** | 领域冷启动 (GitHub awesome 仓库) |
+| **domain_sync_service.py** | 领域同步 |
+| **direction_service.py** | 研究方向管理 |
+| **report_service.py** | 报告生成 (quick/briefing/deep) |
+| **digest_service.py** | 每日/周/月摘要 |
+| **review_service.py** | 审核任务管理 |
+| **assertion_service.py** | 断言管理 |
+| **quality_service.py** | 知识库质量评估 |
+| **feedback_service.py** | 用户反馈收集 |
+| **bottleneck_normalization_service.py** | 瓶颈归一化聚类 |
+| **entity_resolution_service.py** | 实体去重归一 |
+| **ingestion_service.py** | 论文入库 |
+| **paper_service.py** | 论文 CRUD |
+| **llm_service.py** | LLM API 调用 (Anthropic/OpenAI) |
+| **object_storage.py** | 对象存储 (COS/OSS) |
+| **vault_export_v5.py** | Obsidian vault 导出 |
+| **export_service.py** | 通用导出 |
+| **openreview_adapter.py** | OpenReview API 集成 |
+| **dblp_adapter.py** | DBLP 元数据查询 |
+
+---
+
+## 11. MCP Server (23 工具 + 6 资源 + 4 提示)
+
+### Tools
+
+| 工具 | 功能 |
+|------|------|
+| `search_research_kb` | 混合搜索: keyword + semantic + structured |
+| `search_ideas` | 搜索 DeltaCard / IdeaDelta |
+| `get_paper_report` | 生成报告: quick / briefing / deep_compare |
+| `compare_papers` | 2-5 篇论文并排比较 |
+| `import_research_sources` | 导入论文 URL |
+| `get_digest` | 每日/周/月摘要 |
+| `get_reading_plan` | 分层阅读计划 |
+| `propose_directions` | 研究方向提议 |
+| `run_full_pipeline` | 完整管线执行 |
+| `discover_related_papers` | Semantic Scholar 发现 |
+| `build_domain` | 多跳发现构建领域 |
+| `enqueue_analysis` | 排队 L3/L4 分析 |
+| `refresh_assets` | 元数据刷新 |
+| `record_user_feedback` | 记录反馈 |
+| `get_paper_detail` | 论文详情 + DeltaCard |
+| `get_graph_stats` | 图谱统计 |
+| `review_queue` | 待审核队列 |
+| `submit_review_decision` | 提交审核决策 |
+| `resolve_venue` | 会议中稿检测 (OpenReview + DBLP) |
+| `get_paper_citations` | GROBID refs + S2 citing papers |
+| `get_paper_figures` | 图表 + OSS URLs + VLM 描述 |
+| `get_metadata_conflicts` | 多源元数据冲突查看 |
+
+### Resources
+
+| URI | 返回内容 |
+|-----|---------|
+| `paper://{id}` | 论文详情 + 分析 + DeltaCard |
+| `delta-card://{id}` | DeltaCard 结构化快照 |
+| `graph://stats` | 知识图谱统计 |
+| `canonical-idea://{id}` | 跨论文归一概念 |
+| `review-task://{id}` | 审核任务 + 目标对象 |
+| `lineage://{paper_id}` | 方法演化 DAG |
+
+### Prompts
+
+| 名称 | 用途 |
+|------|------|
+| `deep-paper-report` | 论文深度分析报告 |
+| `weekly-research-review` | 周度研究综述 |
+| `lineage-review` | 方法演化追踪 |
+| `direction-gap-analysis` | 研究方向 gap 分析 |
+
+---
+
+## 12. Obsidian Vault 导出
 
 触发: `POST /pipeline/export/obsidian-vault`
-
-导出前自动清理旧文件 (清理子项, 不删根目录 — 兼容 Docker 挂载)。
-
-### 5 类笔记
-
-| 类型 | 前缀 | 目录 | 正文 wikilinks |
-|------|------|------|---------------|
-| Paper | `P__` | `40_Papers/{A/B/C/D}__*/` | 6-8 个 (1-2 baseline + 1 concept + 1 bottleneck + 1 lineage + 2 same-family) |
-| Concept | `C__` | `20_Concepts/` | 不限 (代表论文对比表) |
-| Bottleneck | `B__` | `30_Bottlenecks/` | 不限 (结构性/插件型解法分层) |
-| Lineage | `L__` | `10_Lineages/` | 不限 (ASCII 演化树) |
-| Overview | — | `00_Home/` | 纯导航 |
-
-### 论文分级 A/B/C/D
-
-分级由 `_paper_level(p)` 函数决定，优先级: **ring 字段 → dc.structurality_score → paper.structurality_score**
-
-| 等级 | 目录 | 分数条件 | 含义 | 示例 |
-|------|------|---------|------|------|
-| **A** | `A__Baselines` | ring=baseline 或 score ≥ 0.7 | 必读 baseline，建立标准框架 | DPO, InstructGPT, KTO |
-| **B** | `B__Structural` | ring=structural 或 score ≥ 0.5 | 结构性改进，改了核心 slot | GRPO, ORPO, SPIN |
-| **C** | `C__Plugins` | ring=plugin 或 score ≥ 0.3 | 插件型改进，加模块/改 loss | SimPO, RAFT, RRHF |
-| **D** | `D__Peripheral` | 其余 (score < 0.3 或无分析) | 外围参考 | — |
-
-**分数来源**: `structurality_score` 由 L4 Step 2 的 LLM 输出。Prompt 明确要求:
-> "structurality_score: 0.0 (pure plugin/trick) to 1.0 (fundamental rethink).
-> Most papers should be 0.2-0.5. Reserve 0.7+ for truly structural work."
-
-**在 Obsidian 中查看分级**:
-1. **目录结构** — `40_Papers/A__Baselines/`、`B__Structural/`、`C__Plugins/`
-2. **Paper frontmatter** — `paper_level: A`
-3. **90_Views/papers_by_structurality.md** — 按结构性降序的完整表格
-4. **00_Home/01_阅读顺序.md** — 按 A→B→C 分层推荐阅读
-5. **00_Home/00_方向总览.md** — 论文分布统计 (A: 5, B: 5, C: 5)
-
-### Paper Note 模板
-
-每篇论文的 Obsidian 页面结构:
-
-```yaml
----
-title: "Direct Preference Optimization..."
-type: paper
-paper_id: P__DPO
-paper_level: A                    # ← A/B/C/D 分级
-frame: rl_standard                # ← 范式 (仅属性, 不做 wikilink)
-changed_slots: [loss_function, training_pipeline]
-structurality_score: 0.8
-concepts: ["[[C__direct_preference_optimization]]"]
-bottleneck: ["[[B__RLHF训练的复杂性...]]"]
-lineage: ["[[L__DPO_Family]]"]    # ← 如有 lineage
-same_family_papers: ["[[P__SimPO]]", "[[P__KTO]]"]
----
-
-# 一眼看懂
-> 基于 [[P__InstructGPT]]，改了 `loss_function`, `training_pipeline`，
-> 属于 [[C__direct_preference_optimization]]，
-> 目标是缓解 [[B__RLHF训练的复杂性...]]
-
-## 相对 baseline 改了什么
-| 相比 | 改动 slot | 收益 | 代价 |
-|------|---------|------|------|
-| [[P__InstructGPT]] | loss_function | ... | ... |
-
-## 关键公式
-## 关键图表
-## 同类型工作 (max 2 links)
-## 在主线中的位置 (1 lineage link)
-## 阅读建议           ← 按 A/B/C/D 等级给不同建议
-## 详细分析
-```
-
-**正文 wikilink 预算**: 1-2 baseline + 1 concept + 1 bottleneck + 1 lineage + 2 same-family = **6-8 个**
-
-**不链接**: Domain Overview, Paradigm, System Index → 这些只放 frontmatter 属性
-
-### 关键规则
-
-- Paper Note **不链接** Domain Overview / Paradigm → 只放 frontmatter `frame` 属性
-- Concept = MechanismFamily + CanonicalIdea **合并** → 单一信息密集页
-- Bottleneck = **跨论文综合** insight → 不是每篇论文各建一个
-- Lineage = **人类可读**的演化链 → 含 ASCII 树 + 每步 diff + 分叉点
-- 90_Views/ 是**静态 Markdown 表格** → 不依赖 Dataview 插件
 
 ### 目录结构
 
@@ -558,7 +701,7 @@ same_family_papers: ["[[P__SimPO]]", "[[P__KTO]]"]
 00_Home/
   00_方向总览.md        # 方法主线 + 核心概念 + 研究瓶颈 + 论文分布
   01_阅读顺序.md        # 分层: 框架 → baseline → 结构性 → 按需
-10_Lineages/            # L__ 方法演化链 (需 delta_card_lineage 数据)
+10_Lineages/            # L__ 方法演化链
 20_Concepts/            # C__ 概念 = Mechanism + CanonicalIdea
 30_Bottlenecks/         # B__ 跨论文瓶颈 (症状 + 根因 + 解法分层)
 40_Papers/
@@ -566,42 +709,61 @@ same_family_papers: ["[[P__SimPO]]", "[[P__KTO]]"]
   B__Structural/        # struct ≥ 0.5 (结构性改进)
   C__Plugins/           # struct ≥ 0.3 (插件型)
   D__Peripheral/        # < 0.3 或无数据 (外围)
-80_Assets/figures/      # PDF 提取的图表 (按 paper_sanitized 分目录)
-90_Views/               # 静态 Markdown 表格 (按结构性/年份/概念/瓶颈)
+80_Assets/figures/      # PDF 提取的图表
+90_Views/               # 静态 Markdown 表格
 ```
 
-### Obsidian 同步
+### 论文分级 A/B/C/D
 
-```bash
-# 1. 服务器上导出
-curl -X POST localhost:8000/api/v1/pipeline/export/obsidian-vault
+分级由 `_paper_level(p)` 函数决定，优先级: **ring 字段 → dc.structurality_score → paper.structurality_score**
 
-# 2. rsync 到本地
-rsync -avz --delete \
-  -e "ssh -i ~/.ssh/autoresearch.pem" \
-  root@47.101.167.55:/opt/researchflow/researchflow-backend/obsidian-vault/ \
-  ./obsidian-vault/
+| 等级 | 分数条件 | 含义 | 示例 |
+|------|---------|------|------|
+| **A** | ring=baseline 或 score ≥ 0.7 | 必读 baseline | DPO, InstructGPT, KTO |
+| **B** | ring=structural 或 score ≥ 0.5 | 结构性改进 | GRPO, ORPO, SPIN |
+| **C** | ring=plugin 或 score ≥ 0.3 | 插件型改进 | SimPO, RAFT, RRHF |
+| **D** | 其余 | 外围参考 | — |
 
-# 3. Obsidian 打开 → Graph View (Cmd+G)
-#    推荐 Graph 颜色:
-#    path:40_Papers → 蓝    path:20_Concepts → 绿
-#    path:30_Bottlenecks → 红   path:10_Lineages → 橙
+### Paper Note wikilink 预算
+
+**6-10 个正文 wikilinks**: T (Task) + M (Method) + C (Concept) + D (Dataset) + P (Papers)
+
+其余 facets 放 frontmatter YAML，不生成 wikilinks。不链接 Domain Overview / Paradigm。
+
+---
+
+## 13. 研究探索: 多跳认知迭代
+
+```
+POST /explore/start {"query": "RL advantage disappearance"}
+         │
+POST /explore/{id}/search {"query": "not plugin, fundamental"}
+         │  → 搜索 + 自动分类: structural=1, plugin=6
+         │  → gap分析: "缺少根本性改进，试试相邻领域"
+         │
+POST /explore/{id}/step {"step_type": "pivot",
+         │                "rejected_reason": "都是插件型"}
+         │  → 记录pivot + 建议: "seek_fundamental"
+         │
+GET /explore/{id}
+         └→ 完整路径 + 论文分类 + 下一步建议
 ```
 
 ---
 
-## 9. 技术栈
+## 14. 技术栈
 
 | 组件 | 选型 |
 |------|------|
-| Web框架 | FastAPI (async) |
+| Web 框架 | FastAPI (async) |
 | 前端 | Next.js 15 + Tailwind |
 | ORM | SQLAlchemy 2.0 (async) |
 | 数据库 | PostgreSQL 16 + pgvector |
-| 任务队列 | arq (Redis) |
-| PDF解析 | pymupdf |
-| LLM | Anthropic Claude / OpenAI / mock |
-| MCP | Python MCP SDK |
-| 论文发现 | Semantic Scholar API (免费) |
-| 领域初始化 | GitHub Search API → awesome 仓库解析 |
-| 部署 | Docker Compose + Caddy |
+| 任务队列 | ARQ (Redis) |
+| PDF 解析 | PyMuPDF + GROBID (ensemble) |
+| LLM | Anthropic Claude / OpenAI (streaming) |
+| VLM | Claude Vision (图表分类 + 公式 OCR) |
+| MCP | Python MCP SDK (stdio + SSE) |
+| 元数据 | arXiv + Crossref + OpenAlex + S2 + DBLP + OpenReview + GitHub + HuggingFace |
+| 对象存储 | Tencent COS / Alibaba OSS / Local |
+| 部署 | Docker Compose + Caddy (自动 HTTPS) |
