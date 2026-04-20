@@ -256,7 +256,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         schema_version="v2",
         confidence=1.0,
         extracted_sections=merged_sections,
-        extracted_formulas=extracted_formulas,
+        extracted_formulas=[_clean_text(f) for f in extracted_formulas] if extracted_formulas else extracted_formulas,
         extracted_tables=table_captions,
         figure_captions=figure_captions,
         extracted_figure_images=figure_image_records if figure_image_records else None,

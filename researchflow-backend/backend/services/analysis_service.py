@@ -622,37 +622,20 @@ async def skim_batch(session: AsyncSession, limit: int = 5) -> list[dict]:
 def _parse_json_response(text: str, required_fields: list[str] | None = None) -> dict:
     """Parse JSON from LLM response with validation.
 
-    Handles: markdown fences, leading/trailing text, nested JSON.
+    Handles: markdown fences, leading/trailing text, truncated JSON.
     Validates: required fields present and non-None.
-    Returns empty dict ONLY as last resort (logged as error).
     """
-    text = text.strip()
-    # Strip markdown code fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
-        text = "\n".join(lines)
+    # Reuse the robust parser from analysis_steps
+    from backend.services.analysis_steps import _parse_json_safe
+    parsed = _parse_json_safe(text)
 
-    parsed = None
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        # Try to find JSON object in the text
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            try:
-                parsed = json.loads(text[start:end])
-            except json.JSONDecodeError:
-                pass
-
-    if parsed is None:
+    if not parsed:
         logger.error(f"FAILED to parse LLM JSON (total failure): {text[:300]}")
         return {}
 
-    # Validate required fields
+    # Validate required fields (use `is None`, not `not` — empty list is valid)
     if required_fields:
-        missing = [f for f in required_fields if not parsed.get(f)]
+        missing = [f for f in required_fields if parsed.get(f) is None]
         if missing:
             logger.warning(f"LLM JSON missing required fields: {missing}. Available keys: {list(parsed.keys())}")
 

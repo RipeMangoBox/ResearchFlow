@@ -156,98 +156,109 @@ Rules:
 # ── Step execution ────────────────────────────────────────────────
 
 def _parse_json_safe(text: str) -> dict:
-    """Parse JSON from LLM response, tolerating markdown fences and truncation."""
+    """Parse JSON from LLM response, tolerating markdown fences and truncation.
+
+    Strategy (in order):
+    1. Direct parse
+    2. Extract { ... } and parse
+    3. Brute-force repair: try closing brackets from the end
+    """
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.startswith("```")]
         text = "\n".join(lines)
 
-    # Try direct parse
+    # 1. Direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Extract JSON object
+    # 2. Extract JSON object between first { and last }
     start = text.find("{")
     end = text.rfind("}") + 1
     if start >= 0 and end > start:
         try:
-            return json.loads(text[start:end])
+            result = json.loads(text[start:end])
+            if isinstance(result, dict) and len(result) >= 3:
+                return result
+            # Too few keys — rfind("}") likely matched a nested "}", try repair
         except json.JSONDecodeError:
             pass
 
-    # Handle truncated JSON — proxy APIs may cut responses mid-stream
+    # 3. Brute-force repair for truncated JSON
     if start >= 0:
         fragment = text[start:]
-        # Try to repair: close unclosed strings and brackets
-        repaired = _repair_truncated_json(fragment)
-        if repaired:
-            try:
-                result = json.loads(repaired)
-                logger.warning(f"JSON repaired from truncated response (len={len(text)})")
-                return result
-            except json.JSONDecodeError:
-                pass
+        result = _repair_truncated_json(fragment)
+        if result is not None:
+            logger.info(f"JSON repaired from truncated response (len={len(text)}, keys={list(result.keys())[:5]})")
+            return result
 
     logger.error(f"JSON parse failed (len={len(text)}): {text[:300]}...TAIL: {text[-200:]}")
     return {}
 
 
-def _repair_truncated_json(text: str) -> str | None:
-    """Attempt to repair truncated JSON by closing unclosed structures.
+def _repair_truncated_json(text: str) -> dict | None:
+    """Brute-force repair of truncated JSON.
 
-    Strategy: track bracket/brace stack, find last complete top-level
-    key-value pair, truncate there, close all open structures.
+    Strategy: find candidate cut points, try closing brackets at each,
+    accept first that produces valid JSON with the most content.
     """
-    # Track state through the JSON
-    last_top_comma = -1
-    in_string = False
-    escape_next = False
-    stack = []  # Track open brackets: '{', '['
+    import re
 
-    for i, c in enumerate(text):
-        if escape_next:
-            escape_next = False
+    # ── Candidate cut positions ──────────────────────────────────
+    candidates = set()
+
+    # Pattern 1: comma + newline + whitespace + quote (top-level key boundary)
+    for m in re.finditer(r',\s*\n\s*"', text):
+        candidates.add(m.start())
+
+    # Pattern 2: comma + whitespace + quote (same line)
+    for m in re.finditer(r',\s*"', text):
+        candidates.add(m.start())
+
+    # Pattern 3: closing bracket/brace followed by comma
+    for m in re.finditer(r'[}\]]\s*,', text):
+        candidates.add(m.end())
+
+    # Pattern 4: end of any complete string value ("....",)
+    for m in re.finditer(r'"\s*,', text):
+        candidates.add(m.end() - 1)  # position of comma
+
+    # Pattern 5: end of number/bool values
+    for m in re.finditer(r'(?:true|false|null|\d)\s*,', text):
+        candidates.add(m.end() - 1)
+
+    # Also try the very end
+    candidates.add(len(text))
+
+    # Sort and try from longest to shortest
+    for pos in sorted(candidates, reverse=True):
+        prefix = text[:pos].rstrip().rstrip(",")
+
+        # Count unmatched brackets (naive but works for non-pathological cases)
+        opens = prefix.count("{") - prefix.count("}")
+        open_sq = prefix.count("[") - prefix.count("]")
+
+        if opens < 0 or open_sq < 0:
             continue
-        if c == '\\' and in_string:
-            escape_next = True
-            continue
-        if c == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
 
-        if c in ('{', '['):
-            stack.append(c)
-        elif c == '}':
-            if stack and stack[-1] == '{':
-                stack.pop()
-            if not stack:
-                return text[:i + 1]  # Complete JSON found
-        elif c == ']':
-            if stack and stack[-1] == '[':
-                stack.pop()
-        elif c == ',':
-            # Track last comma at top-level of the root object (stack depth = 1)
-            if len(stack) == 1 and stack[0] == '{':
-                last_top_comma = i
+        # Try multiple closing strategies
+        for suffix in [
+            "]" * open_sq + "}" * opens,                    # close all
+            '"' + "]" * open_sq + "}" * opens,              # close unclosed string first
+            '"}' + "]" * max(0, open_sq-0) + "}" * max(0, opens-1),  # close obj in string
+        ]:
+            attempt = prefix + suffix
+            try:
+                result = json.loads(attempt)
+                if isinstance(result, dict) and len(result) > 0:
+                    return result
+            except json.JSONDecodeError:
+                continue
 
-    if last_top_comma <= 0:
-        return None
-
-    # Truncate at last complete top-level value, close all open structures
-    repaired = text[:last_top_comma]
-    # Close any remaining open structures in reverse order
-    for bracket in reversed(stack):
-        if bracket == '{':
-            repaired += "\n}"
-        elif bracket == '[':
-            repaired += "\n]"
-
-    return repaired
+    return None
 
 
 async def _call_with_retry(
@@ -273,7 +284,9 @@ async def _call_with_retry(
         data["_model_provider"] = resp.provider
         data["_model_name"] = resp.model
 
-        missing = [f for f in required_fields if not data.get(f)]
+        # Check for missing fields — use `is None` not `not`, because
+        # empty list [] or empty string "" are valid values
+        missing = [f for f in required_fields if data.get(f) is None]
         if not missing:
             return data
 
