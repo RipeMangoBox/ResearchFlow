@@ -738,7 +738,7 @@ async def _dispatch(name: str, args: dict, session) -> dict:
         try:
             from backend.services import discovery_service
             disc = await discovery_service.discover_related_papers(
-                session, pid, max_refs=0, max_citations=20, auto_ingest=False
+                session, pid, max_references=0, max_citations=20, auto_ingest=False
             )
             result["cited_by"] = disc.get("citations", []) if isinstance(disc, dict) else []
             result["cited_by_count"] = paper.cited_by_count or 0
@@ -826,18 +826,19 @@ async def _dispatch(name: str, args: dict, session) -> dict:
         return result
 
     elif name == "rf_paper_build_neighborhood":
-        from backend.services import neighborhood_service
-        result = await neighborhood_service.build_neighborhood(
+        from backend.services import discovery_service
+        result = await discovery_service.discover_related_papers(
             session,
             paper_id=UUID(args["paper_id"]),
             max_references=args.get("max_references", 30),
             max_citations=args.get("max_citations", 50),
+            auto_ingest=False,
         )
         return result
 
     elif name == "rf_node_profile_get":
-        from backend.services import profile_service
-        result = await profile_service.get_node_profile(
+        from backend.services import node_profile_service
+        result = await node_profile_service.get_profile(
             session,
             entity_type=args["entity_type"],
             entity_id=UUID(args["entity_id"]),
@@ -846,17 +847,18 @@ async def _dispatch(name: str, args: dict, session) -> dict:
         return result
 
     elif name == "rf_node_profile_refresh":
-        from backend.services import profile_service
-        result = await profile_service.refresh_node_profile(
+        from backend.services import node_profile_service
+        result = await node_profile_service.generate_profile(
             session,
             entity_type=args["entity_type"],
             entity_id=UUID(args["entity_id"]),
+            force_refresh=True,
         )
         return result
 
     elif name == "rf_edge_profile_get":
-        from backend.services import profile_service
-        result = await profile_service.get_edge_profile(
+        from backend.services import edge_profile_service
+        result = await edge_profile_service.get_edge_profile(
             session,
             source_entity_type=args["source_entity_type"],
             source_entity_id=UUID(args["source_entity_id"]),

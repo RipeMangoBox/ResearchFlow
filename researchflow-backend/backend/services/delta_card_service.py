@@ -58,11 +58,12 @@ async def build_delta_card(
         delta_card_data = {}
 
     # Core delta statement
-    core_intuition = analysis_data.get("core_intuition", "")
+    core_intuition = analysis_data.get("core_intuition") or ""
+    method_summary = analysis_data.get("method_summary") or ""
     delta_statement = (
         core_intuition
         or delta_card_data.get("primary_gain_source", "")
-        or analysis_data.get("method_summary", "")[:500]
+        or method_summary[:500]
     )
     if not delta_statement:
         delta_statement = f"Analysis of paper {paper_id}"
@@ -391,12 +392,11 @@ async def check_and_publish(
     evidence_count = count_result.scalar() or 0
     idea.evidence_count = evidence_count
 
-    # DeltaCard publish check
-    dc_ready = (
-        delta_card.frame_id is not None
-        and delta_card.changed_slot_ids
-        and len(delta_card.evidence_refs or []) >= MIN_EVIDENCE_FOR_PUBLISH
-    )
+    # DeltaCard publish check — frame_id is preferred but not mandatory
+    # A DeltaCard with good evidence can publish even without a paradigm frame
+    has_evidence = len(delta_card.evidence_refs or []) >= MIN_EVIDENCE_FOR_PUBLISH
+    has_structure = delta_card.frame_id is not None and delta_card.changed_slot_ids
+    dc_ready = has_evidence and (has_structure or delta_card.delta_statement)
     if dc_ready:
         delta_card.status = "published"
         # Update paper's current_delta_card_id pointer (append-only model)

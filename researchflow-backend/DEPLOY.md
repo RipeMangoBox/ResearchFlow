@@ -53,13 +53,13 @@ docker compose exec api bash -c 'PYTHONPATH=/app alembic -c alembic/alembic.ini 
 |------|------|---------|------|------|
 | **postgres** | pgvector/pgvector:pg16 | 1280 MB | 5432 | PostgreSQL 16 + pgvector |
 | **redis** | redis:7-alpine | 256 MB | 6379 | 任务队列 (arq) |
-| **api** | 自构建 (Python 3.12) | 512 MB | 8000 | FastAPI + uvicorn --reload |
-| **worker** | 同 api | 2048 MB | - | ARQ 42 个任务 (含 V6) |
+| **api** | 自构建 (Python 3.12) | 2048 MB | 8000 | FastAPI + uvicorn (prod --workers 2) |
+| **worker** | 同 api | 1536 MB | - | ARQ 42 个任务 (含 V6) |
 | **mcp** | 同 api | 256 MB | 8001 | MCP SSE 35 个工具 |
 | **frontend** | Node.js (Next.js) | 256 MB | 3000 | Web UI |
 | **caddy** | caddy:2-alpine | ~50 MB | 80/443 | 反向代理 + HTTPS |
 
-**总内存峰值**: ~4.6 GB (含系统)，8 GB 服务器余量充裕
+**总内存峰值**: ~5.7 GB (含系统)，8 GB 服务器余量充裕
 
 > **GROBID 已移除 (2026-04-20)**: 长 PDF 频繁 OOM 且占 2-3 GB 内存。公式提取改为 VLM page scan（Claude Sonnet + PyMuPDF 渲染），引用/作者由 S2 API fallback 补全。如需恢复，取消 `docker-compose.yml` 中 grobid 注释即可。
 
@@ -74,6 +74,39 @@ docker compose exec api bash -c 'PYTHONPATH=/app alembic -c alembic/alembic.ini 
 | 章节/文本 | PyMuPDF | 不依赖 GROBID |
 
 成本: ~$0.02-0.05/篇 (2-3 次 VLM API 调用)
+
+### LLM 调用路由逻辑
+
+`llm_service.py` 按以下优先级选择 LLM 调用方式:
+
+1. **有 `OPENAI_BASE_URL` + `OPENAI_API_KEY`** → 走 OpenAI 兼容代理 (推荐，国内必选)
+2. **有 `ANTHROPIC_API_KEY`** → 直连 Anthropic API (国内无法直连)
+3. **都没有** → Mock 模式 (返回占位响应)
+
+> **⚠️ 关键经验**: 如果同时设了 `ANTHROPIC_API_KEY` 和 `OPENAI_BASE_URL`，LLM 调用优先走代理。
+> 之前的 bug: 代码先检查 `ANTHROPIC_API_KEY`，导致国内服务器直连 Anthropic 超时，L4 分析反复失败。
+
+### L4 分析截断问题
+
+代理 API 可能截断长 JSON 响应，导致 L4 pipeline 缺少字段 (`evidence_units`, `changed_slots` 等)。已有的防御机制:
+
+| 防御层 | 实现 | 位置 |
+|--------|------|------|
+| JSON 暴力修复 | `_repair_truncated_json()` 补全括号 | `analysis_steps.py` |
+| 字段缺失重试 | 最多 2 次重试，缺失字段提示 LLM 补全 | `analysis_steps.py` |
+| 垃圾响应检测 | `_is_garbage_response()` 检测空响应 | `llm_service.py` |
+| 降级继续 | 字段仍缺时标记 partial，继续后续步骤 | `analysis_steps.py` |
+| 自动恢复 cron | `task_pipeline_recover` 每 30 分钟扫描卡住论文 | `arq_app.py` |
+
+**L4 截断根因 (2026-04-20 修复)**:
+Step 1 和 Step 2 的 prompt 要求返回大量中文摘要 + 结构化 JSON，中文每字 ~1.5-2 tokens。
+旧配置 `max_tokens=4096` 只够输出 JSON 前半段（`key_equations`, `key_figures`），后面的字段被截断。
+修复: Step 1 → 8192, Step 2 → 16000。修改位置: `analysis_steps.py` 的 `run_step1/2` 函数。
+
+**其他排查方向**:
+- 确认 `OPENAI_MODEL=so-4.6`，不要用全名
+- 代理必须支持 streaming (非 streaming 更容易超时截断)
+- 如果代理有自己的 max_tokens 上限，需联系代理方调整
 
 ### 代码挂载 (volume mount)
 
@@ -131,10 +164,13 @@ DATABASE_URL=postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/research
 DATABASE_URL_SYNC=postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
 REDIS_URL=redis://redis:6379/0
 
-# === LLM (必填，至少一个) ===
+# === LLM (必填) ===
+# 国内服务器必须走代理 — 设了 OPENAI_BASE_URL 后 LLM 调用自动走代理路径
 OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://apicursor.com/v1    # OpenAI 兼容代理
-OPENAI_MODEL=claude-sonnet-4-20250514       # 实际模型名
+OPENAI_BASE_URL=https://apicursor.com/v1    # OpenAI 兼容代理 (必填，国内直连 Anthropic 会超时)
+OPENAI_MODEL=so-4.6                         # ⚠️ 必须用代理短名: so-4.6 (Sonnet), op-4.6 (Opus)
+                                             # 不要用 claude-sonnet-4-20250514 — 代理可能路由错误
+ANTHROPIC_API_KEY=sk-ant-xxx                 # 可选，仅在没有 OPENAI_BASE_URL 时作为 fallback
 
 # === 对象存储 OSS (推荐) ===
 OBJECT_STORAGE_PROVIDER=oss                 # oss | cos | local

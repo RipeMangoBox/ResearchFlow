@@ -32,6 +32,53 @@ async def queue_stats(session: AsyncSession = Depends(get_session)):
     return await review_service.queue_stats(session)
 
 
+# ── Human overrides (must be before /{task_id} to avoid capture) ──
+
+@router.get("/overrides")
+async def list_overrides(
+    target_type: str | None = None,
+    target_id: UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """List human overrides, optionally filtered by target."""
+    return await review_service.list_overrides(session, target_type, target_id, limit)
+
+
+class OverrideRequest(BaseModel):
+    target_type: str = Field(..., description="delta_card / assertion / idea_delta / paper")
+    target_id: UUID
+    field_name: str
+    new_value: dict | str | float | int | bool | list | None
+    reason: str | None = None
+    overridden_by: str | None = None
+
+
+@router.post("/override")
+async def create_override(
+    data: OverrideRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Apply a human override — records the change AND applies it to the target object."""
+    try:
+        result = await review_service.apply_override(
+            session,
+            target_type=data.target_type,
+            target_id=data.target_id,
+            field_name=data.field_name,
+            new_value=data.new_value,
+            reason=data.reason,
+            overridden_by=data.overridden_by,
+        )
+        await session.commit()
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        await session.rollback()
+        raise
+
+
 @router.get("/{task_id}")
 async def get_review(
     task_id: UUID,
@@ -111,53 +158,6 @@ async def assign_review(
         raise HTTPException(404, "Review task not found")
     await session.commit()
     return {"task_id": str(task_id), "assigned_to": data.assigned_to, "status": "in_progress"}
-
-
-# ── Human overrides ──────────────────────────────────────────────
-
-@router.get("/overrides")
-async def list_overrides(
-    target_type: str | None = None,
-    target_id: UUID | None = None,
-    limit: int = Query(default=50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
-):
-    """List human overrides, optionally filtered by target."""
-    return await review_service.list_overrides(session, target_type, target_id, limit)
-
-
-class OverrideRequest(BaseModel):
-    target_type: str = Field(..., description="delta_card / assertion / idea_delta / paper")
-    target_id: UUID
-    field_name: str
-    new_value: dict | str | float | int | bool | list | None
-    reason: str | None = None
-    overridden_by: str | None = None
-
-
-@router.post("/override")
-async def create_override(
-    data: OverrideRequest,
-    session: AsyncSession = Depends(get_session),
-):
-    """Apply a human override — records the change AND applies it to the target object."""
-    try:
-        result = await review_service.apply_override(
-            session,
-            target_type=data.target_type,
-            target_id=data.target_id,
-            field_name=data.field_name,
-            new_value=data.new_value,
-            reason=data.reason,
-            overridden_by=data.overridden_by,
-        )
-        await session.commit()
-        return result
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception:
-        await session.rollback()
-        raise
 
 
 # ── Paradigm candidates ──────────────────────────────────────────

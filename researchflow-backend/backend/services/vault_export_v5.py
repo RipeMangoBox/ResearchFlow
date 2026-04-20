@@ -193,6 +193,26 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
     except Exception:
         pass
 
+    # Evidence units → build paper-to-paper links via shared evidence themes
+    evidence_paper_links = []
+    try:
+        evidence_paper_links = (await session.execute(text("""
+            SELECT DISTINCT
+                eu.paper_id,
+                p.title_sanitized AS paper_san,
+                dc.paper_id AS dc_paper_id,
+                dp.title_sanitized AS dc_paper_san
+            FROM evidence_units eu
+            JOIN delta_cards dc ON dc.id = eu.delta_card_id
+            JOIN papers p ON p.id = eu.paper_id
+            JOIN papers dp ON dp.id = dc.paper_id
+            WHERE eu.paper_id != dc.paper_id
+              AND p.title_sanitized IS NOT NULL
+              AND dp.title_sanitized IS NOT NULL
+        """))).fetchall()
+    except Exception:
+        pass
+
     # ═══════════════════════════════════════════════════════════
     # Build lookup maps
     # ═══════════════════════════════════════════════════════════
@@ -236,6 +256,20 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
     for lr in lineage_rows:
         lineage_parents.setdefault(lr.child_san, []).append((lr.relation_type, lr.parent_san))
         lineage_children.setdefault(lr.parent_san, []).append((lr.relation_type, lr.child_san))
+
+    # Evidence-based inter-paper links
+    evidence_links_out = {}  # paper_san → [related_paper_san]
+    evidence_links_in = {}
+    for el in evidence_paper_links:
+        if el.paper_san and el.dc_paper_san:
+            evidence_links_out.setdefault(el.paper_san, set()).add(el.dc_paper_san)
+            evidence_links_in.setdefault(el.dc_paper_san, set()).add(el.paper_san)
+
+    # Build same-mechanism paper groups for cross-linking
+    mech_family_papers = {}  # mechanism_family → [title_sanitized]
+    for p in papers:
+        if p.mechanism_family:
+            mech_family_papers.setdefault(p.mechanism_family, []).append(p.title_sanitized)
 
     # Paper → mechanism (legacy)
     mech_papers = {}
@@ -289,16 +323,43 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
                             body.append(f"  - [[P__{san}]]")
                 body.append("")
 
-        # Papers tagged with this task
+        # Papers tagged with this task (from paper_facets)
         task_paper_ids = [str(pf.paper_id) for pf in paper_facets
                          if str(pf.node_id) == str(tn.id)]
+        # Also match papers by keyword overlap with task name / aliases
+        task_keywords = set(tn.name.lower().replace("_", " ").replace("-", " ").split())
+        task_keywords.discard("")
+        # Add alias keywords
+        if tn.aliases:
+            for alias in (tn.aliases if isinstance(tn.aliases, list) else []):
+                task_keywords.update(alias.lower().replace("_", " ").replace("-", " ").split())
+        # Remove common stop words
+        task_keywords -= {"a", "an", "the", "for", "of", "in", "on", "and", "or", "to", "with"}
+
+        if task_keywords and len(task_paper_ids) < 5:
+            for pp in papers:
+                pid = str(pp.id)
+                if pid in task_paper_ids:
+                    continue
+                # Check title keyword overlap (at least 2 keywords match)
+                title_words = set((pp.title or "").lower().split())
+                overlap = task_keywords & title_words
+                if len(overlap) >= 2:
+                    task_paper_ids.append(pid)
+                    continue
+                # Check category match
+                if pp.category:
+                    cat_words = set(pp.category.lower().replace("_", " ").split())
+                    if task_keywords & cat_words:
+                        task_paper_ids.append(pid)
+
         if task_paper_ids:
             body.append(f"## 相关论文 ({len(task_paper_ids)})\n")
-            for pid in task_paper_ids[:15]:
+            for pid in task_paper_ids[:20]:
                 san = id_to_san.get(pid)
                 if san:
-                    p = san_to_paper.get(san)
-                    venue = f" ({p.venue} {p.year})" if p and p.venue else ""
+                    pp = san_to_paper.get(san)
+                    venue = f" ({pp.venue} {pp.year})" if pp and pp.venue else ""
                     body.append(f"- [[P__{san}]]{venue}")
             body.append("")
 
@@ -402,9 +463,20 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
             # Papers with this mechanism as facet
             mech_pids = [str(pf.paper_id) for pf in paper_facets
                          if str(pf.node_id) == str(mn.id)]
+            # Also match papers by mechanism_family name
+            mech_name_lower = mn.name.lower().replace("_", " ").replace("-", " ")
+            for pp in papers:
+                pid = str(pp.id)
+                if pid in mech_pids:
+                    continue
+                if pp.mechanism_family:
+                    mf_lower = pp.mechanism_family.lower().replace("_", " ")
+                    if mech_name_lower in mf_lower or mf_lower in mech_name_lower:
+                        mech_pids.append(pid)
+
             if mech_pids:
                 body.append(f"## 相关论文 ({len(mech_pids)})\n")
-                for pid in mech_pids[:10]:
+                for pid in mech_pids[:15]:
                     san = id_to_san.get(pid)
                     if san:
                         body.append(f"- [[P__{san}]]")
@@ -464,13 +536,21 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
         for mf in mech_facets[:2]:
             links.append(f"- Mechanism: [[C__{_slug(mf['name'])}]]")
 
-        # Lineage links
+        # Lineage links (from delta_card_lineage)
         ancestors = lineage_parents.get(san, [])
         for rel, parent_san in ancestors[:2]:
             links.append(f"- builds on: [[P__{parent_san}]]")
         descendants = lineage_children.get(san, [])
         for rel, child_san in descendants[:1]:
             links.append(f"- extended by: [[P__{child_san}]]")
+
+        # Evidence-based inter-paper links
+        ev_out = evidence_links_out.get(san, set())
+        for related_san in list(ev_out)[:3]:
+            links.append(f"- evidence links to: [[P__{related_san}]]")
+        ev_in = evidence_links_in.get(san, set())
+        for related_san in list(ev_in)[:3]:
+            links.append(f"- evidence from: [[P__{related_san}]]")
 
         # Fallback: mechanism_family as concept link
         if not mech_facets and p.mechanism_family:
@@ -516,6 +596,40 @@ async def export_vault_v5(session: AsyncSession, out_dir: str | None = None) -> 
 
         # Reading advice
         body.append(_TIER_ADVICE[lvl] + "\n")
+
+        # Key equations from DeltaCard
+        eqs = p.key_equations if isinstance(p.key_equations, list) else []
+        if eqs:
+            body.append("## 核心公式\n")
+            for eq in eqs:
+                if isinstance(eq, dict):
+                    latex = eq.get("latex", "")
+                    expl = eq.get("explanation", "")
+                    slot = eq.get("slot_affected", "")
+                    if latex:
+                        body.append(f"$$\n{latex}\n$$\n")
+                        if expl:
+                            body.append(f"> {expl}")
+                        if slot:
+                            body.append(f"> *Slot*: {slot}")
+                        body.append("")
+
+        # Key figures from DeltaCard
+        figs_meta = p.key_figures if isinstance(p.key_figures, list) else []
+        if figs_meta:
+            body.append("## 关键图表\n")
+            for fig in figs_meta:
+                if isinstance(fig, dict):
+                    ref = fig.get("fig_ref", "")
+                    caption = fig.get("caption", "")
+                    evidence = fig.get("evidence_for", "")
+                    if ref:
+                        body.append(f"**{ref}**")
+                        if caption:
+                            body.append(f": {caption}")
+                        if evidence:
+                            body.append(f"> 证据支持: {evidence}")
+                        body.append("")
 
         # Analysis content
         if p.full_report_md:

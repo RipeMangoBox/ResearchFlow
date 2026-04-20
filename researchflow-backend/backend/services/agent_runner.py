@@ -918,8 +918,11 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
         # Strip markdown code fences if present
         if cleaned.startswith("```"):
             # Remove opening fence (with optional language tag)
-            first_newline = cleaned.index("\n")
-            cleaned = cleaned[first_newline + 1:]
+            first_newline = cleaned.find("\n")
+            if first_newline != -1:
+                cleaned = cleaned[first_newline + 1:]
+            else:
+                cleaned = cleaned[3:]  # strip just the ```
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3].rstrip()
 

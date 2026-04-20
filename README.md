@@ -1,13 +1,10 @@
-<p align="center">
-  <img src="./assets/LOGO.png" alt="ResearchFlow" width="260"/>
-</p>
-<h1 align="center">ResearchFlow</h1>
-<p align="center">
-  <strong>One paper in, a domain knowledge graph out.</strong>
-</p>
-<p align="center">
-  <a href="README.md">English</a> · <a href="README_CN.md">中文</a>
-</p>
+
+
+# ResearchFlow
+
+**One paper in, a domain knowledge graph out.**
+
+[English](README.md) · [中文](README_CN.md)
 
 ---
 
@@ -18,27 +15,34 @@ ResearchFlow is a research operating system that transforms academic papers into
 ## What's Built
 
 ### Domain Cold Start
+
 Give a research topic → GitHub awesome-list discovery → auto-import 50-100 papers → triage + score → batch analyze → full knowledge graph. One API call to start.
 
 ### 6-Step Analysis Pipeline
+
 Each paper goes through 6 independently retryable analysis steps, not one monolithic LLM call:
 
-| Step | What it does | Why it matters |
-|------|-------------|----------------|
-| **extract_evidence** | Equations, figures, evidence spans | Reads method/experiments FIRST, then cross-checks abstract claims |
-| **build_delta_card** | Baseline comparison, changed slots, mechanism | Grounded by Step 1 evidence — can't hallucinate |
-| **build_compare_set** | Auto-fill comparison papers from DB | 4 sources, not just paper's self-reported baselines |
-| **propose_lineage** | builds_on / extends / replaces edges | Methods form a DAG with multi-inheritance |
-| **synthesize_concept** | Update cross-paper CanonicalIdea | Concepts accumulate across papers, not isolated |
-| **reconcile_neighbors** | Reverse-update related papers | Knowledge graph stays globally consistent |
+
+| Step                    | What it does                                  | Why it matters                                                    |
+| ----------------------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| **extract_evidence**    | Equations, figures, evidence spans            | Reads method/experiments FIRST, then cross-checks abstract claims |
+| **build_delta_card**    | Baseline comparison, changed slots, mechanism | Grounded by Step 1 evidence — can't hallucinate                   |
+| **build_compare_set**   | Auto-fill comparison papers from DB           | 4 sources, not just paper's self-reported baselines               |
+| **propose_lineage**     | builds_on / extends / replaces edges          | Methods form a DAG with multi-inheritance                         |
+| **synthesize_concept**  | Update cross-paper CanonicalIdea              | Concepts accumulate across papers, not isolated                   |
+| **reconcile_neighbors** | Reverse-update related papers                 | Knowledge graph stays globally consistent                         |
+
 
 ### 10-Step Metadata Enrichment (8 APIs)
+
 arXiv → Crossref → OpenAlex → Semantic Scholar → DBLP → OpenReview → GitHub → HuggingFace. Results stored in an observation ledger with authority ranking — conflicts resolved automatically, not overwritten blindly.
 
 ### Parser Ensemble (L2)
+
 GROBID (authors, affiliations, references, formula coordinates) + PyMuPDF (sections, figures, captions) + VLM (figure classification, formula OCR → LaTeX). Deterministic extraction first, LLM only for what machines can't parse.
 
 ### Method Evolution DAG
+
 Papers aren't a flat list — they form a directed acyclic graph tracking how methods build on each other:
 
 ```
@@ -52,9 +56,11 @@ GRPO (baseline, depth=0, 7 downstream)
 When 3+ papers use a method as baseline → auto-promoted to established baseline → can evolve into new paradigm version. All promotions go through a review gate.
 
 ### Faceted Taxonomy (15 dimensions, 75 seed nodes)
+
 Papers tagged across domain, modality, task, learning paradigm, mechanism, method baseline, model family, dataset, benchmark, metric, lab, venue — not just one category. DAG structure with `is_a`, `part_of`, `uses`, `optimizes` relations.
 
 ### Obsidian Vault Export
+
 One-click export to a structured Obsidian vault with controlled wikilinks (6-10 per paper, not a hairball):
 
 ```
@@ -72,9 +78,11 @@ One-click export to a structured Obsidian vault with controlled wikilinks (6-10 
 ```
 
 ### Candidate Queue + Multi-Agent Pipeline (V6)
+
 5-level absorption: `new → shallow → reference_done → deep → graph_ready`. 16 specialized LLM agents (12 prompt files) with Context Pack Builder. 4-tier scoring engine (DiscoveryScore → DeepIngestScore → GraphPromotionScore → AnchorScore). Node/edge profiles for knowledge graph entities. Cold start workflow and incremental sync (7 functions).
 
 ### MCP Integration (35 tools)
+
 Full MCP server with 35 tools + 6 resources + 4 prompt templates. Claude Code auto-discovers it — just talk naturally:
 
 ```
@@ -85,30 +93,35 @@ Full MCP server with 35 tools + 6 resources + 4 prompt templates. Claude Code au
 ```
 
 ### 21 Claude Code Skills
+
 Research workflow automation: collect papers from GitHub/web/Zotero, analyze PDFs, query knowledge base, brainstorm ideas, focus hypotheses, run reviewer stress tests, generate deep reports with formula derivation, write daily logs.
 
 ### Interactive Research Exploration
+
 Multi-hop cognitive iteration: search → classify results (structural vs plugin) → gap analysis → pivot → broaden. System remembers rejection patterns and suggests new directions.
 
 ### Web Dashboard
+
 Next.js 15 frontend with paper management, search, graph visualization, lineage viewer, review queue, digest reader, bottleneck explorer, and import tools.
 
 ## System Scale
 
-| Component | Count |
-|-----------|-------|
-| Database tables | 58 + 4 materialized views |
-| API endpoints | 130 across 16 routers |
-| MCP | 35 tools + 6 resources + 4 prompts |
-| Services | 55 modules |
-| Worker tasks | 22 |
-| ORM model files | 24 (15 V6 classes) |
-| Agent prompts | 12 |
-| Claude Code skills | 21 |
-| Metadata APIs | 8 (arXiv, Crossref, OpenAlex, S2, DBLP, OpenReview, GitHub, HF) |
-| Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM dynamic discovery |
-| DB migrations | 16 versions |
-| Enums | 9 types (PaperState with 15 states, Tier, Importance, etc.) |
+
+| Component          | Count                                                           |
+| ------------------ | --------------------------------------------------------------- |
+| Database tables    | 58 + 4 materialized views                                       |
+| API endpoints      | 130 across 16 routers                                           |
+| MCP                | 35 tools + 6 resources + 4 prompts                              |
+| Services           | 55 modules                                                      |
+| Worker tasks       | 22                                                              |
+| ORM model files    | 24 (15 V6 classes)                                              |
+| Agent prompts      | 12                                                              |
+| Claude Code skills | 21                                                              |
+| Metadata APIs      | 8 (arXiv, Crossref, OpenAlex, S2, DBLP, OpenReview, GitHub, HF) |
+| Built-in paradigms | 4 (RL, VLM, Agent, MotionGen) + LLM dynamic discovery           |
+| DB migrations      | 16 versions                                                     |
+| Enums              | 9 types (PaperState with 15 states, Tier, Importance, etc.)     |
+
 
 ## Quick Start
 
@@ -205,27 +218,31 @@ AGENTS.md                       # Agent/MCP integration guide
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | FastAPI (async) + SQLAlchemy 2.0 (async) |
-| Database | PostgreSQL 16 + pgvector (1536d embeddings) |
-| Task Queue | ARQ + Redis 7 |
-| Frontend | Next.js 15 + Tailwind CSS |
-| PDF Parsing | PyMuPDF + GROBID 0.8.1 (ensemble) |
-| VLM | Claude Vision (figure classification + formula OCR) |
-| LLM | Anthropic Claude / OpenAI (streaming) |
-| Metadata | arXiv + Crossref + OpenAlex + S2 + DBLP + OpenReview + GitHub + HuggingFace |
-| MCP | Python MCP SDK (stdio + SSE transports) |
-| Storage | Tencent COS / Alibaba OSS / Local |
-| Deployment | Docker Compose + Caddy (auto HTTPS) |
+
+| Layer       | Technology                                                                  |
+| ----------- | --------------------------------------------------------------------------- |
+| Backend     | FastAPI (async) + SQLAlchemy 2.0 (async)                                    |
+| Database    | PostgreSQL 16 + pgvector (1536d embeddings)                                 |
+| Task Queue  | ARQ + Redis 7                                                               |
+| Frontend    | Next.js 15 + Tailwind CSS                                                   |
+| PDF Parsing | PyMuPDF + GROBID 0.8.1 (ensemble)                                           |
+| VLM         | Claude Vision (figure classification + formula OCR)                         |
+| LLM         | Anthropic Claude / OpenAI (streaming)                                       |
+| Metadata    | arXiv + Crossref + OpenAlex + S2 + DBLP + OpenReview + GitHub + HuggingFace |
+| MCP         | Python MCP SDK (stdio + SSE transports)                                     |
+| Storage     | Tencent COS / Alibaba OSS / Local                                           |
+| Deployment  | Docker Compose + Caddy (auto HTTPS)                                         |
+
 
 ## Documentation
 
-| Document | Audience | Content |
-|----------|----------|---------|
-| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | Developers | Data model, 4-layer extraction, 6-step pipeline, DB schema, all APIs, 55 services |
-| [AGENTS.md](AGENTS.md) | Agent builders | 35 MCP tools, 6 resources, 4 prompts, 21 skills, working rules |
-| [DEPLOY.md](researchflow-backend/DEPLOY.md) | Ops | Docker setup, container architecture, daily deployment, proxy, troubleshooting |
+
+| Document                                                | Audience       | Content                                                                           |
+| ------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md) | Developers     | Data model, 4-layer extraction, 6-step pipeline, DB schema, all APIs, 55 services |
+| [AGENTS.md](AGENTS.md)                                  | Agent builders | 35 MCP tools, 6 resources, 4 prompts, 21 skills, working rules                    |
+| [DEPLOY.md](researchflow-backend/DEPLOY.md)             | Ops            | Docker setup, container architecture, daily deployment, proxy, troubleshooting    |
+
 
 ## License
 

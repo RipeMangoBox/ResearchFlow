@@ -27,6 +27,10 @@ services:
         limits:
           memory: 256M
     command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
 
   api:
     build:
@@ -37,7 +41,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
       DATABASE_URL_SYNC: postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
@@ -49,12 +53,16 @@ services:
       OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-ap-shanghai}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      GROBID_URL: ""
     volumes:
+      - ./backend:/app/backend
       - storage:/app/storage
     deploy:
       resources:
         limits:
-          memory: 400M
+          memory: 2048M
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2
 
   worker:
@@ -66,7 +74,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
       DATABASE_URL_SYNC: postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
@@ -78,19 +86,60 @@ services:
       OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-ap-shanghai}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      GROBID_URL: ""
     volumes:
+      - ./backend:/app/backend
       - storage:/app/storage
     deploy:
       resources:
         limits:
-          memory: 1024M
+          memory: 1536M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import redis; redis.Redis(host=\"redis\",port=6379).ping()'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     command: arq backend.workers.arq_app.WorkerSettings
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      DATABASE_URL_SYNC: postgresql://rf:${POSTGRES_PASSWORD}@postgres:5432/researchflow
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/ || exit 0"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    command: python -m backend.mcp.server --sse --port 8001
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
+    depends_on:
+      - api
     environment:
       HOSTNAME: "0.0.0.0"
     deploy:
@@ -110,6 +159,7 @@ services:
       - caddyconfig:/config
     depends_on:
       - api
+      - mcp
       - frontend
 
 volumes:

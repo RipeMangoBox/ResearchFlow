@@ -937,22 +937,24 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             pdf_full_path = os.path.join(project_root, paper.pdf_path_local)
             if os.path.exists(pdf_full_path):
                 doc = fitz.open(pdf_full_path)
-                first_page_text = doc[0].get_text()[:500] if len(doc) > 0 else ""
-                doc.close()
+                try:
+                    first_page_text = doc[0].get_text()[:500] if len(doc) > 0 else ""
+                finally:
+                    doc.close()
                 if first_page_text:
                     pdf_acceptance = _parse_acceptance_from_comment(first_page_text)
                     if pdf_acceptance:
                         await record_observation(session, entity_type="paper", entity_id=paper.id,
                             field_name="acceptance_status", value=pdf_acceptance["acceptance_status"],
-                            source="pdf_grobid", confidence=0.9)  # PDF text is very reliable
+                            source="pymupdf", confidence=0.9)  # PDF text is very reliable
                         if pdf_acceptance.get("venue"):
                             await record_observation(session, entity_type="paper", entity_id=paper.id,
                                 field_name="venue", value=pdf_acceptance["venue"],
-                                source="pdf_grobid", confidence=0.9)
+                                source="pymupdf", confidence=0.9)
                             if not paper.venue:
                                 paper.venue = pdf_acceptance["venue"][:100]
                                 updated["venue"] = True
-                        paper.acceptance_type = pdf_acceptance.get("acceptance_type") or pdf_acceptance["acceptance_status"]
+                        paper.acceptance_type = pdf_acceptance.get("acceptance_type") or pdf_acceptance.get("acceptance_status", "")
                         updated["acceptance_from_pdf"] = True
                         logger.info(f"PDF first-page acceptance for {paper.id}: {pdf_acceptance}")
         except Exception as e:

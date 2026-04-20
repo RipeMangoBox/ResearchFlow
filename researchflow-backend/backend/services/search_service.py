@@ -100,6 +100,8 @@ async def hybrid_search(
         })
         keyword_rows = keyword_result.fetchall()
     except Exception:
+        # Rollback failed transaction before fallback query
+        await session.rollback()
         # Fallback to raw table if materialized view doesn't exist
         keyword_stmt_fallback = (
             select(
@@ -139,8 +141,16 @@ async def hybrid_search(
 
     # 2. Semantic search with pgvector (if enabled)
     if semantic:
-        query_embedding = await embed_text(query)
+        try:
+            query_embedding = await embed_text(query)
+        except Exception as e:
+            logger.warning(f"Embedding generation failed, skipping semantic search: {e}")
+            query_embedding = None
 
+        if query_embedding is None:
+            semantic = False  # fall through to scoring without vector
+
+    if semantic:
         # Use raw SQL for pgvector cosine distance
         # Note: cast via CAST() instead of :: to avoid asyncpg $ param conflict
         vector_sql = text("""
@@ -200,6 +210,7 @@ async def hybrid_search(
                         "combined_score": 0.0,
                     }
         except Exception as e:
+            await session.rollback()
             logger.warning(f"Vector search failed (papers may lack embeddings): {e}")
 
     # 3. Compute combined score: 0.4 * text + 0.4 * vector + 0.2 * keep_score

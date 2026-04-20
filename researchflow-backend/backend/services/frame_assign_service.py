@@ -180,9 +180,8 @@ async def _discover_paradigm_via_llm(
 ) -> tuple[ParadigmTemplate | None, list[dict]]:
     """Use LLM to discover a new paradigm for an unknown domain.
 
-    v3.2: Creates a ParadigmCandidate instead of directly creating a live
-    ParadigmTemplate. Candidates must be reviewed before promotion.
-    Returns (None, []) — the paper will proceed without a paradigm frame.
+    v4: Auto-creates a live ParadigmTemplate + Slots directly.
+    Also records a ParadigmCandidate for audit trail.
     """
     from backend.services.llm_service import call_llm
     from backend.models.candidates import ParadigmCandidate, SlotCandidate
@@ -215,7 +214,42 @@ async def _discover_paradigm_via_llm(
         if existing:
             return existing, existing_slots
 
-        # Check if a candidate already exists — increment trigger_count
+        raw_slots = data.get("slots", [])
+        slots_json = [
+            {"name": s["name"], "slot_type": s.get("slot_type", "architecture"),
+             "description": s.get("description", ""), "is_required": s.get("is_required", True)}
+            for s in raw_slots if isinstance(s, dict) and s.get("name")
+        ]
+
+        # Create live ParadigmTemplate directly
+        paradigm = ParadigmTemplate(
+            name=paradigm_name,
+            domain=domain,
+            version="1.0",
+            slots=slots_json,  # JSONB NOT NULL — store slot definitions inline
+        )
+        session.add(paradigm)
+        await session.flush()
+
+        # Create live Slots
+        created_slots = []
+        for i, s_data in enumerate(slots_json):
+            slot = Slot(
+                paradigm_id=paradigm.id,
+                name=s_data["name"],
+                slot_type=s_data.get("slot_type", "architecture"),
+                description=s_data.get("description", ""),
+                is_required=s_data.get("is_required", True),
+                sort_order=i,
+            )
+            session.add(slot)
+            created_slots.append(slot)
+        await session.flush()
+
+        slot_dicts = [{"id": s.id, "name": s.name} for s in created_slots]
+        logger.info(f"Auto-created paradigm '{paradigm_name}' (domain={domain}) with {len(slot_dicts)} slots")
+
+        # Also record as candidate for audit trail
         from sqlalchemy import func as sa_func
         existing_cand = await session.execute(
             select(ParadigmCandidate).where(
@@ -223,31 +257,22 @@ async def _discover_paradigm_via_llm(
             ).limit(1)
         )
         cand = existing_cand.scalar_one_or_none()
-
-        raw_slots = data.get("slots", [])
-
         if cand:
             cand.trigger_count = (cand.trigger_count or 1) + 1
-            logger.info(f"Paradigm candidate '{paradigm_name}' triggered again (count={cand.trigger_count})")
+            cand.status = "auto_promoted"
         else:
-            # Create candidate (NOT live paradigm)
-            slots_json = [
-                {"name": s["name"], "slot_type": s.get("slot_type", "architecture"),
-                 "description": s.get("description", ""), "is_required": s.get("is_required", True)}
-                for s in raw_slots if isinstance(s, dict) and s.get("name")
-            ]
             cand = ParadigmCandidate(
                 name=paradigm_name,
                 domain=domain,
                 description=data.get("paradigm_description"),
                 slots_json=slots_json,
                 trigger_count=1,
-                status="pending",
+                status="auto_promoted",
             )
             session.add(cand)
             await session.flush()
 
-            # Create slot candidates
+            # Create slot candidates for audit
             for s_data in slots_json:
                 sc = SlotCandidate(
                     paradigm_candidate_id=cand.id,
@@ -274,8 +299,7 @@ async def _discover_paradigm_via_llm(
 
         await session.flush()
 
-        # Return None — paper proceeds without paradigm frame until candidate is promoted
-        return None, []
+        return paradigm, slot_dicts
 
     except Exception as e:
         logger.error(f"LLM paradigm discovery failed: {e}")

@@ -278,20 +278,24 @@ async def task_pipeline_recover(ctx: dict, limit: int = 5):
 
         results = []
         for paper in papers:
+            pid = paper.id  # capture before try to avoid MissingGreenlet after rollback
+            pid_str = str(pid)
+            title_short = (paper.title or "")[:40]
+            state_val = paper.state.value if paper.state else "?"
             try:
-                logger.info(f"Auto-recovering paper {paper.id} (state={paper.state}, title={paper.title[:40]})")
-                result = await pipeline_service.run_full_pipeline(session, paper.id)
+                logger.info(f"Auto-recovering paper {pid} (state={state_val}, title={title_short})")
+                result = await pipeline_service.run_full_pipeline(session, pid)
                 await session.commit()
                 results.append({
-                    "paper_id": str(paper.id),
-                    "from_state": paper.state.value if paper.state else "?",
+                    "paper_id": pid_str,
+                    "from_state": state_val,
                     "to_state": result.get("final_state", "?"),
                 })
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Recovery failed for {paper.id}: {e}")
+                logger.error(f"Recovery failed for {pid}: {e}")
                 results.append({
-                    "paper_id": str(paper.id),
+                    "paper_id": pid_str,
                     "error": str(e)[:100],
                 })
 
@@ -563,4 +567,4 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = _parse_redis_url(settings.redis_url)
     max_jobs = 2
-    job_timeout = 600  # 10 min per job (pipeline needs 3-5 min per paper)
+    job_timeout = 1200  # 20 min per job (L4 with max_tokens=16K can take 5-10 min)

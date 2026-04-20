@@ -43,7 +43,7 @@ class EvidenceUnit(Base):
     )
 
     # Source anchoring — where in the paper this evidence comes from
-    source_section: Mapped[str | None] = mapped_column(String(50))
+    source_section: Mapped[str | None] = mapped_column(String(200))
     source_page: Mapped[int | None] = mapped_column(SmallInteger)
     source_quote: Mapped[str | None] = mapped_column(Text)
 

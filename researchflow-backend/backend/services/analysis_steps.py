@@ -339,7 +339,7 @@ async def run_step1_extract_evidence(
     return await _call_with_retry(
         prompt=prompt,
         system=STEP1_SYSTEM,
-        max_tokens=4096,
+        max_tokens=8192,
         session=session,
         paper_id=paper.id,
         prompt_version="l4_step1_v1",
@@ -373,7 +373,7 @@ async def run_step2_build_delta(
     return await _call_with_retry(
         prompt=prompt,
         system=STEP2_SYSTEM,
-        max_tokens=8000,
+        max_tokens=16000,
         session=session,
         paper_id=paper.id,
         prompt_version="l4_step2_v1",

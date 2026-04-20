@@ -84,7 +84,15 @@ async def call_llm(
         resp = None
         for attempt in range(MAX_RETRIES):
             try:
-                if settings.anthropic_api_key:
+                # Prefer OpenAI-compatible proxy when OPENAI_BASE_URL is set
+                # (proxy handles routing; Anthropic direct often fails in CN)
+                if settings.openai_api_key and getattr(settings, "openai_base_url", None):
+                    default_model = settings.openai_model or "so-4.6"
+                    resp = await asyncio.wait_for(
+                        _call_openai(prompt, system, model or default_model, max_tokens, temperature),
+                        timeout=180,
+                    )
+                elif settings.anthropic_api_key:
                     resp = await asyncio.wait_for(
                         _call_anthropic(prompt, system, model or "claude-sonnet-4.6", max_tokens, temperature),
                         timeout=180,

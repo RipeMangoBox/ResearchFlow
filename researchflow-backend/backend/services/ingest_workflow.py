@@ -846,8 +846,8 @@ class IngestWorkflow:
                     await node_profile_service.increment_staleness(
                         self.session, "paper", kb_paper.id
                     )
-                except Exception:
-                    pass  # profile 表可能未初始化
+                except Exception as e:
+                    logger.debug("profile staleness update skipped for %s: %s", kb_paper.id, e)
 
                 logger.info(
                     "已知论文重遇: %s → %s (%s), 创建 %s 边",

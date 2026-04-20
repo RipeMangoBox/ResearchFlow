@@ -379,47 +379,43 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
 
     # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
     await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
+    # Refresh paper to pick up current_delta_card_id set inside _build_idea_graph
+    await session.refresh(paper)
 
     # ── Steps 3-6: each wrapped with session recovery ─────────
     # If any step throws a DB error the session enters failed state.
-    # We must rollback to recover before the next step can proceed.
+    # We must rollback and re-fetch the paper to recover before the next step.
+
+    async def _safe_step(step_num: int, step_name: str, coro):
+        """Run a pipeline step with session recovery on failure."""
+        nonlocal paper
+        logger.info(f"[L4 Step {step_num}/6] {step_name} for {paper_id}")
+        try:
+            await coro
+        except Exception as e:
+            logger.warning(f"Step {step_num} ({step_name}) failed for {paper.id}: {e}")
+            await session.rollback()
+            # Re-fetch paper to reset session state after rollback
+            paper = await session.get(Paper, paper_id)
 
     # ── Step 3: Build comparison set (defense line #2) ────────
-    logger.info(f"[L4 Step 3/6] build_compare_set for {paper_id}")
-    try:
-        from backend.services.baseline_comparator_service import build_compare_set
-        await build_compare_set(session, paper.id, analysis_data)
-    except Exception as e:
-        logger.warning(f"Step 3 (compare_set) failed for {paper.id}: {e}")
-        await session.rollback()
+    from backend.services.baseline_comparator_service import build_compare_set
+    await _safe_step(3, "compare_set", build_compare_set(session, paper.id, analysis_data))
 
     # ── Step 4: Propose lineage ───────────────────────────────
-    logger.info(f"[L4 Step 4/6] propose_lineage for {paper_id}")
-    try:
-        from backend.services.evolution_service import link_to_parent_baselines
-        if paper.current_delta_card_id:
-            await link_to_parent_baselines(session, paper.current_delta_card_id, analysis_data)
-    except Exception as e:
-        logger.warning(f"Step 4 (lineage) failed for {paper.id}: {e}")
-        await session.rollback()
+    from backend.services.evolution_service import link_to_parent_baselines
+    if paper.current_delta_card_id:
+        await _safe_step(4, "lineage", link_to_parent_baselines(session, paper.current_delta_card_id, analysis_data))
+    else:
+        logger.info(f"[L4 Step 4/6] lineage skipped for {paper_id} (no delta card)")
 
     # ── Step 5: Synthesize concepts ───────────────────────────
-    logger.info(f"[L4 Step 5/6] synthesize_concept for {paper_id}")
-    try:
-        from backend.services.concept_synthesizer_service import synthesize_concepts
-        await synthesize_concepts(session, paper.id, analysis_data)
-    except Exception as e:
-        logger.warning(f"Step 5 (concept) failed for {paper.id}: {e}")
-        await session.rollback()
+    from backend.services.concept_synthesizer_service import synthesize_concepts
+    await _safe_step(5, "concept", synthesize_concepts(session, paper.id, analysis_data))
 
     # ── Step 6: Reconcile neighbors ───────────────────────────
-    logger.info(f"[L4 Step 6/6] reconcile_neighbors for {paper_id}")
-    try:
-        from backend.services.incremental_reconciler_service import reconcile_neighbors
-        await reconcile_neighbors(session, paper.id, analysis_data)
-    except Exception as e:
-        logger.warning(f"Step 6 (reconcile) failed for {paper.id}: {e}")
-        await session.rollback()
+    from backend.services.incremental_reconciler_service import reconcile_neighbors
+    await _safe_step(6, "reconcile", reconcile_neighbors(session, paper.id, analysis_data))
 
     # ── Auto-export to paperAnalysis/ Markdown ────────────────
     try:
@@ -428,6 +424,7 @@ async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnal
     except Exception as e:
         logger.warning(f"Auto-export to paperAnalysis/ failed for {paper.id}: {e}")
         await session.rollback()
+        paper = await session.get(Paper, paper_id)
 
     logger.info(f"[L4 complete] 6-step pipeline done for {paper_id}")
     return analysis
@@ -510,9 +507,9 @@ async def _build_idea_graph(
         )
 
         # 2. Extract changed_slots in graph format
-        delta_card_data = analysis_data.get("delta_card", {})
+        delta_card_data = analysis_data.get("delta_card") or {}
         changed_slots_graph = []
-        raw_slots = analysis_data.get("changed_slots", [])
+        raw_slots = analysis_data.get("changed_slots") or []
         # Build a lookup from delta_card.slots for change_type enrichment
         dc_slot_info = {}
         if isinstance(delta_card_data, dict) and "slots" in delta_card_data:
@@ -575,8 +572,10 @@ async def _build_idea_graph(
         )
 
     except Exception as e:
-        logger.error(f"Graph pipeline error for paper {paper.id}: {e}")
-        # Don't fail the analysis — graph is additive
+        logger.error(f"Graph pipeline error for paper {paper.id}: {e}", exc_info=True)
+        await session.rollback()
+        # Re-fetch paper after rollback to avoid stale session state
+        paper = await session.get(Paper, paper.id)
 
 
 # ── Batch operations ────────────────────────────────────────────

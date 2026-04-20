@@ -246,6 +246,43 @@ async def run_full_pipeline(
         await session.commit()
     else:
         progress["steps"]["deep_l4"] = "skipped (already analyzed)"
+        # If L4 exists but DeltaCard is missing, re-run graph building
+        if not paper.current_delta_card_id:
+            from backend.services import analysis_service
+            try:
+                l4_analysis = has_l4
+                # Reconstruct analysis_data from stored fields
+                # Generate minimal evidence_units from evidence_summary
+                evidence_units = []
+                if l4_analysis.evidence_summary:
+                    for i, sentence in enumerate(l4_analysis.evidence_summary.split("。")[:5]):
+                        if sentence.strip():
+                            evidence_units.append({
+                                "atom_type": "evidence",
+                                "claim": sentence.strip(),
+                                "confidence": 0.7,
+                                "basis": "text_stated",
+                                "source_section": "evidence_summary",
+                            })
+                analysis_data = {
+                    "problem_summary": l4_analysis.problem_summary,
+                    "method_summary": l4_analysis.method_summary,
+                    "evidence_summary": l4_analysis.evidence_summary,
+                    "core_intuition": l4_analysis.core_intuition,
+                    "changed_slots": l4_analysis.changed_slots or [],
+                    "evidence_units": evidence_units,
+                }
+                if analysis_data:
+                    bottleneck_id = await analysis_service._maybe_create_bottleneck(session, paper, analysis_data)
+                    await analysis_service._build_idea_graph(session, paper, l4_analysis, analysis_data, bottleneck_id=bottleneck_id)
+                    await session.refresh(paper)
+                    progress["steps"]["graph_repair"] = f"dc_ptr={'set' if paper.current_delta_card_id else 'failed'}"
+                    await session.commit()
+            except Exception as e:
+                logger.warning(f"Graph repair failed for {paper_id}: {e}")
+                await session.rollback()
+                await session.refresh(paper)
+                progress["steps"]["graph_repair"] = f"error: {str(e)[:80]}"
 
     # Step 5.5: Post-L4 — fill paper fields from analysis + assign taxonomy
     try:
