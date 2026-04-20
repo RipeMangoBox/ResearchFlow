@@ -514,9 +514,89 @@ docker compose exec postgres pg_dump -U rf researchflow > backup_$(date +%Y%m%d)
 | P2 | GitHub code_url 搜索不到 | ⚠️ 部分修复 | 加了 arXiv ID fallback 搜索，但 GitHub 索引覆盖有限 |
 | P2 | OpenReview 搜索降级 | ⏳ 待观察 | API 端问题，非代码问题 |
 
+### 修复记录 (2026-04-20 — 自主运行改造)
+
+| # | 问题 | 状态 | 修复内容 |
+|---|------|------|---------|
+| P0 | GROBID 长 PDF OOM 占 2-3GB | ✅ 已移除 | 改用 VLM page scan (PyMuPDF+Claude Vision) |
+| P0 | API 容器 pipeline/run 同步执行 OOM | ✅ 已修复 | 改为 worker 异步执行 (`task_pipeline_run`) |
+| P0 | 代理 API 模型名不匹配 (`claude-sonnet-4-20250514`) | ✅ 已修复 | 改为 `so-4.6` (代理短名) |
+| P0 | 代理 API 返回自我介绍而非 completion | ✅ 已修复 | `_is_garbage_response` 检测 + 自动重试 |
+| P0 | L4 报告为空 (JSON 截断) | ✅ 大幅改善 | 暴力 JSON repair + `rfind` 阈值 ≥3 keys |
+| P0 | PyMuPDF 文本含 `\x00` → PG 拒绝 | ✅ 已修复 | `_clean_text()` 过滤 null byte |
+| P0 | `prompt_version` varchar(20) 溢出 | ✅ 已修复 | ALTER TABLE → varchar(50) |
+| P1 | `not data.get(f)` 误判空列表 [] | ✅ 已修复 | 改为 `data.get(f) is None` |
+| P1 | pipeline/batch 500 错误 (greenlet) | ✅ 已修复 | 改为 arq enqueue，不在 API 进程跑 |
+| P1 | 失败论文无人恢复 | ✅ 已修复 | `task_pipeline_recover` cron 每 30 分钟扫描 |
+| P1 | VLM figure classify 400 (payload 太大) | ✅ 已修复 | 限制 candidates=15, pages=5 |
+| P1 | venue_resolve 结果不写入 paper.venue | ✅ 已修复 | accepted 时覆盖 venue |
+| P1 | paper_facets 唯一键冲突 | ✅ 已修复 | DELETE 旧 auto-facets + seen_node_roles 去重 |
+
 ---
 
-## 15. 资源与成本
+## 15. 端到端冷启动验证 (2026-04-20)
+
+### 测试设计
+
+- **领域**: Video Question Answering (2025-2026)
+- **论文**: 5 篇 arXiv 论文，通过 `/api/v1/import/links` 导入
+- **操作**: 一次 `enrich` + 一次 `pipeline/batch` 触发，**零人工干预**
+- **环境**: 阿里云 ECS 4C8G，代理 API `so-4.6` (apicursor.com)
+
+### 结果
+
+| 指标 | 结果 |
+|------|------|
+| 导入到 l4_deep | **5/5 (100%)** |
+| 自动发现引用论文 | **90 篇** (自动 ingest 到 wait) |
+| L2 Parse 公式提取 | 平均 **11.8 个/篇**，LaTeX 质量高 |
+| L3 Skim problem_summary | **4/5 (80%)** |
+| L4 Deep 完整报告 | **3/5 (60%)** |
+| Venue 检测 | CVPR 2026 ✅ (OpenReview) |
+| Worker 自主处理 | ✅ 2 job 并行，每篇 ~6 分钟 |
+| 自动恢复 cron | ✅ `task_pipeline_recover` 已触发 |
+
+### 自主运行操作方式
+
+```bash
+# 1. 导入论文
+curl -X POST /api/v1/import/links -d '{"items": [{"url": "https://arxiv.org/abs/..."}], "default_category": "VideoQA"}'
+
+# 2. 补全元数据 (可选，pipeline/run 也会自动 enrich)
+curl -X POST /api/v1/papers/enrich
+
+# 3. 一键触发全部处理 (异步返回，worker 后台执行)
+curl -X POST /api/v1/pipeline/batch?limit=50
+
+# 4. 无需干预 — worker 逐篇处理，cron 每 30 分钟自动恢复卡住的论文
+```
+
+### 已知限制
+
+| 限制 | 原因 | 影响 |
+|------|------|------|
+| L4 报告偶尔为空 | 代理 API 截断 JSON (5000-7000 chars) | 40% 的 L4 报告只有标题 |
+| arXiv API 429 限流 | 批量 enrich 时过快 | 部分论文 title/authors 延迟填充 |
+| 代理偶尔返回垃圾 | 第三方不稳定 | 自动重试 3 次可恢复 |
+
+### LLM 代理配置
+
+```env
+OPENAI_API_KEY=<apicursor.com key>
+OPENAI_BASE_URL=https://apicursor.com/v1
+OPENAI_MODEL=so-4.6
+```
+
+| 代理模型名 | 对应模型 | 用途 |
+|-----------|---------|------|
+| `so-4.6` | Claude Sonnet 4.6 | LLM 分析 + VLM 公式/图片 |
+| `op-4.6` | Claude Opus 4.6 | 复杂任务 (公式推导等) |
+
+> **不要使用 `claude-sonnet-4-20250514` 等完整 ID** — 代理可能路由到错误后端导致截断或垃圾响应。
+
+---
+
+## 16. 资源与成本
 
 | 项目 | 费用 |
 |------|------|
