@@ -25,8 +25,8 @@ from backend.models.system import ModelRun
 logger = logging.getLogger(__name__)
 
 # Model selection: use Sonnet for routine VLM tasks (cheaper), Opus for complex judgment
-VLM_MODEL_ROUTINE = "claude-sonnet-4.6"  # figure classification, simple OCR
-VLM_MODEL_COMPLEX = "claude-opus-4.6"    # formula derivation, acceptance judgment
+VLM_MODEL_ROUTINE = "so-4.6"  # figure classification, simple OCR
+VLM_MODEL_COMPLEX = "op-4.6"    # formula derivation, acceptance judgment
 
 
 async def call_vlm(
@@ -391,8 +391,8 @@ Return JSON only:
 def _estimate_vlm_cost(input_tokens: int, output_tokens: int, model: str) -> float:
     """Estimate cost for VLM calls (image tokens are more expensive)."""
     costs = {
-        "claude-sonnet-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
-        "claude-opus-4.6": (15.0 / 1_000_000, 75.0 / 1_000_000),
+        "so-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
+        "op-4.6": (15.0 / 1_000_000, 75.0 / 1_000_000),
     }
     rate = costs.get(model, (3.0 / 1_000_000, 15.0 / 1_000_000))
     return input_tokens * rate[0] + output_tokens * rate[1]

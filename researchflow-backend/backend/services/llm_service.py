@@ -90,7 +90,7 @@ async def call_llm(
                         timeout=180,
                     )
                 else:
-                    default_model = settings.openai_model or "gpt-4o-mini"
+                    default_model = settings.openai_model or "so-4.6"
                     resp = await asyncio.wait_for(
                         _call_openai(prompt, system, model or default_model, max_tokens, temperature),
                         timeout=180,
@@ -230,10 +230,9 @@ def _mock_response(prompt: str, system: str) -> LLMResponse:
 def _estimate_cost(resp: LLMResponse) -> float:
     """Rough cost estimate in USD."""
     costs = {
-        "claude-sonnet-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
-        "claude-haiku-4.5": (0.80 / 1_000_000, 4.0 / 1_000_000),
-        "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
-        "gpt-4o": (2.50 / 1_000_000, 10.0 / 1_000_000),
+        # apicursor.com proxy model names
+        "so-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
+        "op-4.6": (15.0 / 1_000_000, 75.0 / 1_000_000),
         "mock": (0, 0),
     }
     rate = costs.get(resp.model, (1.0 / 1_000_000, 3.0 / 1_000_000))
