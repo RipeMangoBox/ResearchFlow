@@ -202,7 +202,12 @@ Automation wrappers are optional. The public contract for this skill is still:
 analysis_log.csv rows or local PDFs -> analysis notes under paperAnalysis/
 ```
 
-If a repository exposes batch helpers, document them through public entrypoints under `scripts/` rather than private workspace paths.
+Public batch helper entrypoints in this repository:
+
+```bash
+python scripts/batch_analyze_api.py --log paperAnalysis/analysis_log.csv --filter regular --batch-size 4
+python scripts/batch_analyze_api_claude.py --log paperAnalysis/analysis_log.csv --filter regular --batch-size 4
+```
 
 ## Optional Sidecars And Artifacts
 

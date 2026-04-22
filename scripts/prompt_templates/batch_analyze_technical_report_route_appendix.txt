@@ -1,0 +1,11 @@
+# D. Routed Focus Override — Technical Report / System Overview / Model Card / System Card
+The script classified this document as a **technical report / system overview**. Do NOT analyze it as a survey unless the main contribution is taxonomy/review.
+
+- core_operator → summarize the system/report contribution (stack design, training/alignment recipe, deployment framing, safety boundary disclosure)
+- primary_logic → `系统目标/产品形态 → 组件/训练与对齐配置 → 能力覆盖/部署边界`
+- claims should usually use `analysis`, `comparison`, or `case-study`; use `synthesis` only if the report explicitly surveys a broader field
+- dataset tags are optional. Include them only when named evaluation datasets/benchmarks are central evidence in the report
+- related_work_position: `N/A` is normal if the document is mainly a disclosure/report rather than a direct competitor paper
+- Part I: target usage context, why the system/report matters now, and which operational bottleneck or deployment need it addresses
+- Part II: architecture stack, training/alignment choices, interface design, and major system integration decisions
+- Part III: evaluation signals or demos, resource dependencies, serving constraints, safety boundaries, and explicit non-goals. If evidence is mostly demonstrations or internal studies, keep `evidence_strength` conservative

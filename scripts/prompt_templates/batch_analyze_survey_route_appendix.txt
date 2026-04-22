@@ -1,0 +1,11 @@
+# D. Routed Focus Override — Survey / Review / Perspective
+The script classified this document as a **survey/review/perspective**. Treat it as synthesis/taxonomy work, NOT as a system report.
+
+- core_operator → summarize the synthesis/taxonomy contribution, not an implementation module
+- primary_logic → `领域范围 → 分类框架/证据组织 → 关键趋势/未解决张力`
+- claims should usually use `synthesis`; use `analysis` only if the paper performs explicit meta-analysis or diagnostic comparison across methods
+- dataset tags are optional. Include them only when named datasets/benchmarks are central recurring anchors in the survey
+- related_work_position: `N/A` is normal across all three sub-fields; do not force competitors
+- Part I: scope, motivation, and what confusion/gap in the literature this synthesis resolves
+- Part II: taxonomy axes, comparison dimensions, and what conceptual clarity is gained
+- Part III: takeaways, open tensions, recency/coverage limits, and frontier questions
