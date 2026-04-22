@@ -612,6 +612,20 @@ If you want to keep the methodology but use a more neutral framing, you can also
 - `.codex/` is local generated state; Codex users should run `scripts/setup_shared_skills.py` after clone.
 - `build index` is optional for agents when the knowledge base is small. At scale (1 000+ notes), run one build first, then read `paperCollection/index.jsonl` for efficient retrieval.
 
+## Citation
+
+If ResearchFlow helps your research, please cite the repository directly:
+
+```bibtex
+@misc{lin2026researchflow,
+  title        = {{ResearchFlow}: An Agent-Ready Research Knowledge Base Workflow},
+  author       = {Jingzhong Lin and Ziheng Huang},
+  year         = {2026},
+  howpublished = {\url{https://github.com/RipeMangoBox/ResearchFlow}},
+  note         = {GitHub repository}
+}
+```
+
 ## License
 
 MIT
