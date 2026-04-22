@@ -1,6 +1,6 @@
 ---
 name: papers-sync-from-zotero
-description: "Syncs papers from a Zotero library into RF's structured layout via pyzotero / Zotero API (primary) or flat PDF folder import (fallback). Copies PDFs into `paperPDFs/<Category>/<Venue_Year>/`, writes rich metadata to `paperAnalysis/processing/zotero/manifest.jsonl`, and appends lightweight rows to `analysis_log.csv`. Supports incremental sync. Use when the user wants to import papers from Zotero into the ResearchFlow pipeline."
+description: "Syncs papers from a Zotero library into RF's structured layout via Zotero Web API / local API, writes rich metadata + annotations to `paperAnalysis/processing/zotero/manifest.jsonl`, appends lightweight rows to `analysis_log.csv`, and can backfill Zotero highlights/comments into existing analysis notes."
 ---
 
 # Papers Sync From Zotero
@@ -26,55 +26,51 @@ Zotero library
 
 ## Two operating modes
 
-### Mode A: Zotero API (primary, recommended)
+### Mode A: Zotero API sync (primary, implemented)
 
-Uses `pyzotero` library to connect to Zotero via Web API or local API.
+Uses `.claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync` against Zotero Web API or local API.
 
 Advantages:
 - Complete metadata (title, authors, venue, DOI, tags, collections, dates, abstract)
-- Incremental sync via `since` / `version` parameters
+- Incremental sync via `since` / `version` parameters and `sync_state.json`
 - Identity tracking via `zotero_key` + `zotero_library_id`
-- No guessing from PDF text
+- Attachment-level annotation extraction
+- Dedup against both Zotero manifest and `analysis_log.csv`
+- Supports `--repo-root` so sync can target an isolated sub-vault such as `MyVault/Zotero`
 
 Requirements:
-- `pyzotero` installed (`pip install pyzotero`)
 - Zotero API key (for Web API) or Zotero running locally (for local API)
-- User provides: library ID + API key, or confirms local Zotero is running
+- User provides: library type + library ID + API key, or confirms local Zotero is running
 
-### Mode B: Flat PDF folder (fallback)
+### Mode B: Annotation backfill into RF notes (post-sync, implemented)
 
-Reads a local folder of PDFs with no Zotero dependency.
+Uses `.claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py append-annotations`.
 
 Advantages:
-- Works without Zotero installed
-- Works with any PDF collection (not just Zotero exports)
-
-Limitations:
-- Metadata extraction from PDF text is unreliable
-- No incremental sync (full scan + dedup each time)
-- No identity tracking
-
-Use when: user has no Zotero, or has a one-off folder of PDFs to import.
+- Reuses the manifest produced in Mode A
+- Adds Zotero highlights / comments / notes after Part III in existing analysis Markdown
+- Idempotent: rerun replaces the Zotero appendix instead of duplicating it
 
 ## Input
 
 User provides:
 
-**Mode A (API):**
+**Mode A (API sync):**
 - **Library type**: `user` or `group`
-- **Library ID**: Zotero library ID (numeric)
+- **Library ID**: Zotero library ID (for local user library, use `0`)
 - **API key**: Zotero API key (for Web API) — or confirm local Zotero is running
 - **Collection filter** (optional): sync only a specific Zotero collection
 - **Category hint** (optional): override RF category for all items in this sync
 - **Tag filter** (optional): sync only items with specific Zotero tags
+- **Append annotations to notes** (optional): whether to immediately append Zotero highlights/comments into existing analysis `.md`
+- **Repo root** (optional): isolated target root for all RF outputs; recommended when the host vault already contains another RF knowledge base
 
-> **Security recommendation:** Prefer Mode B (folder + BibTeX) over Mode A when possible. If Mode A is used, the user should create a **read-only** API key in Zotero settings (Settings → Feeds/API → Create new private key → uncheck "Allow write access"). Never store the API key in committed files. The agent should not echo the key in output or logs.
+> **Security recommendation:** Prefer the local Zotero API when possible. If Web API is used, create a **read-only** API key in Zotero settings (Settings → Feeds/API → Create new private key → uncheck "Allow write access"). Never store the API key in committed files. The agent should not echo the key in output or logs.
 
-**Mode B (folder):**
-- **PDF folder path**: e.g. `/home/user/Zotero/storage` or any flat folder
-- **Category hint** (optional): e.g. `Motion_Generation_Text_Speech_Music_Driven`
-- **Venue/year hint** (optional): e.g. `CVPR 2025`
-- **BibTeX / CSV export** (optional): for more accurate metadata
+**Mode B (append annotations):**
+- Existing `paperAnalysis/processing/zotero/manifest.jsonl`
+- Existing RF analysis notes under `paperAnalysis/`
+- Optional filter: one `analysis_md` path or one `pdf_ref`
 
 ## Output
 
@@ -113,8 +109,20 @@ One JSON object per line, containing all Zotero metadata:
   "zotero_collections": ["Motion Generation"],
   "pdf_source_path": "/home/user/Zotero/storage/ABC12345/Zhang_2025.pdf",
   "rf_pdf_path": "paperPDFs/Motion_Generation/CVPR_2025/2025_MotionDiffuse_Text_Driven_Human_Motion_Generation.pdf",
+  "rf_analysis_path": "paperAnalysis/Motion_Generation/CVPR_2025/2025_MotionDiffuse_Text_Driven_Human_Motion_Generation.md",
   "rf_category": "Motion_Generation_Text_Speech_Music_Driven",
   "rf_sort": "Motion_Generation",
+  "pdf_import_source": "attachment_url_fallback",
+  "annotation_count": 3,
+  "annotations": [
+    {
+      "annotation_key": "WA3J78PQ",
+      "annotation_type": "highlight",
+      "page_label": "4",
+      "annotation_text": "Diffusion in latent motion space enables fast generation.",
+      "annotation_comment": "Potential reusable operator."
+    }
+  ],
   "synced_at": "2026-04-13T18:00:00",
   "sync_version": 1
 }
@@ -142,9 +150,9 @@ state,importance,paper_title,venue,project_link_or_github_link,paper_link,sort,p
 ### Mode A: Zotero API sync
 
 **Step 1: Connect and authenticate**
-- Check if `pyzotero` is installed; if not, prompt user to install
-- Connect to Zotero library using provided credentials
-- Verify connection by fetching library version
+- Use `zotero_to_rf.py sync`
+- Connect to Zotero library using Web API or local API
+- Verify connection by fetching collections / first page of items
 
 **Step 2: Fetch items (incremental)**
 - Read last sync version from `paperAnalysis/processing/zotero/sync_state.json`:
@@ -154,60 +162,49 @@ state,importance,paper_title,venue,project_link_or_github_link,paper_link,sort,p
 - If first sync: fetch all items
 - If incremental: fetch only items with `version > last_version` using `since` parameter
 - Apply collection/tag filters if specified
-- Filter to item types with PDF attachments
+- Keep only paper-like item types by default: `conferencePaper`, `journalArticle`, `preprint`
+- Require a PDF attachment; skip metadata-only entries
+- Fetch attachment children to collect Zotero annotations / comments
+- If the chosen attachment is `linked_file`, metadata and annotations may still be readable even though `/items/<attachment>/file` returns `404`
 
 **Step 3: Map metadata to RF structure**
 - For each Zotero item:
   - Map `itemType` + `publicationTitle` / `conferenceName` / `proceedingsTitle` → RF `venue`
-  - Map Zotero `tags` + `collections` → RF `category` (using a configurable mapping table)
-  - If category cannot be determined: mark as `Uncategorized` and flag for user input
-- Present mapping table to user for confirmation (especially first sync):
-  ```
-  | # | Zotero title | Year | Venue | -> RF Category | -> RF Venue_Year | Status |
-  ```
+  - Map Zotero `tags` + `collections` → RF `category` (configurable mapping table, plus fuzzy match to existing RF categories)
+  - Build canonical RF paths
+  - Dedup against existing manifest + `analysis_log.csv` by `zotero_key`, DOI, arXiv ID, `pdf_path`, and normalized `title + year`
 
 **Step 4: Download/copy PDFs**
-- For each confirmed item:
-  - Locate PDF attachment via Zotero API (`/items/{key}/children`)
-  - If using Web API: download PDF to RF path
-  - If using local API / local storage: copy (never move) PDF to RF path
-  - Sanitize filename following RF convention
-  - Skip if target already exists
+- Locate the preferred PDF attachment
+- Download attachment to RF path if the canonical target does not already exist
+- If Zotero Web API file download fails and the attachment `url` looks like a direct PDF URL, fall back to downloading from that URL
+- Never move or mutate the Zotero original
+- Skip ambiguous collisions instead of overwriting unknown local files
 
 **Step 5: Write manifest + log**
-- Append rich metadata to `paperAnalysis/processing/zotero/manifest.jsonl`
-- Append lightweight row to `paperAnalysis/analysis_log.csv`
+- Upsert rich metadata to `paperAnalysis/processing/zotero/manifest.jsonl`
+- Write per-item failures to `paperAnalysis/processing/zotero/sync_errors.jsonl`
+- Upsert lightweight row to `paperAnalysis/analysis_log.csv`
+- Preserve existing non-empty log fields; fill blanks instead of clobbering
+- Set log state to `checked` if the analysis note already exists, otherwise `Downloaded`
 - Update `sync_state.json` with new version number
 
-### Mode B: Flat folder import
+### Mode B: append annotations into existing analysis notes
 
-**Step 1: Link source folder**
-- If outside RF workspace: `ln -s /path/to/pdfs linkedCodebases/zotero-pdfs`
-- If accessible: read directly
+**Step 1: Read manifest**
+- Load `paperAnalysis/processing/zotero/manifest.jsonl`
+- Select all records with `annotations` / `zotero_notes`
 
-**Step 2: Scan and dedup**
-- Walk folder recursively, list all `.pdf` files
-- Fuzzy match against existing `analysis_log.csv` `paper_title` column (similarity > 0.8 = skip)
+**Step 2: Find corresponding analysis note**
+- Use `rf_analysis_path` from the manifest
+- Skip missing `.md` files; report them for later re-run after `papers-analyze-pdf`
 
-**Step 3: Extract metadata**
-Priority order:
-1. BibTeX / CSV export (if provided) — match by filename or title
-2. PDF metadata fields (`/Title`, `/Author`, `/CreationDate`)
-3. PDF first-page text (title, venue from header/footer)
-4. User hints + filename parsing (fallback)
-
-Present results table for confirmation:
-```
-| # | Original filename | Detected title | Year | Venue | Category | Status |
-```
-
-**Step 4: Copy and organize**
-- Copy (never move) to `paperPDFs/<Category>/<Venue_Year>/<Year>_<SanitizedTitle>.pdf`
-- Skip existing targets
-
-**Step 5: Write manifest + log**
-- Same as Mode A, but `zotero_key` and API fields are empty
-- `pdf_source_path` records original location
+**Step 3: Insert Zotero appendix**
+- Write a new section after Part III and before the local PDF section
+- Heading:
+  - `zh`: `## 附：Zotero 高亮与笔记`
+  - `en`: `## Appendix: Zotero Highlights & Notes`
+- Re-running replaces the old appendix instead of duplicating it
 
 ## Category mapping
 
@@ -230,9 +227,9 @@ For Mode A, Zotero collections/tags are mapped to RF categories. Default mapping
 
 If no mapping matches, agent infers from title/abstract keywords or asks user.
 
-## Optional frontmatter enrichment
+## Optional note enrichment
 
-After sync, the following optional fields become available for `papers-analyze-pdf` to include in analysis note frontmatter:
+After sync, the following optional fields become available for `papers-analyze-pdf` or post-processing note enrichment:
 
 | Field | Source | Required? |
 |-------|--------|-----------|
@@ -241,24 +238,26 @@ After sync, the following optional fields become available for `papers-analyze-p
 | citekey | Better BibTeX / Zotero | optional |
 | zotero_key | Zotero API | optional |
 | abstract | Zotero API | optional |
+| annotations | Zotero attachment children | optional |
+| zotero_notes | Zotero child notes | optional |
 
-These fields are stored in `manifest.jsonl` and can be pulled into frontmatter by `papers-analyze-pdf` if present. Existing analysis notes without these fields remain valid.
+These fields are stored in `manifest.jsonl`. `annotations` and `zotero_notes` are intended for the optional body appendix, not for required frontmatter.
 
 ## Constraints
 
 - **Copy, never move** source PDFs (Zotero library stays intact)
 - **Incremental by default** (Mode A) — only sync new/updated items
 - **No Zotero database direct access** — use API only (Zotero docs explicitly warn against direct SQLite access)
-- **No annotation sync in this skill** — that is a separate Phase 2 concern
 - **No PDF analysis** — that is `papers-analyze-pdf`
-- **Idempotent** — re-running skips already-synced items (by `zotero_key` or fuzzy title match)
+- **Idempotent** — re-running updates the manifest and replaces the Zotero appendix instead of duplicating it
 - **analysis_log.csv stays lightweight** — rich metadata lives in manifest.jsonl
+- **Web API caveat** — `linked_file` attachments often expose annotations/metadata but not the local file bytes; expect `404` on `/file` and use local API or URL fallback when possible
 
 ## Relationship to other skills
 
 | Skill | Role | Boundary |
 |-------|------|----------|
-| `papers-sync-from-zotero` (this) | Source adapter: Zotero -> RF structure | Stops after PDF copy + manifest + log append |
+| `papers-sync-from-zotero` (this) | Source adapter: Zotero -> RF structure | Stops after PDF copy + manifest + log append; optional appendix write if note already exists |
 | `papers-collect-from-github-awesome` | Source adapter: GitHub repos -> analysis_log.csv | Collects metadata only, no PDFs |
 | `papers-collect-from-web` | Source adapter: web pages -> analysis_log.csv | Collects metadata only, no PDFs |
 | `papers-download-from-list` | Downloads PDFs from URLs in triage lists | Handles online sources, not local files |
@@ -266,12 +265,8 @@ These fields are stored in `manifest.jsonl` and can be pulled into frontmatter b
 
 ## Typical Usage
 
-> "Sync my Zotero library into ResearchFlow. My library ID is 12345 and API key is xxx."
+> `python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync --local-api --library-type user --library-id 0 --append-annotations-to-md`
 
-> "Sync only the 'Video Generation' collection from Zotero."
+> `python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync --library-type user --library-id 12345 --api-key xxx --collection "Video Generation"`
 
-> "Import PDFs from ~/Zotero/storage into ResearchFlow, auto-detect categories."
-
-> "I have a BibTeX export at ~/refs.bib and PDFs at ~/papers/. Use the BibTeX for metadata."
-
-> "Re-sync Zotero — only pull papers added since last sync."
+> `python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py append-annotations`

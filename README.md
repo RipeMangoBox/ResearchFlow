@@ -260,14 +260,42 @@ Prompt 4: rebuild indexes
 <details>
 <summary>2. Import papers from Zotero</summary>
 
-ResearchFlow includes a registered `papers-sync-from-zotero` skill for bridging Zotero with RF's folder layout. The actual environment-specific integration code is still generated on demand by the agent, or you can implement it yourself.
+ResearchFlow includes a registered `papers-sync-from-zotero` skill and a runnable sync script at `.claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py`. The script filters to paper-like Zotero items, deduplicates against `analysis_log.csv` + Zotero manifest, copies PDFs into RF's canonical layout, and can append Zotero highlights/notes into existing analysis notes.
 
 ```text
 /papers-sync-from-zotero
 Please guide me through connecting Zotero to ResearchFlow.
 ```
 
-See `.claude/skills/papers-sync-from-zotero/README.md` for details on the two supported approaches (API mode vs folder mode).
+Local Zotero API example:
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync \
+  --repo-root /path/to/isolated/Zotero \
+  --local-api \
+  --library-type user \
+  --library-id 0 \
+  --append-annotations-to-md
+```
+
+Web API example:
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync \
+  --repo-root /path/to/isolated/Zotero \
+  --library-type user \
+  --library-id <YOUR_LIBRARY_ID> \
+  --api-key <READ_ONLY_KEY> \
+  --collection "Video Generation"
+```
+
+If PDFs have already been analyzed and you only want to backfill Zotero highlights/comments into the Markdown notes:
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py append-annotations
+```
+
+See `.claude/skills/papers-sync-from-zotero/README.md` for workflow details and category mapping notes.
 
 </details>
 
