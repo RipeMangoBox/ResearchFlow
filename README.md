@@ -4,7 +4,7 @@
 
 <h1 align="center">ResearchFlow</h1>
 
-<p align="center"><strong>Local research knowledge base + AI research assistant.<br/>Turn papers, analysis notes, and ideas into reusable research memory shared by Claude Code, Codex CLI, and other AI agents.</strong></p>
+<p align="center"><strong>Structured Paper Analysis and Research Memory for Knowledge-Grounded Research</strong></p>
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -26,9 +26,19 @@
 
 > **Knowledge first, not execution first.** Most AI research tools focus on "help me run experiments" or "help me write the paper." ResearchFlow focuses one layer earlier: **when your agent makes a decision, does it already have enough structured, retrievable paper evidence?** Without that layer, ideas stay vague, code changes lack grounding, and reviewer concerns are harder to answer.
 >
+> **Structured paper analysis as reusable research memory.** ResearchFlow is a structured paper analysis framework that converts academic PDFs into metadata-rich, retrievable analysis notes, building a reusable research memory for human-in-the-loop, knowledge-grounded research.
+>
 > **Pure Markdown, zero lock-in.** The whole system is just local folders + Markdown + CSV. No database, no Docker, no backend service. Every skill is a `SKILL.md` file that Claude Code, Codex CLI, Cursor, or your own agent can read.
 >
 > *ResearchFlow is a methodology, not a platform. The valuable part is the research memory you accumulate.*
+
+---
+
+## 🔭 Current Goals
+
+- [ ] Release a stronger paper analysis template for more structured, comparable, and reusable paper understanding.
+- [ ] Release structured paper-analysis metadata that supports efficient retrieval, filtering, and cross-paper comparison.
+- [ ] Release a high-quality paper analysis knowledge base that supports human-in-the-loop research.
 
 ---
 
@@ -618,7 +628,7 @@ If ResearchFlow helps your research, please cite the repository directly:
 
 ```bibtex
 @misc{lin2026researchflow,
-  title        = {{ResearchFlow}: An Agent-Ready Research Knowledge Base Workflow},
+  title        = {{ResearchFlow}: A Structured Paper Analysis Framework for Knowledge-Grounded Research},
   author       = {Jingzhong Lin and Ziheng Huang},
   year         = {2026},
   howpublished = {\url{https://github.com/RipeMangoBox/ResearchFlow}},
