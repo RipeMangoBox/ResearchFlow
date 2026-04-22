@@ -2,7 +2,7 @@
 name: research-workflow
 description: >
   Unified entry for the research pipeline. Maps current work to one stage
-  (sync/collect/download/analyze/build/query/ideate/focus/review/audit/export),
+  (sync/collect/download/analyze/build/query/ideate/focus/review/audit/normalize/export),
   recommends the right existing skill/command, supports step-by-step and
   end-to-end guidance, and keeps stage boundaries clear without duplicating
   underlying capabilities. Note: question-bank and pdfs-compress have been
@@ -26,7 +26,7 @@ KB usage chain:
 - query (including comparison requests) → ideate → focus → review
 
 Support chain:
-- audit / export / code-context
+- audit / normalize / export / code-context
 
 ## Purpose
 
@@ -61,6 +61,14 @@ Support chain:
   - `reviewer-stress-test` (can be used independently; does not depend on focus output)
 - audit
   - `papers-audit-metadata-consistency`
+- normalize / repair
+  - first enter through `papers-audit-metadata-consistency`
+  - then apply the audit skill's path-repair protocol:
+    - canonicalize `paperPDFs/` and `paperAnalysis/` paths
+    - sync note `pdf_ref` / embeds
+    - sync every affected `analysis_log.csv` row
+    - refresh derived caches if present
+    - rebuild `paperCollection` with `papers-build-collection-index`
 - export
   - `notes-export-share-version`
 
@@ -76,6 +84,7 @@ Support chain:
 - focus: initial idea + goal preferences (can come from ideate or be independent input)
 - review: idea / roadmap / full paper (can come from focus or be independent input)
 - audit: no extra input (scan current paperAnalysis)
+- normalize / repair: a description of the path / metadata anomaly, typically `UnknownYear_*`, `Unknown_<year>`, stale `pdf_ref`, or stale `analysis_log.csv` paths
 - export: note path to export
 
 ## Output contract by stage
@@ -87,6 +96,13 @@ For each stage, return:
 3. Recommended execution (skill or command template)
 4. Output paths
 5. Suggested next stage
+
+For `normalize / repair`, also return:
+
+6. Canonical target path pattern
+7. Files / logs that must be synchronized together
+8. Collision policy
+9. Rebuild requirement (`papers-build-collection-index`)
 
 ## Typical usage
 
@@ -110,6 +126,23 @@ For each stage, return:
 
 - Do not replace execution logic of any underlying skill
 - Do not auto-chain multiple stages (after each stage, suggest next step and let the user decide whether to continue)
+
+## Normalize / Repair Guidance
+
+Route here when the user is not asking for new KB content, but for **consistency restoration** across existing assets:
+
+- `UnknownYear_*` or `Unknown_<year>` directories
+- stale `paperPDFs` vs `paperAnalysis` paths
+- stale `pdf_ref` or local PDF embeds
+- stale `analysis_log.csv` `pdf_path`
+- mismatches introduced by a partial rename pass
+
+Default policy:
+
+- preserve current top-level category unless the user explicitly asks for reclassification
+- do not treat `Unknown` inside a literal paper title as a path error
+- prefer canonical targets that already exist
+- after repair, rebuild `paperCollection`
 
 ## State Convention
 

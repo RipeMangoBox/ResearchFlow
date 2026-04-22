@@ -15,6 +15,8 @@ Regenerates two index layers by scanning `paperAnalysis/**/*.md` and extracting 
 
 This skill is the single writer for both outputs. `papers-analyze-pdf` does not append to `index.jsonl`.
 
+This skill assumes the note/PDF path layer is already canonical. It does **not** repair stale paths by itself.
+
 ### paperCollection/index.jsonl format
 
 ```jsonl
@@ -35,6 +37,7 @@ Only analysis notes that look like “real papers” are indexed:
 
 - Frontmatter includes `pdf_ref` that **starts with** `paperPDFs/`
 - and `pdf_ref` **ends with** `.pdf`
+- and `pdf_ref` points to the **post-repair canonical location** if files were renamed or normalized
 
 Notes missing/invalid `pdf_ref` are skipped.
 
@@ -53,6 +56,20 @@ python .claude/skills/papers-build-collection-index/scripts/build_paper_collecti
 3. Confirm it succeeded:
    - Expect console output like `[OK] papers: ...` and `[OK] output: .../paperCollection`.
    - Spot-check that `paperCollection/index.jsonl`, `paperCollection/README.md` and `paperCollection/_AllPapers.md` are updated.
+
+## Required ordering after path repair
+
+When papers were renamed, moved out of `Unknown*` directories, or had `pdf_ref` changed:
+
+1. finish the full path synchronization first:
+   - `paperPDFs/`
+   - `paperAnalysis/`
+   - note frontmatter / embeds
+   - `analysis_log.csv`
+   - any derived CSV caches
+2. then run this builder
+
+Do **not** hand-edit `paperCollection/index.jsonl` or navigation pages as a substitute for fixing the underlying note/PDF paths. This skill is the canonical refresh step after repair.
 
 ## How categories / tags are interpreted
 

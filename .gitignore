@@ -1,6 +1,7 @@
 # === IDE / OS ===
 __pycache__/
 .obsidian/
+.cursor/
 obsidian setting.zip
 obsidian setting
 
@@ -23,6 +24,7 @@ batch_analyze.log
 # === Paper data (large / personal) ===
 paperPDFs/
 paperAnalysis/processing/
+paperAnalysis.zip
 
 # === PaperBite (separate project, not for this repo) ===
 PaperBite/
@@ -33,6 +35,8 @@ paperCollection/_AllPapers.md
 paperCollection/by_task/
 paperCollection/by_technique/
 paperCollection/by_venue/
+paperCollection/_tag_*.json
+paperCollection/_tag_*.md
 
 # === linkedCodebases (symlinks, keep README only) ===
 linkedCodebases/*

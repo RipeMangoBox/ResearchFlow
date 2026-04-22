@@ -257,14 +257,42 @@ Prompt 4：重建索引
 <details>
 <summary>2. 从 Zotero 导入论文</summary>
 
-ResearchFlow 已注册 `papers-sync-from-zotero` skill，用来把 Zotero 与 RF 的目录结构对接。实际依赖环境的集成代码仍然按需由 agent 生成，你也可以自行实现。
+ResearchFlow 已注册 `papers-sync-from-zotero` skill，并提供可直接运行的脚本 `.claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py`。这个脚本会把 Zotero 条目清洗为 RF 可用格式：仅保留论文型条目、对 `analysis_log.csv` + Zotero manifest 去重、把 PDF 复制到规范路径，并可把 Zotero 高亮/批注追加到已有 analysis note 末尾。
 
 ```text
 /papers-sync-from-zotero
 请指导我将 Zotero 接入 ResearchFlow。
 ```
 
-两种对接方式（API 模式 vs 文件夹模式）的详细说明见 `.claude/skills/papers-sync-from-zotero/README.md`。
+本地 Zotero API 最小示例：
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync \
+  --repo-root /path/to/isolated/Zotero \
+  --local-api \
+  --library-type user \
+  --library-id 0 \
+  --append-annotations-to-md
+```
+
+Zotero Web API 示例：
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py sync \
+  --repo-root /path/to/isolated/Zotero \
+  --library-type user \
+  --library-id <YOUR_LIBRARY_ID> \
+  --api-key <READ_ONLY_KEY> \
+  --collection "Video Generation"
+```
+
+如果 PDF 已经分析过，只想把 Zotero 的高亮/批注回填到 Markdown 笔记：
+
+```bash
+python .claude/skills/papers-sync-from-zotero/scripts/zotero_to_rf.py append-annotations
+```
+
+完整流程、category map 和增量同步说明见 `.claude/skills/papers-sync-from-zotero/README.md`。
 
 </details>
 
