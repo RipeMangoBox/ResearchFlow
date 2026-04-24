@@ -209,28 +209,12 @@ async def run_full_pipeline(
     else:
         progress["steps"]["parse_l2"] = "skipped (no PDF)"
 
-    # Step 4: L3 Skim
-    has_l3 = (await session.execute(
-        select(PaperAnalysis).where(
-            PaperAnalysis.paper_id == paper_id,
-            PaperAnalysis.level == AnalysisLevel.L3_SKIM,
-            PaperAnalysis.is_current.is_(True),
-        )
-    )).scalar_one_or_none()
+    # Step 4: L3 Skim — REMOVED (merged into shallow_extractor agent in Step 5)
+    # shallow_extractor produces paper_essence + method_delta which covers
+    # all L3 skim output (problem_summary, method_summary, changed_slots).
+    progress["steps"]["skim_l3"] = "merged_into_shallow_extractor"
 
-    if not has_l3:
-        from backend.services import analysis_service
-        l3 = await analysis_service.skim_paper(session, paper_id)
-        progress["steps"]["skim_l3"] = {
-            "worth_deep_read": l3.worth_deep_read if l3 else None,
-            "is_plugin_patch": l3.is_plugin_patch if l3 else None,
-            "model": f"{l3.model_provider}/{l3.model_name}" if l3 else "failed",
-        }
-        await session.commit()
-    else:
-        progress["steps"]["skim_l3"] = "skipped (already skimmed)"
-
-    # Step 5: L4 Deep (auto-triggers delta_card_build → graph)
+    # Step 5: L4 Deep (6-agent pipeline → DeltaCard → graph)
     has_l4 = (await session.execute(
         select(PaperAnalysis).where(
             PaperAnalysis.paper_id == paper_id,
@@ -319,30 +303,22 @@ async def run_full_pipeline(
         )).scalar_one_or_none()
 
         if latest_l4:
-            # Fill core_operator from core_intuition
-            if not paper.core_operator and latest_l4.core_intuition:
-                paper.core_operator = latest_l4.core_intuition[:200]
-            # Fill primary_logic from method_summary (first 2 sentences)
-            if not paper.primary_logic and latest_l4.method_summary:
-                sentences = latest_l4.method_summary.split("。")[:2]
-                paper.primary_logic = "。".join(sentences)[:300]
-            # Fill claims from evidence_summary
-            if not paper.claims and latest_l4.evidence_summary:
-                paper.claims = [s.strip() for s in latest_l4.evidence_summary.split("。")[:3] if s.strip()]
-
-            # Assign ring based on structurality_score
-            if not paper.ring and paper.structurality_score is not None:
-                s = float(paper.structurality_score)
-                if s >= 0.7:
-                    paper.ring = "baseline"
-                elif s >= 0.4:
-                    paper.ring = "structural"
-                else:
-                    paper.ring = "plugin"
+            # Assign ring from DeltaCard.structurality_score (not Paper — field removed)
+            if not paper.ring and paper.current_delta_card_id:
+                from backend.models.delta_card import DeltaCard
+                dc = await session.get(DeltaCard, paper.current_delta_card_id)
+                if dc and dc.structurality_score is not None:
+                    s = float(dc.structurality_score)
+                    if s >= 0.7:
+                        paper.ring = "baseline"
+                    elif s >= 0.4:
+                        paper.ring = "structural"
+                    else:
+                        paper.ring = "plugin"
 
             # Assign role_in_kb
             if not paper.role_in_kb:
-                paper.role_in_kb = "extension"  # default
+                paper.role_in_kb = "extension"
 
         await session.flush()
 

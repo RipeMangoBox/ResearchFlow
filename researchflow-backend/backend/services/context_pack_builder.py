@@ -415,25 +415,48 @@ class ContextPackBuilder:
         return "\n\n".join(sections)
 
     async def _load_paper_context(self, paper_id: UUID, items: list[str]) -> str:
-        """Query DB for paper-level context (sections, evidence)."""
+        """Query DB for paper-level context (sections, evidence).
+
+        Loads L2 parse for extracted_sections (text/formulas/tables),
+        and adds paper metadata header for all agents.
+        """
         sections: list[str] = []
 
-        # Load the current analysis
-        analysis = (
+        # ── Paper metadata header (Fix 4: available to all agents) ──
+        from backend.models.paper import Paper
+        paper = await self.session.get(Paper, paper_id)
+        if paper:
+            sections.append(
+                f"[Paper Metadata]\n"
+                f"Title: {paper.title}\n"
+                f"Venue: {paper.venue or 'N/A'} {paper.year or ''}\n"
+                f"Cited by: {paper.cited_by_count or 0}\n"
+                f"Acceptance: {paper.acceptance_type or 'unknown'}\n"
+                f"Code: {paper.code_url or 'N/A'}\n"
+                f"Category: {paper.category}\n"
+                f"Tags: {', '.join(paper.tags or [])}\n"
+                f"Method family: {paper.method_family or 'N/A'}"
+            )
+
+        # ── Fix 3: explicitly load L2 parse for extracted_sections ──
+        from backend.models.enums import AnalysisLevel
+        l2_analysis = (
             await self.session.execute(
                 select(PaperAnalysis)
                 .where(
                     PaperAnalysis.paper_id == paper_id,
+                    PaperAnalysis.level == AnalysisLevel.L2_PARSE,
                     PaperAnalysis.is_current.is_(True),
                 )
-                .order_by(PaperAnalysis.created_at.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
 
-        extracted = analysis.extracted_sections if analysis else {}
+        extracted = l2_analysis.extracted_sections if l2_analysis else {}
         if not isinstance(extracted, dict):
             extracted = {}
+        # Use L2 analysis for formulas/tables/figures (these only exist on L2)
+        analysis = l2_analysis
 
         for item in items:
             if item == "abstract":

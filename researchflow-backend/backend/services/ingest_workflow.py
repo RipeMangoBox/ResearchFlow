@@ -195,10 +195,51 @@ class IngestWorkflow:
                 )
                 agent_results[result_key] = {}
 
-        # Build deep-ingest signals deterministically (Phase 2B: no score agent)
+        # ── Write L3-compatible PaperAnalysis from shallow_extractor output ──
+        # This replaces the old L3 skim step — shallow_extractor covers the same ground.
         shallow_extract = agent_results.get("shallow_extract", {})
         paper_essence = shallow_extract.get("paper_essence", {})
         method_delta = shallow_extract.get("method_delta", {})
+
+        if paper_essence:
+            try:
+                from backend.models.analysis import PaperAnalysis
+                from backend.models.enums import AnalysisLevel
+                # Mark old L3 as superseded
+                old_l3 = await self.session.execute(
+                    select(PaperAnalysis).where(
+                        PaperAnalysis.paper_id == paper_id,
+                        PaperAnalysis.level == AnalysisLevel.L3_SKIM,
+                        PaperAnalysis.is_current.is_(True),
+                    )
+                )
+                old = old_l3.scalar_one_or_none()
+                if old:
+                    old.is_current = False
+
+                l3_compat = PaperAnalysis(
+                    paper_id=paper_id,
+                    level=AnalysisLevel.L3_SKIM,
+                    model_provider="agent",
+                    model_name="shallow_extractor",
+                    prompt_version="v7_merged",
+                    schema_version="v2",
+                    confidence=0.75,
+                    problem_summary=paper_essence.get("problem_statement"),
+                    method_summary=paper_essence.get("method_summary"),
+                    core_intuition=paper_essence.get("core_claim"),
+                    changed_slots=[s.get("slot_name", "") for s in method_delta.get("changed_slots", [])],
+                    is_plugin_patch=method_delta.get("is_plugin_patch"),
+                    worth_deep_read=bool(method_delta.get("should_create_method_node")),
+                    confidence_notes=paper_essence.get("evidence_refs"),
+                    is_current=True,
+                )
+                self.session.add(l3_compat)
+                await self.session.flush()
+            except Exception as e:
+                logger.warning("L3 compat write failed for %s: %s", paper_id, e)
+
+        # Build deep-ingest signals deterministically
         ref_role_map = agent_results.get("reference_role_map", {})
 
         # Derive scoring signals from shallow_extract + reference_role_map
