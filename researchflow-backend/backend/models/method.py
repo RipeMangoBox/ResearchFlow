@@ -78,29 +78,6 @@ class MethodNode(Base):
     )
 
 
-class MethodSlot(Base):
-    """A named component slot within a method.
-
-    Examples for GRPO: reward_function, advantage_estimator, policy_update.
-    """
-    __tablename__ = "method_slots"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    method_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
-    )
-    slot_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    default_description: Mapped[str | None] = mapped_column(Text)
-    sort_order: Mapped[int] = mapped_column(SmallInteger, default=0)
-
-    __table_args__ = (
-        Index("idx_mslot_method", "method_id"),
-        UniqueConstraint("method_id", "slot_name", name="uq_method_slot"),
-    )
-
-
 class MethodEdge(Base):
     """An evolution edge between two methods.
 

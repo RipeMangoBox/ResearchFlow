@@ -1,4 +1,4 @@
-"""EvidenceUnit, TransferAtom models."""
+"""EvidenceUnit model — atomic evidence with confidence and source anchoring."""
 
 import uuid
 from datetime import datetime
@@ -25,8 +25,7 @@ class EvidenceUnit(Base):
         UUID(as_uuid=True), ForeignKey("paper_analyses.id")
     )
 
-    # Graph FK links (Layer 3→4 connection)
-    idea_delta_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Primary FK link to DeltaCard (IdeaDelta removed)
     delta_card_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     slot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
@@ -35,7 +34,7 @@ class EvidenceUnit(Base):
     evidence_type: Mapped[str | None] = mapped_column(String(30))
     causal_strength: Mapped[float | None] = mapped_column()
 
-    # Per-claim confidence & basis (GAP 2 fix)
+    # Per-claim confidence & basis
     confidence: Mapped[float | None] = mapped_column()   # 0.0–1.0
     basis: Mapped[EvidenceBasis | None] = mapped_column(
         Enum(EvidenceBasis, name="evidence_basis", create_type=False,
@@ -55,24 +54,6 @@ class EvidenceUnit(Base):
     # ORM relationships
     paper = relationship("Paper", foreign_keys=[paper_id], lazy="selectin")
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class TransferAtom(Base):
-    __tablename__ = "transfer_atoms"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    source_domain: Mapped[str] = mapped_column(String(100), nullable=False)
-    target_domain: Mapped[str] = mapped_column(String(100), nullable=False)
-    mechanism: Mapped[str] = mapped_column(Text, nullable=False)
-    preconditions: Mapped[str | None] = mapped_column(Text)
-    failure_risks: Mapped[str | None] = mapped_column(Text)
-    confidence: Mapped[float | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

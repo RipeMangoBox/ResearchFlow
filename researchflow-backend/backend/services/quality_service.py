@@ -1,7 +1,7 @@
 """Quality scoring service — 4 quality metrics for the knowledge graph.
 
 Metrics:
-1. Idea correctness — structural completeness of an IdeaDelta
+1. Idea correctness — structural completeness of an DeltaCard
 2. Evidence grounding — evidence coverage and strong-edge grounding
 3. DeltaCard completeness — field-level completeness check
 4. KB quality report — aggregate quality across all published entities
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import GraphEdge, IdeaDelta
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,9 @@ STRONG_EDGE_TYPES = {"contradicts", "transferable_to"}
 
 async def score_idea_correctness(
     session: AsyncSession,
-    idea_delta_id: UUID,
+    delta_card_id: UUID,
 ) -> dict:
-    """Check structural completeness of an IdeaDelta.
+    """Check structural completeness of an DeltaCard.
 
     Checks:
     - primary_bottleneck set
@@ -38,9 +38,9 @@ async def score_idea_correctness(
 
     Returns dict with per-field booleans and overall score 0-1.
     """
-    idea = await session.get(IdeaDelta, idea_delta_id)
+    idea = await session.get(DeltaCard, delta_card_id)
     if not idea:
-        return {"error": "IdeaDelta not found", "overall_score": 0.0}
+        return {"error": "DeltaCard not found", "overall_score": 0.0}
 
     has_bottleneck = idea.primary_bottleneck_id is not None
     has_changed_slots = bool(idea.changed_slots)
@@ -50,7 +50,7 @@ async def score_idea_correctness(
     overall = sum(fields) / len(fields)
 
     return {
-        "idea_delta_id": str(idea_delta_id),
+        "delta_card_id": str(delta_card_id),
         "has_primary_bottleneck": has_bottleneck,
         "has_changed_slots": has_changed_slots,
         "has_method_node_ids": has_mechanisms,
@@ -62,9 +62,9 @@ async def score_idea_correctness(
 
 async def score_evidence_grounding(
     session: AsyncSession,
-    idea_delta_id: UUID,
+    delta_card_id: UUID,
 ) -> dict:
-    """Check evidence grounding for an IdeaDelta.
+    """Check evidence grounding for an DeltaCard.
 
     Checks:
     - Has >= 2 evidence units
@@ -72,14 +72,14 @@ async def score_evidence_grounding(
 
     Returns dict with evidence_count, has_min_evidence, strong_edges_grounded.
     """
-    idea = await session.get(IdeaDelta, idea_delta_id)
+    idea = await session.get(DeltaCard, delta_card_id)
     if not idea:
-        return {"error": "IdeaDelta not found"}
+        return {"error": "DeltaCard not found"}
 
     # Count evidence units
     ev_result = await session.execute(
         select(func.count()).select_from(EvidenceUnit).where(
-            EvidenceUnit.idea_delta_id == idea_delta_id
+            EvidenceUnit.delta_card_id == delta_card_id
         )
     )
     evidence_count = ev_result.scalar() or 0
@@ -88,12 +88,12 @@ async def score_evidence_grounding(
     # Check strong edges: find edges where this idea is source or target
     # with edge_type in STRONG_EDGE_TYPES, and verify they have evidence_id set
     strong_edges_result = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.edge_type.in_(STRONG_EDGE_TYPES),
+        select(GraphAssertion).where(
+            GraphAssertion.edge_type.in_(STRONG_EDGE_TYPES),
             (
-                (GraphEdge.source_type == "idea_delta") & (GraphEdge.source_id == idea_delta_id)
+                (GraphAssertion.source_type == "delta_card") & (GraphAssertion.source_id == delta_card_id)
             ) | (
-                (GraphEdge.target_type == "idea_delta") & (GraphEdge.target_id == idea_delta_id)
+                (GraphAssertion.target_type == "delta_card") & (GraphAssertion.target_id == delta_card_id)
             ),
         )
     )
@@ -103,7 +103,7 @@ async def score_evidence_grounding(
     strong_edges_grounded = (total_strong == 0) or (grounded_strong == total_strong)
 
     return {
-        "idea_delta_id": str(idea_delta_id),
+        "delta_card_id": str(delta_card_id),
         "evidence_count": evidence_count,
         "has_min_evidence": has_min_evidence,
         "strong_edges_total": total_strong,
@@ -157,14 +157,14 @@ async def score_delta_card_completeness(
 # ── 4. KB Quality Report ─────────────────────────────────────────
 
 async def compute_kb_quality_report(session: AsyncSession) -> dict:
-    """Aggregate quality across all published IdeaDeltas and DeltaCards.
+    """Aggregate quality across all published DeltaCards and DeltaCards.
 
     Returns summary stats for the entire knowledge base.
     """
-    # Published IdeaDeltas
+    # Published DeltaCards
     published_ideas_result = await session.execute(
-        select(IdeaDelta).where(
-            IdeaDelta.publish_status.in_(["auto_published", "human_verified"])
+        select(DeltaCard).where(
+            DeltaCard.publish_status.in_(["auto_published", "human_verified"])
         )
     )
     published_ideas = list(published_ideas_result.scalars().all())
@@ -181,7 +181,7 @@ async def compute_kb_quality_report(session: AsyncSession) -> dict:
         correctness = await score_idea_correctness(session, idea.id)
         grounding = await score_evidence_grounding(session, idea.id)
         idea_scores.append({
-            "idea_delta_id": str(idea.id),
+            "delta_card_id": str(idea.id),
             "correctness_score": correctness.get("overall_score", 0.0),
             "has_min_evidence": grounding.get("has_min_evidence", False),
             "strong_edges_grounded": grounding.get("strong_edges_grounded", True),

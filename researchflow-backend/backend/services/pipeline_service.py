@@ -461,25 +461,25 @@ async def run_full_pipeline(
 
     # Check graph output
     from backend.models.delta_card import DeltaCard
-    from backend.models.graph import IdeaDelta
+    from backend.models.delta_card import DeltaCard
     from sqlalchemy import func, text
 
     dc_count = (await session.execute(
         select(func.count()).select_from(DeltaCard).where(DeltaCard.paper_id == paper_id)
     )).scalar()
     idea_count = (await session.execute(
-        select(func.count()).select_from(IdeaDelta).where(IdeaDelta.paper_id == paper_id)
+        select(func.count()).select_from(IdeaDelta).where(DeltaCard.paper_id == paper_id)
     )).scalar()
     assertion_count = (await session.execute(text(
         "SELECT count(*) FROM graph_assertions ga "
         "JOIN graph_nodes gn ON ga.from_node_id = gn.id "
-        "WHERE gn.ref_table = 'idea_deltas' AND gn.ref_id IN "
-        "(SELECT id FROM idea_deltas WHERE paper_id = :pid)"
+        "WHERE gn.ref_table = 'delta_cards' AND gn.ref_id IN "
+        "(SELECT id FROM delta_cards WHERE paper_id = :pid)"
     ), {"pid": paper_id})).scalar()
 
     progress["graph_output"] = {
         "delta_cards": dc_count,
-        "idea_deltas": idea_count,
+        "delta_cards": idea_count,
         "assertions": assertion_count or 0,
     }
 

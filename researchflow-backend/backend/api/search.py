@@ -69,7 +69,7 @@ async def idea_search(
     data: IdeaSearchRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Idea-centric search across DeltaCards and IdeaDeltas.
+    """Idea-centric search across DeltaCards and DeltaCards.
 
     Searches delta_statement, key_ideas, and assumptions.
     Returns structured delta info with paper context.
@@ -97,7 +97,7 @@ async def bottleneck_search(
     data: BottleneckSearchRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Search bottlenecks by keyword and return linked IdeaDeltas."""
+    """Search bottlenecks by keyword and return linked DeltaCards."""
     results = await search_service.bottleneck_search(
         session,
         keyword=data.keyword,

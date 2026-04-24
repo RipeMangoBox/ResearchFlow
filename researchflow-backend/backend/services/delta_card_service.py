@@ -22,8 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphAssertionEvidence, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import IdeaDelta
-
 logger = logging.getLogger(__name__)
 
 # Thresholds
@@ -191,57 +189,26 @@ async def persist_evidence_for_card(
     return units
 
 
-async def derive_idea_delta(
+async def finalize_delta_card(
     session: AsyncSession,
     delta_card: DeltaCard,
     evidence_units: list[EvidenceUnit],
     changed_slots_graph: list[dict] | None = None,
-) -> IdeaDelta:
-    """Derive an IdeaDelta from a DeltaCard.
+) -> DeltaCard:
+    """Finalize DeltaCard with derived fields (replaces old derive_idea_delta).
 
-    IdeaDelta is the reusable knowledge atom; DeltaCard is the raw extraction.
-    Dual-write: also writes absorbed fields to DeltaCard for Phase 1A transition.
+    Sets publish fields, changed_slots_json, is_structural, evidence_count.
     """
-    is_structural = (
+    delta_card.changed_slots_json = changed_slots_graph
+    delta_card.is_structural = (
         delta_card.structurality_score >= 0.5
         if delta_card.structurality_score is not None
         else None
     )
-    ev_count = len(evidence_units)
-
-    # ── Dual-write: update DeltaCard with absorbed IdeaDelta fields ──
-    delta_card.changed_slots_json = changed_slots_graph
-    delta_card.is_structural = is_structural
-    delta_card.evidence_count = ev_count
+    delta_card.evidence_count = len(evidence_units)
     delta_card.publish_status = "draft"
-
-    # ── Still create IdeaDelta for backward compat (remove in Phase 4) ──
-    idea = IdeaDelta(
-        paper_id=delta_card.paper_id,
-        analysis_id=delta_card.analysis_id,
-        delta_card_id=delta_card.id,
-        primary_bottleneck_id=delta_card.primary_bottleneck_id,
-        paradigm_id=delta_card.frame_id,
-        delta_statement=delta_card.delta_statement,
-        changed_slots=changed_slots_graph,
-        method_node_ids=delta_card.method_node_ids,
-        structurality_score=delta_card.structurality_score,
-        transferability_score=delta_card.transferability_score,
-        confidence=delta_card.extraction_confidence,
-        is_structural=is_structural,
-        publish_status="draft",
-        evidence_count=ev_count,
-    )
-    session.add(idea)
     await session.flush()
-    await session.refresh(idea)
-
-    # Link evidence units to idea_delta
-    for eu in evidence_units:
-        eu.idea_delta_id = idea.id
-    await session.flush()
-
-    return idea
+    return delta_card
 
 
 # ── Graph node + assertion pipeline ───────────────────────────────
@@ -277,39 +244,38 @@ async def get_or_create_node(
 
 async def propose_assertions(
     session: AsyncSession,
-    idea: IdeaDelta,
+    delta_card: DeltaCard,
     evidence_units: list[EvidenceUnit],
     paradigm_slots: list[dict] | None = None,
 ) -> list[GraphAssertion]:
-    """Propose graph assertions from an IdeaDelta.
+    """Propose graph assertions from a DeltaCard.
 
     Creates GraphNodes as needed and proposes assertions with appropriate
     status (candidate for high-value, published for structural).
     """
     assertions = []
 
-    # Get/create idea node
-    idea_node = await get_or_create_node(
-        session, "idea_delta", "idea_deltas", idea.id
+    # Get/create delta_card node
+    dc_node = await get_or_create_node(
+        session, "delta_card", "delta_cards", delta_card.id
     )
 
-    # 1. supported_by: IdeaDelta → EvidenceUnit
+    # 1. supported_by: DeltaCard → EvidenceUnit
     for eu in evidence_units:
         eu_node = await get_or_create_node(
             session, "evidence", "evidence_units", eu.id
         )
         assertion = GraphAssertion(
-            from_node_id=idea_node.id,
+            from_node_id=dc_node.id,
             to_node_id=eu_node.id,
             edge_type="supported_by",
             assertion_source="system_inferred",
             confidence=eu.confidence,
-            status="published",  # structural, auto-publish
+            status="published",
         )
         session.add(assertion)
         assertions.append(assertion)
 
-        # Link assertion to evidence
         await session.flush()
         link = GraphAssertionEvidence(
             assertion_id=assertion.id,
@@ -319,22 +285,23 @@ async def propose_assertions(
         )
         session.add(link)
 
-    # 2. changes_slot: IdeaDelta → Slot
-    if idea.changed_slots and paradigm_slots:
+    # 2. changes_slot: DeltaCard → Slot (via changed_slots_json)
+    changed_slots = delta_card.changed_slots_json or []
+    if changed_slots and paradigm_slots:
         slot_name_to_id = {s["name"]: s["id"] for s in paradigm_slots}
-        for slot_change in (idea.changed_slots if isinstance(idea.changed_slots, list) else []):
+        for slot_change in (changed_slots if isinstance(changed_slots, list) else []):
             slot_name = slot_change.get("slot_name") or slot_change.get("name", "")
             slot_id = slot_name_to_id.get(slot_name)
             if slot_id:
                 slot_node = await get_or_create_node(
-                    session, "slot", "slots", slot_id
+                    session, "slot", "paradigm_templates", slot_id
                 )
                 assertion = GraphAssertion(
-                    from_node_id=idea_node.id,
+                    from_node_id=dc_node.id,
                     to_node_id=slot_node.id,
                     edge_type="changes_slot",
                     assertion_source="system_inferred",
-                    confidence=idea.confidence,
+                    confidence=delta_card.extraction_confidence,
                     status="published",
                     metadata_={
                         "from": slot_change.get("from"),
@@ -345,9 +312,9 @@ async def propose_assertions(
                 session.add(assertion)
                 assertions.append(assertion)
 
-    # 3. instance_of_method: IdeaDelta → MethodNode
-    if idea.method_node_ids:
-        for mf_id in idea.method_node_ids:
+    # 3. instance_of_method: DeltaCard → MethodNode
+    if delta_card.method_node_ids:
+        for mf_id in delta_card.method_node_ids:
             mf_node = await get_or_create_node(
                 session, "mechanism", "method_nodes", mf_id
             )
@@ -385,38 +352,29 @@ async def propose_assertions(
 async def check_and_publish(
     session: AsyncSession,
     delta_card: DeltaCard,
-    idea: IdeaDelta,
-) -> tuple[str, str]:
-    """Check publishing gates for both DeltaCard and IdeaDelta.
+) -> str:
+    """Check publishing gates for DeltaCard.
 
-    DeltaCard gate: frame + bottleneck + changed_slots + evidence_refs >= 2
-    IdeaDelta gate: min(extraction, linkage, evidence confidence) >= 0.85
+    DeltaCard gate: evidence_refs >= 2 AND (frame+slots OR delta_statement)
+    Publish gate: min(extraction, linkage, evidence confidence) >= 0.85
 
-    Returns: (delta_card_status, idea_status)
+    Returns: delta_card status after check.
     """
-    # Count evidence
-    count_result = await session.execute(
-        select(func.count()).select_from(EvidenceUnit).where(
-            EvidenceUnit.idea_delta_id == idea.id
-        )
-    )
-    evidence_count = count_result.scalar() or 0
-    idea.evidence_count = evidence_count
+    evidence_count = len(delta_card.evidence_refs or [])
+    delta_card.evidence_count = evidence_count
 
-    # DeltaCard publish check — frame_id is preferred but not mandatory
-    # A DeltaCard with good evidence can publish even without a paradigm frame
-    has_evidence = len(delta_card.evidence_refs or []) >= MIN_EVIDENCE_FOR_PUBLISH
+    # DeltaCard publish check
+    has_evidence = evidence_count >= MIN_EVIDENCE_FOR_PUBLISH
     has_structure = delta_card.frame_id is not None and delta_card.changed_slot_ids
     dc_ready = has_evidence and (has_structure or delta_card.delta_statement)
     if dc_ready:
         delta_card.status = "published"
-        # Update paper's current_delta_card_id pointer (append-only model)
         from backend.models.paper import Paper
         paper = await session.get(Paper, delta_card.paper_id)
         if paper:
             paper.current_delta_card_id = delta_card.id
 
-    # IdeaDelta publish check (dual-write to both IdeaDelta and DeltaCard)
+    # Auto-publish gate for graph visibility
     if evidence_count >= MIN_EVIDENCE_FOR_PUBLISH:
         confidences = [
             c for c in [
@@ -426,14 +384,10 @@ async def check_and_publish(
             ] if c is not None
         ]
         if confidences and min(confidences) >= AUTO_PUBLISH_CONFIDENCE:
-            idea.publish_status = "auto_published"
-            delta_card.publish_status = "auto_published"  # dual-write
-
-    # Sync evidence_count to DeltaCard
-    delta_card.evidence_count = evidence_count
+            delta_card.publish_status = "auto_published"
 
     await session.flush()
-    return delta_card.status, idea.publish_status
+    return delta_card.status
 
 
 # ── Full pipeline ─────────────────────────────────────────────────
@@ -491,21 +445,21 @@ async def run_delta_card_pipeline(
         session, paper_id, analysis_id, delta_card.id, evidence_data,
     )
 
-    # 3. Derive IdeaDelta
-    idea = await derive_idea_delta(
+    # 3. Finalize DeltaCard (set derived fields)
+    await finalize_delta_card(
         session, delta_card, evidence_units, changed_slots_graph,
     )
 
     # 4. Propose assertions
     slots_dicts = [{"id": s["id"], "name": s["name"]} for s in slots] if slots else []
     assertions = await propose_assertions(
-        session, idea, evidence_units, slots_dicts,
+        session, delta_card, evidence_units, slots_dicts,
     )
 
     # 5. Check publish gates
-    dc_status, idea_status = await check_and_publish(session, delta_card, idea)
+    dc_status = await check_and_publish(session, delta_card)
 
-    # 6. Auto-create review task if DeltaCard stays draft (low confidence / missing data)
+    # 6. Auto-create review task if DeltaCard stays draft
     if dc_status == "draft":
         from backend.services.review_service import create_review_task
         await create_review_task(
@@ -514,12 +468,11 @@ async def run_delta_card_pipeline(
             target_id=delta_card.id,
             task_type="auto_review",
             priority=4,
-            notes=f"DeltaCard did not auto-publish (missing frame/slots/evidence)",
+            notes="DeltaCard did not auto-publish (missing frame/slots/evidence)",
         )
 
-    # 7. Populate same-family paper IDs (papers sharing mechanism families)
+    # 7. Populate same-family paper IDs
     if method_node_ids:
-        from backend.models.paper import Paper
         same_fam = await session.execute(
             select(DeltaCard.paper_id).where(
                 DeltaCard.method_node_ids.overlap(method_node_ids),
@@ -533,15 +486,12 @@ async def run_delta_card_pipeline(
             await session.flush()
 
     logger.info(
-        f"DeltaCard pipeline complete: paper={paper_id}, "
-        f"delta_card={delta_card.id}({dc_status}), "
-        f"idea={idea.id}({idea_status}), "
-        f"evidence={len(evidence_units)}, assertions={len(assertions)}"
+        "DeltaCard pipeline complete: paper=%s, dc=%s(%s), evidence=%d, assertions=%d",
+        paper_id, delta_card.id, dc_status, len(evidence_units), len(assertions),
     )
 
     return {
         "delta_card": delta_card,
-        "idea_delta": idea,
         "evidence_units": evidence_units,
         "assertions": assertions,
     }

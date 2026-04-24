@@ -262,7 +262,7 @@ TOOLS = [
     # ── v3 Graph & review tools ───────────────────────────────
     Tool(
         name="get_graph_stats",
-        description="Get knowledge graph statistics: idea_deltas, delta_cards, assertions, review queue.",
+        description="Get knowledge graph statistics: delta_cards, delta_cards, assertions, review queue.",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
@@ -272,7 +272,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "status": {"type": "string", "enum": ["pending", "in_progress", "approved", "rejected"], "default": "pending"},
-                "target_type": {"type": "string", "enum": ["assertion", "delta_card", "idea_delta"]},
+                "target_type": {"type": "string", "enum": ["assertion", "delta_card", "delta_card"]},
                 "limit": {"type": "integer", "default": 20},
             },
         },

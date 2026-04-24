@@ -24,15 +24,15 @@ async def get_graph_stats(session: AsyncSession = Depends(get_session)):
     return await graph_query_service.graph_stats(session)
 
 
-# ── IdeaDelta queries ───────────────────────────────────────────
+# ── DeltaCard queries ───────────────────────────────────────────
 
 @router.get("/ideas/{paper_id}")
 async def get_ideas_for_paper(
     paper_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    """Get all IdeaDeltas extracted from a paper."""
-    ideas = await graph_query_service.get_idea_deltas_for_paper(session, paper_id)
+    """Get all DeltaCards extracted from a paper."""
+    ideas = await graph_query_service.get_delta_cards_for_paper(session, paper_id)
     return [graph_query_service._idea_to_dict(i) for i in ideas]
 
 
@@ -106,7 +106,7 @@ async def query_for_synthesis(
     limit: int = Query(default=30, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ):
-    """Route 5: Synthesis query — gather IdeaDeltas + evidence for reports."""
+    """Route 5: Synthesis query — gather DeltaCards + evidence for reports."""
     return await graph_query_service.query_for_synthesis(
         session, category, min_structurality=min_structurality, limit=limit,
     )
@@ -159,7 +159,7 @@ async def list_mechanisms(
 
 @router.get("/quality")
 async def get_kb_quality_report(session: AsyncSession = Depends(get_session)):
-    """Get aggregate quality report across all published IdeaDeltas and DeltaCards."""
+    """Get aggregate quality report across all published DeltaCards and DeltaCards."""
     return await quality_service.compute_kb_quality_report(session)
 
 

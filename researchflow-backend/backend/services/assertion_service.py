@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphAssertionEvidence, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import IdeaDelta
 from backend.models.review import ReviewTask
 
 logger = logging.getLogger(__name__)

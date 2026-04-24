@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import IdeaDelta, ImplementationUnit
 from backend.models.method import MethodNode
 from backend.models.lineage import DeltaCardLineage
 from backend.models.paper import Paper
@@ -165,11 +164,11 @@ def _apply_idea_constraints(
     min_structurality_score: float | None = None,
     must_have_evidence_count: int | None = None,
 ):
-    """Apply constraints to IdeaDelta queries."""
+    """Apply constraints to DeltaCard queries."""
     if min_structurality_score is not None:
-        stmt = stmt.where(IdeaDelta.structurality_score >= min_structurality_score)
+        stmt = stmt.where(DeltaCard.structurality_score >= min_structurality_score)
     if must_have_evidence_count is not None:
-        stmt = stmt.where(IdeaDelta.evidence_count >= must_have_evidence_count)
+        stmt = stmt.where(DeltaCard.evidence_count >= must_have_evidence_count)
     return stmt
 
 
@@ -189,7 +188,7 @@ async def query_bottleneck(
     c = constraints or {}
 
     # 1. Search project_focus_bottlenecks
-    from backend.models.research import ProjectFocusBottleneck
+    # ProjectFocusBottleneck removed
     focus_bns = await session.execute(
         select(ProjectFocusBottleneck, ProjectBottleneck)
         .join(ProjectBottleneck, ProjectFocusBottleneck.bottleneck_id == ProjectBottleneck.id)
@@ -340,12 +339,12 @@ async def query_mechanism(
         for mf in mfs.scalars()
     ]
 
-    # 3. Search paper contributions (IdeaDeltas)
+    # 3. Search paper contributions (DeltaCards)
     idea_stmt = (
-        select(IdeaDelta, Paper)
-        .join(Paper, IdeaDelta.paper_id == Paper.id)
-        .where(IdeaDelta.delta_statement.ilike(f"%{query}%"))
-        .order_by(desc(IdeaDelta.structurality_score))
+        select(DeltaCard, Paper)
+        .join(Paper, DeltaCard.paper_id == Paper.id)
+        .where(DeltaCard.delta_statement.ilike(f"%{query}%"))
+        .order_by(desc(DeltaCard.structurality_score))
         .limit(limit)
     )
     idea_stmt = _apply_idea_constraints(
@@ -365,7 +364,7 @@ async def query_mechanism(
     for idea, paper in idea_result:
         contribution_results.append({
             "source": "paper_contribution",
-            "idea_delta_id": str(idea.id),
+            "delta_card_id": str(idea.id),
             "paper_id": str(paper.id),
             "paper_title": paper.title,
             "delta_statement": idea.delta_statement[:200],

@@ -14,7 +14,7 @@ from backend.models.agent import AgentBlackboardItem
 from backend.models.analysis import PaperAnalysis
 from backend.models.domain import DomainSpec
 from backend.models.evidence import EvidenceUnit
-from backend.models.method import MethodNode, MethodSlot
+from backend.models.method import MethodNode
 from backend.models.taxonomy import TaxonomyNode
 
 logger = logging.getLogger(__name__)
@@ -355,19 +355,21 @@ class ContextPackBuilder:
                         lines.append(line)
                     sections.append(f"[Existing Methods]\n" + "\n".join(lines))
 
-                # For items requesting slots, also load them
+                # For items requesting slots, load from paradigm_templates.slots JSONB
                 if item in ("existing_methods_with_slots", "method_profiles"):
-                    slot_rows = (
+                    from backend.models.analysis import ParadigmTemplate
+                    pt_rows = (
                         await self.session.execute(
-                            select(MethodSlot.slot_name, MethodSlot.default_description)
-                            .limit(100)
+                            select(ParadigmTemplate.name, ParadigmTemplate.slots).limit(10)
                         )
                     ).all()
-                    if slot_rows:
-                        slot_lines = [
-                            f"  - {s.slot_name}: {s.default_description or ''}"
-                            for s in slot_rows
-                        ]
+                    slot_lines = []
+                    for pt in pt_rows:
+                        if pt.slots and isinstance(pt.slots, dict):
+                            for sname, sinfo in pt.slots.items():
+                                desc = sinfo.get("description", "") if isinstance(sinfo, dict) else ""
+                                slot_lines.append(f"  - {pt.name}/{sname}: {desc}")
+                    if slot_lines:
                         sections.append(f"[Method Slots]\n" + "\n".join(slot_lines))
 
             elif item in ("baselines", "baseline_profiles", "known_baselines"):

@@ -59,39 +59,25 @@ class Paper(Base):
     # Scores (computed by triage)
     keep_score: Mapped[float | None] = mapped_column()
     analysis_priority: Mapped[float | None] = mapped_column()
-    structurality_score: Mapped[float | None] = mapped_column()
-    extensionability_score: Mapped[float | None] = mapped_column()
+    # structurality/extensionability scores live on DeltaCard (single source)
 
-    # Metadata from Zotero/Crossref
+    # Metadata
     authors: Mapped[dict | None] = mapped_column(JSONB)
     abstract: Mapped[str | None] = mapped_column(Text)
     keywords: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    license: Mapped[str | None] = mapped_column(String(50))
-    funding: Mapped[str | None] = mapped_column(Text)
-    open_data: Mapped[bool] = mapped_column(Boolean, default=False)
-    open_code: Mapped[bool] = mapped_column(Boolean, default=False)
     code_url: Mapped[str | None] = mapped_column(Text)
-    data_url: Mapped[str | None] = mapped_column(Text)
+    # Sparse fields (license, funding, data_url, open_data, open_code,
+    # supervision_type, inference_pattern) moved to metadata_observations.
 
     # Classification
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list
     )
     method_family: Mapped[str | None] = mapped_column(String(100))
-    supervision_type: Mapped[str | None] = mapped_column(String(50))
-    inference_pattern: Mapped[str | None] = mapped_column(String(100))
-
-    # Frontmatter compatibility
-    core_operator: Mapped[str | None] = mapped_column(Text)
-    primary_logic: Mapped[str | None] = mapped_column(Text)
-    claims: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
 
     # PDF storage
     pdf_path_local: Mapped[str | None] = mapped_column(Text)
     pdf_object_key: Mapped[str | None] = mapped_column(Text)
-
-    # Vector embedding
-    embedding = mapped_column(Vector(1536), nullable=True)
 
     # Timestamps
     collected_at: Mapped[datetime] = mapped_column(

@@ -4,7 +4,7 @@ Combines:
 1. PostgreSQL tsvector full-text search (BM25-like ranking)
 2. pgvector cosine similarity (semantic)
 3. Structured column filters (category, venue, year, tags, scores)
-4. Idea-centric search via DeltaCard/IdeaDelta (v3)
+4. Idea-centric search via DeltaCard/DeltaCard (v3)
 5. Bottleneck search (Route 5) — keyword → bottlenecks + linked ideas
 6. Mechanism search (Route 6) — entity resolution → linked ideas
 7. Transfer search (Route 7) — transferable_to assertions across domains
@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.delta_card import DeltaCard
 from backend.models.enums import PaperState
-from backend.models.graph import IdeaDelta
+from backend.models.delta_card import DeltaCard
 from backend.models.paper import Paper
 from backend.services.embedding_service import embed_text
 
@@ -235,10 +235,10 @@ async def idea_search(
     min_evidence: int | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """Idea-centric search — search across DeltaCards and IdeaDeltas.
+    """Idea-centric search — search across DeltaCards and DeltaCards.
 
     Searches delta_statement, key_ideas, and assumptions for keyword matches.
-    Falls back to IdeaDelta.delta_statement if no DeltaCards exist.
+    Falls back to DeltaCard.delta_statement if no DeltaCards exist.
     """
     # Search DeltaCards by keyword in delta_statement
     dc_conditions = [DeltaCard.status != "deprecated"]
@@ -279,17 +279,17 @@ async def idea_search(
             "key_ideas": dc.key_ideas_ranked[:3] if dc.key_ideas_ranked else None,
         })
 
-    # Also search IdeaDeltas not covered by DeltaCards
-    idea_conditions = [IdeaDelta.delta_statement.ilike(f"%{query}%")]
+    # Also search DeltaCards not covered by DeltaCards
+    idea_conditions = [DeltaCard.delta_statement.ilike(f"%{query}%")]
     if min_structurality is not None:
-        idea_conditions.append(IdeaDelta.structurality_score >= min_structurality)
+        idea_conditions.append(DeltaCard.structurality_score >= min_structurality)
     if min_evidence is not None:
-        idea_conditions.append(IdeaDelta.evidence_count >= min_evidence)
+        idea_conditions.append(DeltaCard.evidence_count >= min_evidence)
 
     idea_stmt = (
-        select(IdeaDelta)
+        select(DeltaCard)
         .where(and_(*idea_conditions))
-        .order_by(desc(IdeaDelta.structurality_score))
+        .order_by(desc(DeltaCard.structurality_score))
         .limit(limit)
     )
     idea_result = await session.execute(idea_stmt)
@@ -301,8 +301,8 @@ async def idea_search(
         if category and paper and paper.category != category:
             continue
         results.append({
-            "source": "idea_delta",
-            "idea_delta_id": str(idea.id),
+            "source": "delta_card",
+            "delta_card_id": str(idea.id),
             "paper_id": str(idea.paper_id),
             "title": paper.title if paper else "Unknown",
             "venue": paper.venue if paper else None,
@@ -324,7 +324,7 @@ async def bottleneck_search(
     keyword: str,
     limit: int = 20,
 ) -> dict:
-    """Search ProjectBottleneck by keyword, return bottlenecks with linked IdeaDeltas.
+    """Search ProjectBottleneck by keyword, return bottlenecks with linked DeltaCards.
 
     Wraps graph_query_service.query_by_bottleneck as a search-service entry point.
     """

@@ -160,19 +160,19 @@ async def synthesize_concepts(
         else:
             contrib_type = "instance"
 
-        # Get idea_delta if exists
-        from backend.models.graph import IdeaDelta
-        idea_delta_result = await session.execute(
-            select(IdeaDelta.id).where(
-                IdeaDelta.paper_id == paper_id
-            ).order_by(IdeaDelta.created_at.desc()).limit(1)
+        # Get delta_card if exists
+        from backend.models.delta_card import DeltaCard
+        delta_card_result = await session.execute(
+            select(DeltaCard.id).where(
+                DeltaCard.paper_id == paper_id
+            ).order_by(DeltaCard.created_at.desc()).limit(1)
         )
-        idea_delta_id = idea_delta_result.scalar_one_or_none()
+        delta_card_id = delta_card_result.scalar_one_or_none()
 
         contribution = ContributionToCanonicalIdea(
             canonical_idea_id=idea.id,
             paper_id=paper_id,
-            idea_delta_id=idea_delta_id,
+            delta_card_id=delta_card_id,
             contribution_type=contrib_type,
             confidence=0.7,
             source="system_inferred",

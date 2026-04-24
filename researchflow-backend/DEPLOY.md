@@ -259,167 +259,20 @@ NO_PROXY=localhost,postgres,redis,127.0.0.1```
 
 ---
 
-## 8. 元数据获取完整指南
+## 8. 元数据获取
 
-### 8.1 提取架构总览
+> 完整的字段级 fallback 链、二次审核机制、限速策略、批量方案见独立文档:
+> **[METADATA_ACQUISITION.md](./METADATA_ACQUISITION.md)**
 
-```
-┌─────────────────────────────────────────────────────┐
-│  L0: arXiv TeX 源码 (最高保真，需要 arxiv_id)        │
-│  ├─ 精确 LaTeX 公式 (零 OCR 误差)                   │
-│  ├─ \cite{} 引用 bibkey + 上下文                     │
-│  ├─ \includegraphics 图 + caption                   │
-│  └─ \url{} / \href{} GitHub/项目链接                 │
-│                    ↓ fallback                        │
-│  L1: PyMuPDF (确定性，CPU，始终可用)                  │
-│  ├─ 全文 + section 切分 (含子 section 层级)          │
-│  ├─ 公式 regex (fallback)                           │
-│  ├─ 图表 caption regex                              │
-│  ├─ 图片区域检测 + 嵌入图提取                        │
-│  ├─ 行内引用上下文 (±120 chars)                     │
-│  └─ Dataset 检测 (已知名 + URL 模式 + 发布动词)      │
-│                    ↓ fallback                        │
-│  L2: VLM + 外部 API (Kimi K2.6 + S2/Crossref/…)     │
-│  ├─ 公式 VLM 页扫描 (按数学密度选页 → Kimi Vision)  │
-│  ├─ 图表 VLM 分类 + 遗漏恢复 → 高清裁切 → OSS      │
-│  ├─ 表格内容 VLM OCR → Markdown table               │
-│  ├─ 引用/作者: S2 API (DOI / title search fallback) │
-│  └─ GitHub + HuggingFace: 搜索 + README 解析        │
-└─────────────────────────────────────────────────────┘
-```
+快速参考:
 
-### 8.2 各元数据获取方案 & 准确率
-
-| 元数据 | 主方案 | fallback | 预估准确率 | 限速 | 成本/paper |
-|--------|--------|----------|-----------|------|-----------|
-| **title / abstract** | arXiv API | S2 > OpenAlex | ~95% | 2 req/s | 免费 |
-| **authors / 机构** | arXiv + S2 API | Crossref | ~90% | 1 req/s (S2) | 免费 |
-| **venue / year** | OpenReview > Crossref > OpenAlex | arXiv comment 解析 | ~85% | 各 API | 免费 |
-| **citation_count** | S2 API | OpenAlex | ~90% | 1 req/s | 免费 |
-| **section 文字** | PyMuPDF regex (27 模式) | — | ~85% 含子 section | 无 | 免费 |
-| **子 section 层级** | PyMuPDF heading regex | — | ~80% | 无 | 免费 |
-| **公式** | arXiv TeX > VLM page scan > regex | — | 90% / 80% / 40% | Kimi RPM | ~¥0.15 |
-| **图表 caption** | PyMuPDF regex + VLM 分类 | — | ~80% | Kimi RPM | ~¥0.08 |
-| **图表图片** | PyMuPDF 区域检测 + VLM 遗漏恢复 | xref fallback | ~80% | Kimi RPM | ~¥0.08 |
-| **表格内容** | VLM OCR → Markdown → 结构化 | — | ~75% | Kimi RPM | ~¥0.2 |
-| **引用文献列表** | S2 API (100 条) | title search | ~85% | 1 req/s | 免费 |
-| **行内引用上下文** | PDF regex [N] ±120 chars | TeX \cite{} | ~80% | 无 | 免费 |
-| **GitHub 开源链接** | GitHub search + README 匹配 | — | ~75% | 10 req/min (无 token) | 免费 |
-| **是否发布数据集** | PDF 文本检测 (120 已知名 + URL) | GitHub + HuggingFace | ~70% | 无 + API | 免费 |
-| **acceptance_status** | OpenReview > arXiv comment | GitHub README > VLM 判断 | ~80% | 各 API | ≤¥0.1 |
-
-### 8.3 API 限速配置
-
-系统使用 `TokenBucketLimiter` 令牌桶实现统一限速 (`backend/utils/rate_limiter.py`)。
-
-| API | rate (req/s) | burst | 依据 | 配置项 |
-|-----|-------------|-------|------|--------|
-| arXiv | 2.0 | 3 | 官方 3 req/s 上限 | 内置 |
-| Semantic Scholar | 0.9 (有 key) / 0.3 (无 key) | 3 | 有 key 1 req/s | `S2_API_KEY` |
-| GitHub | 1.0 (有 token) / 0.15 (无 token) | 3/2 | 无 token 10 req/min | `GITHUB_TOKEN` |
-| Crossref | 5.0 | 10 | polite pool 50/s | 内置 User-Agent |
-| OpenAlex | 5.0 | 10 | 10 req/s | 内置 |
-| HuggingFace | 1.5 | 3 | 100 req/min | 内置 |
-| Kimi VLM | 0.5 | 2 | 按套餐 | 内置 |
-
-**环境变量:**
-```bash
-S2_API_KEY=your_key_here           # 推荐: 1 req/s vs 无 key 100/5min
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx     # 推荐: 5000 req/hr vs 无 token 10 req/min
-```
-
-### 8.4 VLM (Kimi K2.6) 配置
-
-```bash
-OPENAI_API_KEY=sk-kimi-xxx        # Kimi API key
-OPENAI_BASE_URL=https://api.kimi.com/coding/v1
-OPENAI_MODEL=kimi-k2.6
-```
-
-**max_tokens 分级** (config.py，可通过环境变量覆盖):
-
-| 级别 | 值 | 用途 | 环境变量 |
-|------|-----|------|---------|
-| heavy | 16384 | 公式页扫描 (多页多公式)、大表格 OCR | `VLM_MAX_TOKENS_HEAVY` |
-| medium | 8192 | 图表分类 + 遗漏恢复 | `VLM_MAX_TOKENS_MEDIUM` |
-| light | 4096 | 单图描述、单公式 OCR | `VLM_MAX_TOKENS_LIGHT` |
-| tiny | 2048 | acceptance 判断等短回复 | `VLM_MAX_TOKENS_TINY` |
-
-**为什么必须开大 max_tokens:**
-Kimi K2.6 在 max_tokens 不足时会**直接截断 JSON 输出**，导致下游 JSON parse 失败。
-公式页扫描一次处理 3 页、每页可能有 5+ 公式，JSON array 很长，4000 tokens 远远不够。
-
-### 8.5 代理配置 (大陆服务器)
-
-**需要代理 (延迟或被墙):**
-- `arxiv.org` — 直连 10KB/s，代理 0.8s/PDF
-- `huggingface.co` — 直连被墙
-- `github.com` / `api.github.com` — 直连不稳定
-- `api.kimi.com` — 需要代理
-
-**直连更快:**
-- `api.semanticscholar.org` — 直连 400ms
-- `api.openalex.org` — 直连 1700ms (代理 2700ms)
-- `dblp.org` — 直连稳定
-- `api2.openreview.net` — 直连稳定
-
-**mihomo 规则示例:**
-```yaml
-rules:
-  - DOMAIN-SUFFIX,arxiv.org,Proxy
-  - DOMAIN-KEYWORD,huggingface,Proxy
-  - DOMAIN-KEYWORD,github,Proxy
-  - DOMAIN-KEYWORD,kimi,Proxy
-  - MATCH,DIRECT
-```
-
-**NO_PROXY:**
-```
-localhost,postgres,redis,127.0.0.1,api.semanticscholar.org,api.openalex.org,dblp.org
-```
-
-### 8.6 非 arXiv 论文处理
-
-当论文没有 arxiv_id 时，系统使用 fallback 链：
-
-| 能力 | 有 arxiv_id | 无 arxiv_id |
-|------|------------|-------------|
-| TeX 公式提取 | 精确 LaTeX | ❌ 不可用，退化到 VLM/regex |
-| S2 引用列表 | `ARXIV:{id}` 直查 | DOI → OpenReview URL → title search |
-| S2 作者信息 | 同上 | 同上 |
-| PDF 下载 | `arxiv.org/pdf/{id}` | 需要 paper_link 或手动上传 |
-| 其他元数据 | 正常 | Crossref + OpenAlex + S2 title search |
-
-**fallback 链:** `S2(ARXIV:id)` → `S2(DOI:doi)` → `S2(URL:openreview)` → `S2 title search` → Crossref → OpenAlex
-
-### 8.7 批量处理建议
-
-- Worker `max_jobs=2` 串行，各步骤间自动限速
-- **安全阈值:** ~100 篇/天 (含所有 API 调用)
-- **成本估算:** ~¥15-35/100 篇 (主要是 VLM 公式+图表+表格)
-
-| 步骤 | 耗时/篇 | API 调用数 | 可并行 |
-|------|---------|-----------|--------|
-| PDF 下载 | 0.8-110s | 1 (arXiv) | ✅ |
-| Enrich (10 API) | 6s | 5-10 | ✅ (按 paper) |
-| L2 Parse | 30-60s | 2-3 (VLM) | ✅ |
-| L3 Skim | 20s | 1 (LLM) | ✅ |
-| L4 Deep | 40s | 6-12 (LLM) | ❌ |
-| **串行总计** | **~4-6 min** | **15-30** | |
-
-**arXiv OAI-PMH 批量元数据同步:**
-
-对于全顶会知识库建设 (CVPR/ICLR/KDD/ACL 等数千篇)，不要逐篇调 arXiv API。
-使用 OAI-PMH (`https://oaipmh.arxiv.org/oai`) 按 category + date 批量拉取元数据:
-- 限速: 3 秒/请求 (全局)
-- 支持 resumptionToken 断点续爬
-- 每次返回 1000 条记录
-- 配合 venue matcher (Crossref/DBLP/OpenReview) 筛选顶会论文
-
-### ~~GROBID 增强~~ (已移除，保留备查)
-
-> GROBID 容器已于 2026-04-20 移除。VLM page scan + S2 API 替代。
-> 长 PDF 频繁 OOM 且占 2-3 GB 内存。
+| 类别 | 关键配置 |
+|------|---------|
+| VLM (Kimi) | `OPENAI_API_KEY` + `OPENAI_BASE_URL` + `OPENAI_MODEL=kimi-k2.6` |
+| S2 限速提升 | `S2_API_KEY` (0.3/s → 1/s) |
+| GitHub 限速提升 | `GITHUB_TOKEN` (10 req/min → 5000 req/hr) |
+| VLM 防截断 | `VLM_MAX_TOKENS_HEAVY=16384` (默认值，可覆盖) |
+| 批量安全阈值 | ~100 篇/天，VLM 成本 ~¥25/100 篇 |
 
 ---
 

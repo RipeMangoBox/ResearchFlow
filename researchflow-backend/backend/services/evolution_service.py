@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.analysis import ParadigmTemplate
 from backend.models.delta_card import DeltaCard
-from backend.models.graph import IdeaDelta, Slot
+
 from backend.models.lineage import DeltaCardLineage
 from backend.models.paper import Paper
 

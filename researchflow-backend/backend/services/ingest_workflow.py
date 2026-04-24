@@ -469,7 +469,7 @@ class IngestWorkflow:
                 "Materialized graph for %s: dc=%s, idea=%s, evidence=%d, assertions=%d",
                 paper_id,
                 delta_card_result.get("delta_card_id"),
-                delta_card_result.get("idea_delta_id"),
+                delta_card_result.get("delta_card_id"),
                 delta_card_result.get("evidence_count", 0),
                 delta_card_result.get("assertion_count", 0),
             )
@@ -598,7 +598,7 @@ class IngestWorkflow:
         )
 
         dc = result.get("delta_card")
-        idea = result.get("idea_delta")
+        idea = result.get("delta_card")
 
         # Post-delta steps (each wrapped to not block on failure)
         if dc and dc.id:
@@ -619,7 +619,7 @@ class IngestWorkflow:
 
         return {
             "delta_card_id": str(dc.id) if dc else None,
-            "idea_delta_id": str(idea.id) if idea else None,
+            "delta_card_id": str(idea.id) if idea else None,
             "evidence_count": len(result.get("evidence_units", [])),
             "assertion_count": len(result.get("assertions", [])),
         }

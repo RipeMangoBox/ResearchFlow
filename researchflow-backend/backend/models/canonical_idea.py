@@ -70,7 +70,7 @@ class CanonicalIdea(Base):
 
 
 class ContributionToCanonicalIdea(Base):
-    """Maps a paper's contribution (IdeaDelta) to a CanonicalIdea.
+    """Maps a paper's contribution (DeltaCard) to a CanonicalIdea.
 
     One paper can have multiple contributions to different canonical ideas.
     E.g., a paper might contribute a reward design AND a sampling trick.
@@ -80,8 +80,8 @@ class ContributionToCanonicalIdea(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    idea_delta_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("idea_deltas.id", ondelete="CASCADE"), nullable=False
+    delta_card_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("delta_cards.id", ondelete="CASCADE"), nullable=False
     )
     canonical_idea_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("canonical_ideas.id", ondelete="CASCADE"), nullable=False
@@ -106,7 +106,7 @@ class ContributionToCanonicalIdea(Base):
     )
 
     __table_args__ = (
-        Index("idx_ctci_idea_delta", "idea_delta_id"),
+        Index("idx_ctci_delta_card", "delta_card_id"),
         Index("idx_ctci_canonical", "canonical_idea_id"),
         Index("idx_ctci_paper", "paper_id"),
     )

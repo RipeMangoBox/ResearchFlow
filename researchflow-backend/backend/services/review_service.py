@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.assertion import GraphAssertion
 from backend.models.delta_card import DeltaCard
-from backend.models.graph import IdeaDelta
+from backend.models.delta_card import DeltaCard
 from backend.models.review import HumanOverride, ReviewTask
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ async def approve_review(
     Effects:
     - assertion → publish assertion
     - delta_card → publish delta_card
-    - idea_delta → set human_verified
+    - delta_card → set human_verified
     """
     task = await session.get(ReviewTask, task_id)
     if not task:
@@ -271,7 +271,7 @@ async def _cascade_approval(
             card.status = "published"
             return {"delta_card_status": "published"}
 
-    elif target_type == "idea_delta":
+    elif target_type == "delta_card":
         idea = await session.get(IdeaDelta, target_id)
         if idea:
             idea.publish_status = "human_verified"
@@ -346,7 +346,7 @@ async def get_review_detail(session: AsyncSession, task: ReviewTask) -> dict:
                 "status": obj.status,
                 "structurality_score": obj.structurality_score,
             }
-    elif task.target_type == "idea_delta":
+    elif task.target_type == "delta_card":
         obj = await session.get(IdeaDelta, task.target_id)
         if obj:
             target = {
@@ -387,7 +387,7 @@ _OVERRIDE_TARGETS = {
         "delta_statement", "structurality_score", "extensionability_score",
         "transferability_score", "status", "baseline_paradigm",
     }),
-    "idea_delta": ("backend.models.graph", "IdeaDelta", {
+    "delta_card": ("backend.models.graph", "IdeaDelta", {
         "delta_statement", "publish_status", "confidence",
         "structurality_score", "transferability_score",
     }),
@@ -496,7 +496,6 @@ async def promote_paradigm_candidate(
     """Promote a paradigm candidate to a live ParadigmTemplate + Slots."""
     from backend.models.candidates import ParadigmCandidate
     from backend.models.analysis import ParadigmTemplate
-    from backend.models.graph import Slot
 
     cand = await session.get(ParadigmCandidate, candidate_id)
     if not cand:

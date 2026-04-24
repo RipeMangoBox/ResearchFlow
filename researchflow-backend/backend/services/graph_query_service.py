@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import GraphEdge, IdeaDelta, Slot
 from backend.models.method import MethodNode
 from backend.models.paper import Paper
 from backend.models.research import ProjectBottleneck
@@ -45,7 +44,7 @@ async def _resolve_node_ref(session: AsyncSession, node: GraphNode):
     """Resolve a graph node to its underlying entity."""
     table_map = {
         "papers": Paper,
-        "idea_deltas": IdeaDelta,
+        "delta_cards": DeltaCard,
         "evidence_units": EvidenceUnit,
         "slots": Slot,
         "method_nodes": MethodNode,
@@ -111,55 +110,6 @@ async def query_citations(
                             "year": source.year,
                         })
 
-    # Fallback: also check legacy graph_edges for unmigrated data
-    # DEPRECATED (Phase 1E): graph_edges will be removed in Phase 4.
-    if not results["cites"] and not results["cited_by"]:
-        logger.warning("Falling back to deprecated graph_edges table for citations")
-        results = await _citations_fallback(session, paper_id, direction)
-
-    return results
-
-
-async def _citations_fallback(session: AsyncSession, paper_id: UUID, direction: str) -> dict:
-    """Legacy fallback using graph_edges."""
-    results = {"cites": [], "cited_by": []}
-
-    if direction in ("outgoing", "both"):
-        out_edges = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.source_type == "paper",
-                GraphEdge.source_id == paper_id,
-                GraphEdge.edge_type == "cites",
-            )
-        )
-        for edge in out_edges.scalars():
-            target = await session.get(Paper, edge.target_id)
-            if target:
-                results["cites"].append({
-                    "paper_id": str(target.id),
-                    "title": target.title,
-                    "venue": target.venue,
-                    "year": target.year,
-                })
-
-    if direction in ("incoming", "both"):
-        in_edges = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.target_type == "paper",
-                GraphEdge.target_id == paper_id,
-                GraphEdge.edge_type == "cites",
-            )
-        )
-        for edge in in_edges.scalars():
-            source = await session.get(Paper, edge.source_id)
-            if source:
-                results["cited_by"].append({
-                    "paper_id": str(source.id),
-                    "title": source.title,
-                    "venue": source.venue,
-                    "year": source.year,
-                })
-
     return results
 
 
@@ -171,8 +121,8 @@ async def query_by_bottleneck(
     keyword: str | None = None,
     limit: int = 20,
 ) -> dict:
-    """Find IdeaDeltas that target a specific bottleneck."""
-    results = {"bottlenecks": [], "idea_deltas": []}
+    """Find DeltaCards that target a specific bottleneck."""
+    results = {"bottlenecks": [], "delta_cards": []}
 
     if bottleneck_id:
         bottleneck = await session.get(ProjectBottleneck, bottleneck_id)
@@ -184,13 +134,13 @@ async def query_by_bottleneck(
                 "domain": bottleneck.domain,
             })
         ideas = await session.execute(
-            select(IdeaDelta).where(
-                IdeaDelta.primary_bottleneck_id == bottleneck_id
-            ).order_by(desc(IdeaDelta.structurality_score)).limit(limit)
+            select(DeltaCard).where(
+                DeltaCard.primary_bottleneck_id == bottleneck_id
+            ).order_by(desc(DeltaCard.structurality_score)).limit(limit)
         )
         for idea in ideas.scalars():
             paper = await session.get(Paper, idea.paper_id)
-            results["idea_deltas"].append(_idea_to_dict(idea, paper))
+            results["delta_cards"].append(_idea_to_dict(idea, paper))
 
     elif keyword:
         bns = await session.execute(
@@ -220,8 +170,8 @@ async def query_by_mechanism(
     mechanism_id: UUID | None = None,
     limit: int = 20,
 ) -> dict:
-    """Find IdeaDeltas by mechanism family, using assertions + array fallback."""
-    results = {"mechanism": None, "idea_deltas": []}
+    """Find DeltaCards by mechanism family, using assertions + array fallback."""
+    results = {"mechanism": None, "delta_cards": []}
 
     mf = None
     if mechanism_id:
@@ -254,23 +204,23 @@ async def query_by_mechanism(
         )
         for a in edges.scalars():
             from_node = await session.get(GraphNode, a.from_node_id)
-            if from_node and from_node.ref_table == "idea_deltas":
-                idea = await session.get(IdeaDelta, from_node.ref_id)
+            if from_node and from_node.ref_table == "delta_cards":
+                idea = await session.get(DeltaCard, from_node.ref_id)
                 if idea:
                     paper = await session.get(Paper, idea.paper_id)
-                    results["idea_deltas"].append(_idea_to_dict(idea, paper))
+                    results["delta_cards"].append(_idea_to_dict(idea, paper))
                     seen_ids.add(idea.id)
 
-    # Fallback: method_node_ids array on IdeaDelta
+    # Fallback: method_node_ids array on DeltaCard
     ideas_by_array = await session.execute(
-        select(IdeaDelta).where(
-            IdeaDelta.method_node_ids.contains([mf.id])
+        select(DeltaCard).where(
+            DeltaCard.method_node_ids.contains([mf.id])
         ).limit(limit)
     )
     for idea in ideas_by_array.scalars():
         if idea.id not in seen_ids:
             paper = await session.get(Paper, idea.paper_id)
-            results["idea_deltas"].append(_idea_to_dict(idea, paper))
+            results["delta_cards"].append(_idea_to_dict(idea, paper))
 
     return results
 
@@ -299,7 +249,7 @@ async def query_transfers(
         if from_node and to_node:
             source = await _resolve_node_ref(session, from_node)
             target = await _resolve_node_ref(session, to_node)
-            if isinstance(source, IdeaDelta) and isinstance(target, IdeaDelta):
+            if isinstance(source, DeltaCard) and isinstance(target, DeltaCard):
                 results["transfers"].append({
                     "source": _idea_to_dict(source),
                     "target": _idea_to_dict(target),
@@ -320,18 +270,18 @@ async def query_for_synthesis(
     min_structurality: float | None = None,
     limit: int = 30,
 ) -> dict:
-    """Gather IdeaDeltas + DeltaCards + evidence for report generation.
+    """Gather DeltaCards + DeltaCards + evidence for report generation.
 
     v3: also includes DeltaCard data when available.
     """
     conditions = []
     if min_structurality:
-        conditions.append(IdeaDelta.structurality_score >= min_structurality)
+        conditions.append(DeltaCard.structurality_score >= min_structurality)
 
-    stmt = select(IdeaDelta)
+    stmt = select(DeltaCard)
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    stmt = stmt.order_by(desc(IdeaDelta.structurality_score)).limit(limit)
+    stmt = stmt.order_by(desc(DeltaCard.structurality_score)).limit(limit)
 
     ideas_result = await session.execute(stmt)
     ideas = list(ideas_result.scalars().all())
@@ -349,7 +299,7 @@ async def query_for_synthesis(
         paper = await session.get(Paper, idea.paper_id)
         evidence = await session.execute(
             select(EvidenceUnit).where(
-                EvidenceUnit.idea_delta_id == idea.id
+                EvidenceUnit.delta_card_id == idea.id
             ).limit(5)
         )
         ev_list = [
@@ -378,16 +328,16 @@ async def query_for_synthesis(
     return {
         "category": category,
         "total": len(results),
-        "idea_deltas": results,
+        "delta_cards": results,
     }
 
 
-# ── Paper → IdeaDelta lookup ──────────────────────────────────────
+# ── Paper → DeltaCard lookup ──────────────────────────────────────
 
-async def get_idea_deltas_for_paper(session: AsyncSession, paper_id: UUID) -> list[IdeaDelta]:
-    """Get all IdeaDeltas extracted from a paper (migrated from graph_service)."""
+async def get_delta_cards_for_paper(session: AsyncSession, paper_id: UUID) -> list[DeltaCard]:
+    """Get all DeltaCards extracted from a paper (migrated from graph_service)."""
     result = await session.execute(
-        select(IdeaDelta).where(IdeaDelta.paper_id == paper_id).order_by(desc(IdeaDelta.created_at))
+        select(DeltaCard).where(DeltaCard.paper_id == paper_id).order_by(desc(DeltaCard.created_at))
     )
     return list(result.scalars().all())
 
@@ -414,7 +364,7 @@ async def get_edges_for_node_compat(
     # Map node_type to ref_table for graph_nodes lookup
     _type_to_table = {
         "paper": "papers",
-        "idea_delta": "idea_deltas",
+        "delta_card": "delta_cards",
         "evidence_unit": "evidence_units",
         "slot": "slots",
         "method_family": "method_nodes",
@@ -446,34 +396,7 @@ async def get_edges_for_node_compat(
                     "status": a.status,
                 })
 
-    # ── 2. Legacy graph_edges fallback ──
-    conditions = []
-    if direction in ("outgoing", "both"):
-        conditions.append(
-            and_(GraphEdge.source_type == node_type, GraphEdge.source_id == node_id)
-        )
-    if direction in ("incoming", "both"):
-        conditions.append(
-            and_(GraphEdge.target_type == node_type, GraphEdge.target_id == node_id)
-        )
-    if conditions:
-        legacy_result = await session.execute(
-            select(GraphEdge).where(or_(*conditions)).order_by(desc(GraphEdge.created_at))
-        )
-        for e in legacy_result.scalars():
-            results.append({
-                "id": str(e.id),
-                "source": "legacy_edge",
-                "source_type": e.source_type,
-                "source_id": str(e.source_id),
-                "target_type": e.target_type,
-                "target_id": str(e.target_id),
-                "edge_type": e.edge_type,
-                "assertion_source": e.assertion_source,
-                "confidence": e.confidence,
-                "status": None,
-            })
-
+    # Legacy graph_edges removed — graph_assertions is the only edge source now.
     return results
 
 
@@ -481,20 +404,16 @@ async def get_edges_for_node_compat(
 
 async def graph_stats(session: AsyncSession) -> dict:
     """Get overall graph statistics — includes both legacy and v3 counts."""
-    idea_count = (await session.execute(text("SELECT count(*) FROM idea_deltas"))).scalar()
+    idea_count = (await session.execute(text("SELECT count(*) FROM delta_cards"))).scalar()
     delta_card_count = (await session.execute(text("SELECT count(*) FROM delta_cards"))).scalar()
 
     # v3 assertions
     assertion_count = (await session.execute(text("SELECT count(*) FROM graph_assertions"))).scalar()
     node_count = (await session.execute(text("SELECT count(*) FROM graph_nodes"))).scalar()
 
-    # Legacy edges (will decrease as data migrates)
-    legacy_edge_count = (await session.execute(text("SELECT count(*) FROM graph_edges"))).scalar()
-
     evidence_linked = (await session.execute(text(
-        "SELECT count(*) FROM evidence_units WHERE idea_delta_id IS NOT NULL"
+        "SELECT count(*) FROM evidence_units WHERE delta_card_id IS NOT NULL"
     ))).scalar()
-    slot_count = (await session.execute(text("SELECT count(*) FROM slots"))).scalar()
     mf_count = (await session.execute(text("SELECT count(*) FROM method_nodes"))).scalar()
 
     # Assertion status distribution
@@ -509,22 +428,19 @@ async def graph_stats(session: AsyncSession) -> dict:
 
     # Publish status distribution
     pub_dist = (await session.execute(text(
-        "SELECT publish_status, count(*) FROM idea_deltas GROUP BY publish_status"
+        "SELECT publish_status, count(*) FROM delta_cards GROUP BY publish_status"
     ))).fetchall()
 
     # Review queue
     review_pending = (await session.execute(text(
-        "SELECT count(*) FROM review_tasks WHERE status IN ('pending', 'in_progress')"
+        "SELECT count(*) FROM review_queue WHERE status IN ('pending', 'in_progress')"
     ))).scalar()
 
     return {
-        "idea_deltas": idea_count,
         "delta_cards": delta_card_count,
         "graph_assertions": assertion_count,
         "graph_nodes": node_count,
-        "legacy_graph_edges": legacy_edge_count,
         "evidence_linked": evidence_linked,
-        "slots": slot_count,
         "method_nodes": mf_count,
         "review_pending": review_pending,
         "assertion_status": {row[0]: row[1] for row in assertion_dist},
@@ -535,7 +451,7 @@ async def graph_stats(session: AsyncSession) -> dict:
 
 # ── Helpers ─────────────────────────────────────────────────────
 
-def _idea_to_dict(idea: IdeaDelta, paper: Paper | None = None) -> dict:
+def _idea_to_dict(idea: DeltaCard, paper: Paper | None = None) -> dict:
     d = {
         "id": str(idea.id),
         "delta_statement": idea.delta_statement,

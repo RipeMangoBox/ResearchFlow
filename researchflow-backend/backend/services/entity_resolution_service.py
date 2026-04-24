@@ -15,7 +15,6 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.graph import Slot
 from backend.models.method import MethodNode
 from backend.models.research import ProjectBottleneck
 from backend.models.review import Alias
@@ -102,32 +101,7 @@ async def resolve_bottleneck(
     return result.scalar_one_or_none()
 
 
-async def resolve_slot(
-    session: AsyncSession,
-    name: str,
-    paradigm_id: UUID | None = None,
-) -> Slot | None:
-    """Resolve a slot name, optionally scoped to a paradigm."""
-    stmt = select(Slot).where(func.lower(Slot.name) == name.lower())
-    if paradigm_id:
-        stmt = stmt.where(Slot.paradigm_id == paradigm_id)
-    result = await session.execute(stmt.limit(1))
-    slot = result.scalar_one_or_none()
-    if slot:
-        return slot
-
-    # Aliases table
-    alias_result = await session.execute(
-        select(Alias).where(
-            Alias.entity_type == "slot",
-            func.lower(Alias.alias) == name.lower(),
-        ).order_by(Alias.confidence.desc().nullslast()).limit(1)
-    )
-    alias = alias_result.scalar_one_or_none()
-    if alias:
-        return await session.get(Slot, alias.entity_id)
-
-    return None
+# resolve_slot removed — slots table deleted, data lives in paradigm_templates.slots JSONB
 
 
 # ── Alias management ──────────────────────────────────────────────
