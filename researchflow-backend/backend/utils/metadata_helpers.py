@@ -470,7 +470,9 @@ async def fetch_openreview_reviews(client, forum_id: str, venue_id: str = "") ->
     """
     if not forum_id:
         return None
-    url = f"https://api2.openreview.net/notes?forum={forum_id}&details=directReplies"
+
+    # OpenReview API v2: fetch all notes in the forum thread
+    url = f"https://api2.openreview.net/notes?forum={forum_id}"
     try:
         resp = await client.get(url, timeout=20)
         if resp.status_code != 200:
@@ -482,7 +484,14 @@ async def fetch_openreview_reviews(client, forum_id: str, venue_id: str = "") ->
     reviews = []
     for note in data.get("notes", []):
         content = note.get("content", {})
-        # Detect review notes (have rating or recommendation)
+        invitations = note.get("invitations", [])
+        inv_str = ",".join(invitations)
+
+        # Filter: must be an Official_Review (skip meta-reviews, author responses, decisions)
+        if "Official_Review" not in inv_str:
+            continue
+
+        # Detect rating field (varies by venue/year)
         rating_field = None
         for key in ("rating", "recommendation", "overall_assessment", "soundness_rating"):
             if key in content:
