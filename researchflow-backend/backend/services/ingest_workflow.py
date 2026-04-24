@@ -532,7 +532,7 @@ class IngestWorkflow:
         }
 
     async def _materialize_to_graph(self, paper, agent_results: dict) -> dict:
-        """Convert agent outputs to DeltaCard → IdeaDelta → GraphAssertions.
+        """Convert agent outputs to DeltaCard → GraphAssertions.
 
         Bridges agent blackboard outputs to the delta_card_service pipeline,
         then runs evolution/concept/reconciliation steps.

@@ -1,15 +1,15 @@
 """DeltaCard service — build the intermediate truth layer from L4 analysis.
 
 Core workflow:
-  L4 analysis_data → build_delta_card → persist evidence → derive IdeaDelta → propose assertions
+  L4 analysis_data → build_delta_card → persist evidence → finalize → propose assertions
 
 DeltaCard is the structured "what changed" from a paper, aligned to ontology.
-IdeaDelta is derived from DeltaCard as the reusable knowledge atom.
+DeltaCard is the single truth layer. IdeaDelta has been removed.
 GraphAssertions are proposed from the DeltaCard's slot/mechanism/evidence links.
 
 Publishing gate:
   - DeltaCard: frame + bottleneck + changed_slots + evidence_refs >= 2
-  - IdeaDelta: min(extraction, linkage, evidence confidence) >= 0.85 → auto_published
+  - DeltaCard publish: min(extraction, linkage, evidence confidence) >= 0.85 → auto_published
   - High-value edges (contradicts, transferable_to, patch_of): candidate by default
 """
 
@@ -49,7 +49,7 @@ async def build_delta_card(
     """Build a DeltaCard from L4 analysis output.
 
     This is the central construction point: all downstream objects
-    (IdeaDelta, GraphAssertions) derive from this card.
+    GraphAssertions derive from this card.
     """
     delta_card_data = analysis_data.get("delta_card", {})
     if not isinstance(delta_card_data, dict):
