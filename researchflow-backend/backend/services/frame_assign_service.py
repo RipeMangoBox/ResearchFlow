@@ -16,7 +16,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.analysis import ParadigmTemplate
-from backend.models.graph import Slot
 
 logger = logging.getLogger(__name__)
 

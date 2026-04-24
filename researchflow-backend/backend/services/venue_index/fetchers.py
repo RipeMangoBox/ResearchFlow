@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 import time
@@ -9,6 +10,35 @@ import urllib.parse
 from pathlib import Path
 
 from .models import SourceConfig
+
+
+# ── Proxy support ─────────────────────────────────────────────
+# Set VENUE_PROXY env var to route fetcher traffic through mihomo.
+# mihomo's rules decide per-domain whether to proxy or go direct.
+# Example: VENUE_PROXY=socks5h://127.0.0.1:7891
+
+def _get_proxy_url() -> str:
+    return os.environ.get("VENUE_PROXY", "").strip()
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    """Build URL opener with SOCKS5 proxy if VENUE_PROXY is set."""
+    proxy = _get_proxy_url()
+    if proxy:
+        proxy_handler = urllib.request.ProxyHandler({
+            "http": proxy,
+            "https": proxy,
+        })
+        return urllib.request.build_opener(proxy_handler)
+    return urllib.request.build_opener()
+
+
+def _curl_proxy_args() -> list[str]:
+    """Return curl proxy args if VENUE_PROXY is set."""
+    proxy = _get_proxy_url()
+    if proxy:
+        return ["--proxy", proxy]
+    return []
 
 
 class _FetchTimeout(Exception):
@@ -24,7 +54,8 @@ def _fetch_with_total_timeout(url: str, headers: dict, socket_timeout: int = 30,
     signal.alarm(total_timeout)
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=socket_timeout) as resp:
+        opener = _build_opener()
+        with opener.open(req, timeout=socket_timeout) as resp:
             data = resp.read()
         return data
     finally:
@@ -334,7 +365,8 @@ def _curl_json(url: str, timeout: int = 15) -> object:
     """Fetch JSON via curl subprocess (fallback for hosts where urllib fails)."""
     import subprocess
     result = subprocess.run(
-        ["curl", "-s", "--max-time", str(timeout), "-H", "User-Agent: resmax-accepted-index/1.0", url],
+        ["curl", "-s", "--max-time", str(timeout), *_curl_proxy_args(),
+         "-H", "User-Agent: resmax-accepted-index/1.0", url],
         capture_output=True, text=True, timeout=timeout + 5,
     )
     if result.returncode != 0:
@@ -404,7 +436,7 @@ def _curl_html(url: str, timeout: int = 10, retries: int = 2) -> str:
     import subprocess
     for attempt in range(retries + 1):
         result = subprocess.run(
-            ["curl", "-s", "--max-time", str(timeout),
+            ["curl", "-s", "--max-time", str(timeout), *_curl_proxy_args(),
              "-H", "User-Agent: resmax-accepted-index/1.0", url],
             capture_output=True, text=True, timeout=timeout + 5,
         )
@@ -427,7 +459,7 @@ def fetch_anthropic_research(year: int | None = None, timeout: int = 10) -> list
 
     # Step 1: get all research URLs from sitemap
     r = subprocess.run(
-        ["curl", "-s", "--max-time", "10", "https://www.anthropic.com/sitemap.xml"],
+        ["curl", "-s", "--max-time", "10", *_curl_proxy_args(), "https://www.anthropic.com/sitemap.xml"],
         capture_output=True, text=True, timeout=15,
     )
     urls = re.findall(
