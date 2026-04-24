@@ -830,7 +830,6 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 updated["doi"] = True
             if not paper.code_url and vi_data.get("code_url"):
                 paper.code_url = vi_data["code_url"]
-                paper.open_code = True
                 updated["code_url"] = True
             if not paper.acceptance_type and vi_data.get("acceptance_type"):
                 paper.acceptance_type = vi_data["acceptance_type"]
@@ -1000,7 +999,16 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 field_name="citation_count", value=s2_data["citation_count"],
                 source="semantic_scholar", source_url=s2_data.get("s2_url"))
             s2_count = min(s2_data["citation_count"], 32767)
-            if s2_count > (paper.cited_by_count or 0):
+            # Conflict check: flag >50% diff between sources
+            existing = paper.cited_by_count or 0
+            if existing > 0 and s2_count > 0:
+                diff_ratio = abs(s2_count - existing) / max(s2_count, existing)
+                if diff_ratio > 0.5:
+                    logger.warning(
+                        "Citation count conflict for %s: existing=%d, S2=%d (%.0f%% diff)",
+                        paper.id, existing, s2_count, diff_ratio * 100,
+                    )
+            if s2_count > existing:
                 paper.cited_by_count = s2_count
                 updated["cited_by_count"] = True
         if s2_data.get("venue"):
@@ -1113,7 +1121,6 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
         )
         if pwc_url:
             paper.code_url = pwc_url
-            paper.open_code = True
             updated["code_url"] = True
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="code_url", value=pwc_url,
@@ -1133,7 +1140,6 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             )
         if gh_data:
             paper.code_url = gh_data["code_url"]
-            paper.open_code = True
             updated["code_url"] = True
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="code_url", value=gh_data["code_url"],
@@ -1153,8 +1159,8 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 await record_observation(session, entity_type="paper", entity_id=paper.id,
                     field_name="huggingface_dataset_url", value=hf_data["huggingface_dataset_url"],
                     source="huggingface")
-                if not paper.data_url:
-                    paper.data_url = hf_data["huggingface_dataset_url"]
+                # data_url moved to observations:
+                    # data_url in observations only
                 updated["huggingface_dataset_url"] = True
 
     # ── 7. GitHub README acceptance + dataset links ──────────
@@ -1166,6 +1172,12 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="acceptance_status", value=acc["acceptance_status"],
                 source="github", source_url=paper.code_url, confidence=0.75)
+            # Write to Paper if still empty (observation→Paper promotion)
+            if not paper.acceptance_type:
+                acc_type = acc.get("acceptance_type") or acc.get("acceptance_status", "")
+                if acc_type:
+                    paper.acceptance_type = acc_type
+                    updated["acceptance_type"] = True
             if acc.get("venue"):
                 await record_observation(session, entity_type="paper", entity_id=paper.id,
                     field_name="venue", value=acc["venue"],
@@ -1180,8 +1192,10 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="dataset_urls", value=gh_readme["dataset_urls"],
                 source="github", source_url=paper.code_url)
-            if not paper.data_url and gh_readme["dataset_urls"]:
-                paper.data_url = gh_readme["dataset_urls"][0]
+            if gh_readme["dataset_urls"]:
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="data_url", value=gh_readme["dataset_urls"][0],
+                    source="github", source_url=paper.code_url)
                 updated["data_url"] = True
 
         # Project page URL from README
@@ -1199,10 +1213,19 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 await record_observation(session, entity_type="paper", entity_id=paper.id,
                     field_name="acceptance_status", value=acc["acceptance_status"],
                     source="official_conf", source_url=paper.project_link, confidence=0.8)
+                # Write to Paper (official_conf is high confidence 0.8)
+                if not paper.acceptance_type:
+                    acc_type = acc.get("acceptance_type") or acc.get("acceptance_status", "")
+                    if acc_type:
+                        paper.acceptance_type = acc_type
+                        updated["acceptance_type"] = True
                 if acc.get("venue"):
                     await record_observation(session, entity_type="paper", entity_id=paper.id,
                         field_name="venue", value=acc["venue"],
                         source="official_conf", source_url=paper.project_link, confidence=0.8)
+                    if not paper.venue:
+                        paper.venue = acc["venue"][:100]
+                        updated["venue"] = True
                 updated["acceptance_from_project_page"] = True
 
             if page_data.get("dataset_urls"):
