@@ -11,6 +11,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     Float,
+    ForeignKey,
     Index,
     SmallInteger,
     String,
@@ -25,9 +26,13 @@ from backend.database import Base
 
 
 class MethodNode(Base):
-    """A method abstracted from papers.
+    """A unified method/mechanism entity abstracted from papers.
 
-    Examples: GRPO, DPO, QwenVL, VideoRL.
+    Covers both specific methods (GRPO, DPO, QwenVL) and mechanism families
+    (diffusion, flow_matching, reinforcement_learning). Distinguished by `type`.
+
+    Types: algorithm / recipe / model_family / system / mechanism_family
+    Maturity: seed → emerging → established_baseline
     """
     __tablename__ = "method_nodes"
 
@@ -38,8 +43,9 @@ class MethodNode(Base):
     name_zh: Mapped[str | None] = mapped_column(String(200))
     type: Mapped[str] = mapped_column(
         String(50), nullable=False
-    )  # algorithm / recipe / model_family / system / training_pipeline
+    )  # algorithm / recipe / model_family / system / mechanism_family
 
+    domain: Mapped[str | None] = mapped_column(String(100))
     canonical_paper_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     version: Mapped[str | None] = mapped_column(String(20))
     maturity: Mapped[str] = mapped_column(
@@ -48,7 +54,13 @@ class MethodNode(Base):
 
     description: Mapped[str | None] = mapped_column(Text)
     promotion_criteria: Mapped[dict | None] = mapped_column(JSONB)
-    # Schema: {min_downstream: 3, min_quality_score: 0.6, requires_human_review: true}
+
+    # Hierarchy (absorbed from MechanismFamily.parent_id)
+    parent_method_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("method_nodes.id")
+    )
+    # Entity resolution aliases (absorbed from MechanismFamily.aliases)
+    aliases: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
 
     downstream_count: Mapped[int] = mapped_column(SmallInteger, default=0)
 

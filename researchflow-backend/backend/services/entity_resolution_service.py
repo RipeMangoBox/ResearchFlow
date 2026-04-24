@@ -15,7 +15,8 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.graph import MechanismFamily, Slot
+from backend.models.graph import Slot
+from backend.models.method import MethodNode
 from backend.models.research import ProjectBottleneck
 from backend.models.review import Alias
 
@@ -25,15 +26,15 @@ logger = logging.getLogger(__name__)
 async def resolve_mechanism(
     session: AsyncSession,
     name: str,
-) -> MechanismFamily | None:
-    """Resolve a mechanism name to its canonical MechanismFamily.
+) -> MethodNode | None:
+    """Resolve a mechanism name to its canonical MethodNode.
 
-    Checks: exact name match → aliases table → MechanismFamily.aliases array.
+    Checks: exact name match → aliases table → MethodNode.aliases array.
     """
     # 1. Exact match
     result = await session.execute(
-        select(MechanismFamily).where(
-            func.lower(MechanismFamily.name) == name.lower()
+        select(MethodNode).where(
+            func.lower(MethodNode.name) == name.lower()
         )
     )
     mf = result.scalar_one_or_none()
@@ -43,24 +44,24 @@ async def resolve_mechanism(
     # 2. Aliases table
     alias_result = await session.execute(
         select(Alias).where(
-            Alias.entity_type == "mechanism_family",
+            Alias.entity_type == "method_family",
             func.lower(Alias.alias) == name.lower(),
         ).order_by(Alias.confidence.desc().nullslast()).limit(1)
     )
     alias = alias_result.scalar_one_or_none()
     if alias:
-        return await session.get(MechanismFamily, alias.entity_id)
+        return await session.get(MethodNode, alias.entity_id)
 
-    # 3. MechanismFamily.aliases array (legacy)
+    # 3. MethodNode.aliases array (legacy)
     result = await session.execute(
-        select(MechanismFamily).where(
-            MechanismFamily.aliases.contains([name])
+        select(MethodNode).where(
+            MethodNode.aliases.contains([name])
         ).limit(1)
     )
     mf = result.scalar_one_or_none()
     if mf:
         # Auto-register in aliases table for faster future lookups
-        await register_alias(session, "mechanism_family", mf.id, name, "auto_detected", 0.9)
+        await register_alias(session, "method_family", mf.id, name, "auto_detected", 0.9)
         return mf
 
     return None

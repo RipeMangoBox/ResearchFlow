@@ -32,8 +32,8 @@ class CanonicalIdea(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     domain: Mapped[str | None] = mapped_column(String(100))
-    mechanism_family_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("mechanism_families.id")
+    method_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("method_nodes.id")
     )
 
     # How many papers contribute to this idea
@@ -65,7 +65,7 @@ class CanonicalIdea(Base):
     __table_args__ = (
         Index("idx_canonical_ideas_domain", "domain"),
         Index("idx_canonical_ideas_status", "status"),
-        Index("idx_canonical_ideas_mechanism", "mechanism_family_id"),
+        Index("idx_canonical_ideas_method_node", "method_node_id"),
     )
 
 

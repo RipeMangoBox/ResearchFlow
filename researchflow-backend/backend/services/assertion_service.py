@@ -2,7 +2,7 @@
 
 Graph assertions go through a lifecycle:
   1. propose: system creates assertion with auto-status
-     - structural edges (supported_by, changes_slot, instance_of_mechanism, targets_bottleneck)
+     - structural edges (supported_by, changes_slot, instance_of_method, targets_bottleneck)
        → auto-published
      - high-value semantic edges (contradicts, transferable_to, patch_of)
        → candidate (needs review)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Edge types that require human review before publishing
 HIGH_VALUE_EDGE_TYPES = {"contradicts", "transferable_to", "patch_of"}
 # Edge types that auto-publish
-STRUCTURAL_EDGE_TYPES = {"supported_by", "changes_slot", "instance_of_mechanism", "targets_bottleneck", "cites"}
+STRUCTURAL_EDGE_TYPES = {"supported_by", "changes_slot", "instance_of_method", "targets_bottleneck", "cites"}
 # Minimum evidence count for assertion publish
 MIN_EVIDENCE_FOR_ASSERTION = 1
 

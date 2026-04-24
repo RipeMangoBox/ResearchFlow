@@ -34,7 +34,7 @@ async def score_idea_correctness(
     Checks:
     - primary_bottleneck set
     - changed_slots non-empty
-    - mechanism_family_ids non-empty
+    - method_node_ids non-empty
 
     Returns dict with per-field booleans and overall score 0-1.
     """
@@ -44,7 +44,7 @@ async def score_idea_correctness(
 
     has_bottleneck = idea.primary_bottleneck_id is not None
     has_changed_slots = bool(idea.changed_slots)
-    has_mechanisms = bool(idea.mechanism_family_ids)
+    has_mechanisms = bool(idea.method_node_ids)
 
     fields = [has_bottleneck, has_changed_slots, has_mechanisms]
     overall = sum(fields) / len(fields)
@@ -53,7 +53,7 @@ async def score_idea_correctness(
         "idea_delta_id": str(idea_delta_id),
         "has_primary_bottleneck": has_bottleneck,
         "has_changed_slots": has_changed_slots,
-        "has_mechanism_family_ids": has_mechanisms,
+        "has_method_node_ids": has_mechanisms,
         "overall_score": round(overall, 3),
     }
 

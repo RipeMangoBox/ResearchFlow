@@ -158,12 +158,10 @@ class IngestWorkflow:
         agents_run = []
         agent_results = {}
 
-        # Run shallow agents sequentially, each with its own context pack
+        # Run shallow agents sequentially (merged: 2 agents instead of 4)
         shallow_agents = [
-            ("shallow_paper", "paper_essence"),
+            ("shallow_extractor", "shallow_extract"),
             ("reference_role", "reference_role_map"),
-            ("method_delta_lite", "method_delta"),
-            ("score", "score_signals"),
         ]
 
         for agent_name, result_key in shallow_agents:
@@ -197,38 +195,59 @@ class IngestWorkflow:
                 )
                 agent_results[result_key] = {}
 
-        # Build deep-ingest signals from agent results
-        score_signals = agent_results.get("score_signals", {})
-        method_delta = agent_results.get("method_delta", {})
-        paper_essence = agent_results.get("paper_essence", {})
+        # Build deep-ingest signals deterministically (Phase 2B: no score agent)
+        shallow_extract = agent_results.get("shallow_extract", {})
+        paper_essence = shallow_extract.get("paper_essence", {})
+        method_delta = shallow_extract.get("method_delta", {})
+        ref_role_map = agent_results.get("reference_role_map", {})
+
+        # Derive scoring signals from shallow_extract + reference_role_map
+        changed_slots = method_delta.get("changed_slots", [])
+        evidence_refs = paper_essence.get("evidence_refs", [])
+        classifications = ref_role_map.get("classifications", [])
+        anchor_baselines = ref_role_map.get("anchor_baselines", [])
+
+        has_code = any(
+            e.get("basis") == "code_verified" for e in evidence_refs
+        ) or "code" in (paper_essence.get("method_summary") or "").lower()
+        has_ablation = len(changed_slots) > 1  # multiple slots implies ablation likely
+        is_direct_baseline = len(anchor_baselines) > 0
+        same_primary_task = bool(paper_essence.get("target_tasks"))
+        has_changed_slots = len(changed_slots) > 0
+        baseline_count = len(method_delta.get("baseline_methods", []))
+        novel_count = sum(1 for s in changed_slots if s.get("is_novel"))
+        method_novelty = min(1.0, novel_count * 0.3 + 0.2 * int(method_delta.get("is_structural_change", False)))
+        evidence_quality = min(1.0, sum(
+            e.get("confidence", 0.5) for e in evidence_refs
+        ) / max(len(evidence_refs), 1))
 
         deep_signals = {
-            "domain_fit": score_signals.get("aggregate_score", 0) * 100,
-            "relation_type": "same_task_prior" if score_signals.get("same_primary_task") else "",
+            "domain_fit": evidence_quality * 60 + method_novelty * 40,
+            "relation_type": "same_task_prior" if same_primary_task else "",
             "reusable_knowledge": (
                 50 * int(bool(method_delta.get("should_create_method_node")))
-                + 30 * int(bool(method_delta.get("changed_slots")))
-                + 20 * int(bool(score_signals.get("has_ablation")))
+                + 30 * int(has_changed_slots)
+                + 20 * int(has_ablation)
             ),
-            "evidence_quality": score_signals.get("evidence_quality", 0) * 100,
+            "evidence_quality": evidence_quality * 100,
             "experiment_value": (
-                40 * int(bool(score_signals.get("has_ablation")))
-                + 30 * int(score_signals.get("baseline_count", 0) >= 3)
-                + 30 * int(bool(score_signals.get("has_new_dataset")))
+                40 * int(has_ablation)
+                + 30 * int(baseline_count >= 3)
+                + 30 * int(bool(paper_essence.get("limitations")))
             ),
-            "has_code": score_signals.get("has_code", False),
-            "has_data": score_signals.get("has_new_dataset", False),
+            "has_code": has_code,
+            "has_data": False,
             "has_model": False,
             "has_benchmark": False,
-            "novelty_freshness": score_signals.get("method_novelty", 0) * 100,
+            "novelty_freshness": method_novelty * 100,
             "source_type": candidate.discovery_source or "",
-            "is_direct_baseline": score_signals.get("is_direct_baseline", False),
-            "in_experiment_table": score_signals.get("in_experiment_table", False),
-            "same_primary_task": score_signals.get("same_primary_task", False),
-            "has_changed_slots": score_signals.get("has_changed_slots", False),
-            "has_ablation": score_signals.get("has_ablation", False),
-            "is_baseline": score_signals.get("is_direct_baseline", False),
-            "has_strong_ablation": score_signals.get("has_ablation", False),
+            "is_direct_baseline": is_direct_baseline,
+            "in_experiment_table": is_direct_baseline,  # approximation
+            "same_primary_task": same_primary_task,
+            "has_changed_slots": has_changed_slots,
+            "has_ablation": has_ablation,
+            "is_baseline": is_direct_baseline,
+            "has_strong_ablation": has_ablation and len(changed_slots) >= 2,
             "fills_graph_gap": False,
         }
 
@@ -297,19 +316,15 @@ class IngestWorkflow:
     ) -> dict:
         """Run deep-phase agents, profile qualifying nodes/edges, generate report.
 
-        Deep agents (sequential):
-            1. MethodDeltaAgent-full → method_delta_full
-            2. ExperimentAgent → experiment_matrix
-            3. FormulaFigureAgent → formula_figures
-            4. GraphCandidateAgent → graph_candidates
+        Deep agents (sequential, merged):
+            1. DeepAnalyzer → deep_analysis (method + experiment + formulas)
+            2. GraphCandidateAgent → graph_candidates
 
-        Profile agents (for qualifying candidates):
-            5. NodeProfileAgent (promotion_score >= 75)
-            6. EdgeProfileAgent (confidence_score >= 70)
+        Profile agents (batched):
+            3. KBProfiler → node + edge profiles (single call)
 
         Report agents:
-            7. PaperReportAgent → 10-section structured report
-            8. QualityAuditAgent → review items
+            4. PaperReportAgent → 10-section structured report
 
         Returns:
             {paper_id, agents_run, nodes_created, edges_created, report_sections}
@@ -330,9 +345,7 @@ class IngestWorkflow:
         # ── Deep agents (sequential, each with own context pack) ──
 
         deep_agents = [
-            ("method_delta_full", "method_delta_full"),
-            ("experiment", "experiment_matrix"),
-            ("formula_figure", "formula_figures"),
+            ("deep_analyzer", "deep_analysis"),
             ("graph_candidate", "graph_candidates"),
         ]
 
@@ -367,12 +380,13 @@ class IngestWorkflow:
                 )
                 agent_results[result_key] = {}
 
-        # ── Scoring & Profile agents ──
+        # ── Scoring & Profile agents (batched into single LLM call) ──
 
         graph_candidates = agent_results.get("graph_candidates", {})
 
-        # Score and profile node candidates
-        node_candidates = graph_candidates.get("nodes", [])
+        # Collect qualifying node and edge candidates for batch profiling
+        qualifying_nodes = []
+        node_candidates = graph_candidates.get("node_candidates", graph_candidates.get("nodes", []))
         for node_cand in node_candidates:
             node_signals = {
                 "evidence_count": node_cand.get("evidence_count", 30),
@@ -383,28 +397,11 @@ class IngestWorkflow:
                 "profile_completeness": node_cand.get("profile_completeness", 30),
             }
             node_score = self.engine.compute_node_promotion_score(node_signals)
-
             if node_score.total >= 75:
-                # Run NodeProfileAgent
-                try:
-                    profile_context = {
-                        "user_content": (
-                            f"Node candidate: {node_cand}\n"
-                            f"Paper: {paper.title}\n"
-                            f"Promotion score: {node_score.total}"
-                        ),
-                        "token_budget": 4096,
-                    }
-                    await self.runner.run_agent(
-                        "node_profile", profile_context, paper_id=paper_id,
-                    )
-                    agents_run.append("node_profile")
-                    nodes_created += 1
-                except Exception as e:
-                    logger.error("node_profile agent failed: %s", e)
+                qualifying_nodes.append(node_cand)
 
-        # Score and profile edge candidates
-        edge_candidates = graph_candidates.get("edges", [])
+        qualifying_edges = []
+        edge_candidates = graph_candidates.get("edge_candidates", graph_candidates.get("edges", []))
         for edge_cand in edge_candidates:
             edge_signals = {
                 "evidence_directness": edge_cand.get("evidence_directness", 40),
@@ -415,29 +412,34 @@ class IngestWorkflow:
                 "description_quality": edge_cand.get("description_quality", 40),
             }
             edge_score = self.engine.compute_edge_confidence_score(edge_signals)
-
             if edge_score.total >= 70:
-                # Run EdgeProfileAgent
-                try:
-                    profile_context = {
-                        "user_content": (
-                            f"Edge candidate: {edge_cand}\n"
-                            f"Paper: {paper.title}\n"
-                            f"Confidence score: {edge_score.total}"
-                        ),
-                        "token_budget": 4096,
-                    }
-                    await self.runner.run_agent(
-                        "edge_profile", profile_context, paper_id=paper_id,
-                    )
-                    agents_run.append("edge_profile")
-                    edges_created += 1
-                except Exception as e:
-                    logger.error("edge_profile agent failed: %s", e)
+                qualifying_edges.append(edge_cand)
 
-        # ── Report agents ──
+        # Run batched KBProfiler for all qualifying candidates (single LLM call)
+        if qualifying_nodes or qualifying_edges:
+            try:
+                import json
+                profile_context = {
+                    "user_content": (
+                        f"Paper: {paper.title}\n\n"
+                        f"Node candidates to profile ({len(qualifying_nodes)}):\n"
+                        f"{json.dumps(qualifying_nodes, ensure_ascii=False, default=str)}\n\n"
+                        f"Edge candidates to profile ({len(qualifying_edges)}):\n"
+                        f"{json.dumps(qualifying_edges, ensure_ascii=False, default=str)}"
+                    ),
+                    "token_budget": 8192,
+                }
+                profile_result = await self.runner.run_agent(
+                    "kb_profiler", profile_context, paper_id=paper_id,
+                )
+                agents_run.append("kb_profiler")
+                nodes_created = len(profile_result.get("node_profiles", []))
+                edges_created = len(profile_result.get("edge_profiles", []))
+            except Exception as e:
+                logger.error("kb_profiler agent failed: %s", e)
 
-        # Agent 7: PaperReportAgent
+        # ── Report agent ──
+
         try:
             report_context = {
                 "user_content": (
@@ -455,22 +457,24 @@ class IngestWorkflow:
         except Exception as e:
             logger.error("paper_report agent failed for %s: %s", paper_id, e)
 
-        # Agent 8: QualityAuditAgent
+        # quality_audit removed (Phase 2E) — replaced by deterministic validation
+
+        # ── Phase 3A: Materialize agent outputs to DeltaCard/GraphAssertion ──
+        delta_card_result = {}
         try:
-            audit_context = {
-                "user_content": (
-                    f"Paper: {paper.title}\n"
-                    f"Agent results: {agent_results}\n"
-                    f"Review needed: {review_needed}"
-                ),
-                "token_budget": 4096,
-            }
-            await self.runner.run_agent(
-                "quality_audit", audit_context, paper_id=paper_id,
+            delta_card_result = await self._materialize_to_graph(
+                paper, agent_results,
             )
-            agents_run.append("quality_audit")
+            logger.info(
+                "Materialized graph for %s: dc=%s, idea=%s, evidence=%d, assertions=%d",
+                paper_id,
+                delta_card_result.get("delta_card_id"),
+                delta_card_result.get("idea_delta_id"),
+                delta_card_result.get("evidence_count", 0),
+                delta_card_result.get("assertion_count", 0),
+            )
         except Exception as e:
-            logger.error("quality_audit agent failed for %s: %s", paper_id, e)
+            logger.error("Graph materialization failed for %s: %s", paper_id, e)
 
         # Update paper absorption level
         paper.absorption_level = 3
@@ -483,6 +487,141 @@ class IngestWorkflow:
             "nodes_created": nodes_created,
             "edges_created": edges_created,
             "report_sections": report_sections,
+            "graph": delta_card_result,
+        }
+
+    async def _materialize_to_graph(self, paper, agent_results: dict) -> dict:
+        """Convert agent outputs to DeltaCard → IdeaDelta → GraphAssertions.
+
+        Bridges agent blackboard outputs to the delta_card_service pipeline,
+        then runs evolution/concept/reconciliation steps.
+        """
+        from backend.services.delta_card_service import run_delta_card_pipeline
+        from backend.services.evolution_service import link_to_parent_baselines
+        from backend.services.concept_synthesizer_service import synthesize_concepts
+        from backend.services.incremental_reconciler_service import reconcile_neighbors
+
+        # Extract data from merged agent outputs
+        shallow = agent_results.get("shallow_extract", {})
+        deep = agent_results.get("deep_analysis", {})
+        paper_essence = shallow.get("paper_essence", {})
+        method_delta_lite = shallow.get("method_delta", {})
+        method_full = deep.get("method", {})
+        experiment = deep.get("experiment", {})
+        formulas = deep.get("formulas", {})
+
+        # Build analysis_data dict matching delta_card_service input format
+        analysis_data = {
+            "problem_summary": paper_essence.get("problem_statement", ""),
+            "method_summary": paper_essence.get("method_summary", ""),
+            "evidence_summary": "",  # built from experiment fairness
+            "core_intuition": paper_essence.get("core_claim", ""),
+            "changed_slots": [
+                s.get("slot_name", "") for s in method_full.get("changed_slots", method_delta_lite.get("changed_slots", []))
+            ],
+            "is_plugin_patch": method_delta_lite.get("is_plugin_patch", False),
+            "structurality_score": 0.7 if method_delta_lite.get("is_structural_change") else 0.3,
+            "extensionability_score": None,
+            "transferability_score": None,
+            "delta_card": {
+                "paradigm": paper_essence.get("training_paradigm", "unknown"),
+                "slots": {
+                    s.get("slot_name", ""): {
+                        "changed": True,
+                        "from": s.get("baseline_value", ""),
+                        "to": s.get("proposed_value", ""),
+                        "change_type": s.get("change_type", "modified"),
+                    }
+                    for s in method_full.get("changed_slots", method_delta_lite.get("changed_slots", []))
+                },
+                "is_structural": method_delta_lite.get("is_structural_change", False),
+                "primary_gain_source": method_full.get("proposed_method_name", method_delta_lite.get("proposed_method_name", "")),
+            },
+            "bottleneck_addressed": None,
+            "same_family_method": method_full.get("proposed_method_name", method_delta_lite.get("proposed_method_name", "")),
+            "confidence_notes": paper_essence.get("evidence_refs", []),
+            "key_equations": formulas.get("key_formulas", []),
+            "key_figures": formulas.get("figure_roles", []),
+            "evidence_units": [
+                {
+                    "atom_type": "evidence",
+                    "claim": ref.get("claim", ""),
+                    "confidence": ref.get("confidence", 0.5),
+                    "basis": ref.get("basis", "text_stated"),
+                    "source_section": ref.get("reasoning", ""),
+                }
+                for ref in paper_essence.get("evidence_refs", [])
+            ],
+        }
+
+        # Build evidence_summary from experiment fairness
+        fairness = experiment.get("fairness_assessment", {})
+        if fairness:
+            parts = []
+            if fairness.get("are_comparisons_fair") is False:
+                parts.append("Baseline comparisons may not be fair.")
+            if fairness.get("missing_baselines"):
+                parts.append(f"Missing baselines: {', '.join(fairness['missing_baselines'])}")
+            if fairness.get("potential_issues"):
+                parts.append(f"Issues: {'; '.join(fairness['potential_issues'])}")
+            analysis_data["evidence_summary"] = " ".join(parts) if parts else "Evidence assessment complete."
+
+        # Assign paradigm
+        from backend.services.analysis_service import assign_paradigm
+        paradigm, slots = await assign_paradigm(
+            self.session, paper.category, paper.tags,
+            title=paper.title, abstract=paper.abstract,
+        )
+
+        # Build changed_slots_graph for delta_card_service
+        changed_slots_graph = [
+            {
+                "slot_name": s.get("slot_name", ""),
+                "from": s.get("baseline_value", ""),
+                "to": s.get("proposed_value", ""),
+                "change_type": "structural" if method_delta_lite.get("is_structural_change") else "plugin",
+            }
+            for s in method_full.get("changed_slots", method_delta_lite.get("changed_slots", []))
+        ]
+
+        # Run delta_card_service pipeline
+        result = await run_delta_card_pipeline(
+            self.session,
+            paper_id=paper.id,
+            analysis_id=None,
+            analysis_data=analysis_data,
+            paradigm_id=paradigm.id if paradigm else None,
+            paradigm_name=paradigm.name if paradigm else None,
+            slots=[{"id": s["id"], "name": s["name"]} for s in slots] if slots else None,
+            changed_slots_graph=changed_slots_graph if changed_slots_graph else None,
+            bottleneck_id=None,
+        )
+
+        dc = result.get("delta_card")
+        idea = result.get("idea_delta")
+
+        # Post-delta steps (each wrapped to not block on failure)
+        if dc and dc.id:
+            try:
+                await link_to_parent_baselines(self.session, dc.id, analysis_data)
+            except Exception as e:
+                logger.warning("link_to_parent_baselines failed: %s", e)
+
+        try:
+            await synthesize_concepts(self.session, paper.id, analysis_data)
+        except Exception as e:
+            logger.warning("synthesize_concepts failed: %s", e)
+
+        try:
+            await reconcile_neighbors(self.session, paper.id, analysis_data)
+        except Exception as e:
+            logger.warning("reconcile_neighbors failed: %s", e)
+
+        return {
+            "delta_card_id": str(dc.id) if dc else None,
+            "idea_delta_id": str(idea.id) if idea else None,
+            "evidence_count": len(result.get("evidence_units", [])),
+            "assertion_count": len(result.get("assertions", [])),
         }
 
     # ── Phase 4: Neighborhood Discovery ───────────────────────────────

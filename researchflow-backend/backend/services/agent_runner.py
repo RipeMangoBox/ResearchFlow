@@ -24,33 +24,53 @@ class AgentRunner:
     # ── Agent Prompt Templates ───────────────────────────────────────────
 
     AGENT_PROMPTS = {
-        # ── Shallow Phase Agents ─────────────────────────────────────────
+        # ── Shallow Phase Agents (merged: shallow_paper + method_delta_lite) ──
 
-        "shallow_paper": {
-            "system": """You are a research paper analyst specializing in structured extraction.
+        "shallow_extractor": {
+            "system": """You are a research paper analyst. Given paper context (abstract, introduction excerpt, method excerpt, experiment excerpt, figure/table captions), extract BOTH a PaperEssence and a MethodDelta in a single pass.
 
-Given paper context (abstract, introduction excerpt, method excerpt, experiment excerpt, figure/table captions), extract a PaperEssence JSON object.
+Output a single JSON object with TWO top-level keys: "paper_essence" and "method_delta".
 
-Output a single JSON object with these fields:
-- problem_statement: str — the core problem the paper addresses (1-2 sentences)
-- core_claim: str — the paper's main claim or thesis (1 sentence)
-- method_summary: str — concise description of the proposed method (2-3 sentences)
-- main_contributions: list[str] — 2-5 key contributions listed by the paper
-- target_tasks: list[str] — specific tasks addressed (e.g., "video question answering", "text-to-image generation")
-- target_modalities: list[str] — input/output modalities (e.g., "text", "image", "video", "audio")
-- training_paradigm: str — how the model is trained (e.g., "supervised", "self-supervised", "RLHF", "DPO")
-- limitations: list[str] — stated or inferred limitations (1-3 items)
-- evidence_refs: list[dict] — key evidence with structure: {"claim": str, "confidence": float 0-1, "basis": "code_verified"|"experiment_backed"|"text_stated"|"inferred"|"speculative", "reasoning": str}
+{
+  "paper_essence": {
+    "problem_statement": str — the core problem (1-2 sentences),
+    "core_claim": str — main claim/thesis (1 sentence),
+    "method_summary": str — concise method description (2-3 sentences),
+    "main_contributions": list[str] — 2-5 key contributions,
+    "target_tasks": list[str] — tasks addressed (e.g., "video question answering"),
+    "target_modalities": list[str] — modalities (e.g., "text", "image", "video"),
+    "training_paradigm": str — e.g., "supervised", "RLHF", "DPO",
+    "limitations": list[str] — 1-3 limitations,
+    "evidence_refs": list[dict] — {"claim": str, "confidence": float 0-1, "basis": "code_verified"|"experiment_backed"|"text_stated"|"inferred"|"speculative", "reasoning": str}
+  },
+  "method_delta": {
+    "proposed_method_name": str — name of proposed method/model,
+    "baseline_methods": list[dict] — {"name": str, "role": "primary_baseline"|"secondary_baseline"|"component"},
+    "changed_slots": list[dict] — {
+      "slot_name": str — component changed (e.g., "reward_function", "attention_mechanism"),
+      "baseline_value": str — what the baseline uses,
+      "proposed_value": str — what this paper proposes,
+      "change_type": "replace"|"modify"|"add"|"remove",
+      "is_novel": bool
+    },
+    "is_plugin_patch": bool — true if plug-in module addable to any baseline,
+    "is_structural_change": bool — true if changes overall architecture/pipeline,
+    "should_create_method_node": bool — true if novel enough for KB method node,
+    "creation_reason": str | null,
+    "key_equations": list[str] — 1-3 semantic descriptions of key equations
+  }
+}
 
 Rules:
-1. Extract ONLY what is stated or directly supported by the text. Mark inferences explicitly.
-2. For confidence, use: 0.9+ for directly stated facts, 0.7-0.9 for well-supported claims, 0.5-0.7 for inferences, <0.5 for speculation.
-3. Keep each field concise. method_summary should be technically precise but readable.
-4. If a field cannot be determined from the provided context, use null or an empty list.
+1. Extract ONLY what is stated or directly supported. Mark inferences explicitly.
+2. Confidence: 0.9+ stated facts, 0.7-0.9 well-supported, 0.5-0.7 inferences, <0.5 speculation.
+3. Focus on WHAT changed in method_delta, not how well it works.
+4. changed_slots: capture actual architectural/algorithmic delta, not surface differences.
+5. If a field cannot be determined, use null or empty list.
 
 Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "PaperEssence",
-            "item_type": "paper_essence",
+            "output_schema": "ShallowExtract",
+            "item_type": "shallow_extract",
             "phase": "shallow",
         },
 
@@ -88,318 +108,58 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
             "phase": "shallow",
         },
 
-        "method_delta_lite": {
-            "system": """You analyze what method changes a paper makes relative to its baselines.
+        # method_delta_lite — merged into shallow_extractor (Phase 2A)
+        # score — removed, replaced by deterministic scoring_engine (Phase 2B)
 
-Given the paper's method section, algorithm blocks, formula contexts, and its PaperEssence, extract a MethodDelta.
+        # ── Deep Phase Agents ────────────────────────────────────────────
 
-Output a JSON object:
+        "deep_analyzer": {
+            "system": """You are a comprehensive deep analysis agent. You perform THREE tasks in a single pass:
+1. Exhaustive method slot decomposition (MethodDeltaFull)
+2. Experiment result extraction (ExperimentMatrix)
+3. Formula and figure analysis (FormulaFigureAnalysis)
+
+CRITICAL READING ORDER: Read Method/Algorithm sections FIRST, then Experiments/Ablations, then Abstract/Introduction. Do NOT rely on abstract claims — verify against actual content.
+
+Output a single JSON object with THREE top-level keys: "method", "experiment", "formulas".
+
 {
-  "proposed_method_name": str — name of the proposed method/model,
-  "baseline_methods": list[dict] — each with {"name": str, "role": "primary_baseline"|"secondary_baseline"|"component"},
-  "changed_slots": list[dict] — each with {
-    "slot_name": str — which component changed (e.g., "reward_function", "attention_mechanism", "loss_function", "data_augmentation"),
-    "baseline_value": str — what the baseline uses for this slot,
-    "proposed_value": str — what this paper proposes instead,
-    "change_type": str — "replace"|"modify"|"add"|"remove",
-    "is_novel": bool — true if this is a genuinely new approach, not just hyperparameter tuning
+  "method": {
+    "proposed_method_name": str,
+    "baseline_methods": [{"name": str, "role": "primary_baseline"|"secondary_baseline"|"component_source", "paper_title": str|null, "evidence_refs": [{"claim": str, "section": str, "confidence": float}]}],
+    "changed_slots": [{"slot_name": str, "baseline_value": str, "proposed_value": str, "change_type": "modified"|"added"|"removed"|"replaced", "is_novel": bool, "evidence_refs": [{"claim": str, "section": str, "confidence": float}]}],
+    "new_components": [{"name": str, "description": str, "role_in_pipeline": str}],
+    "pipeline_modules": [{"name": str, "input": str, "output": str, "is_new": bool, "replaces": str|null}],
+    "should_create_method_node": bool,
+    "should_create_lineage_edge": bool,
+    "lineage_parent": str|null
   },
-  "is_plugin_patch": bool — true if the method is a plug-in module that can be added to any baseline,
-  "is_structural_change": bool — true if the method changes the overall architecture/pipeline structure,
-  "should_create_method_node": bool — true if this method is novel enough to warrant a separate method node in the knowledge graph,
-  "creation_reason": str | null — if should_create_method_node is true, explain why,
-  "key_equations": list[str] — 1-3 most important equation descriptions (not LaTeX, but semantic descriptions)
-}
-
-Rules:
-1. Focus on WHAT changed, not how well it works (that's the experiment agent's job).
-2. A paper that only tunes hyperparameters or uses existing components in a standard way should have is_plugin_patch=false, should_create_method_node=false.
-3. changed_slots should capture the actual architectural/algorithmic delta, not surface-level differences.
-4. If the paper proposes multiple methods or variants, focus on the primary proposed method.
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "MethodDelta",
-            "item_type": "method_delta",
-            "phase": "shallow",
-        },
-
-        "score": {
-            "system": """You extract scoring signals from a paper's analysis to determine its relevance and quality.
-
-Given the PaperEssence, MethodDelta, and ReferenceRoleMap for a paper, extract boolean and numeric scoring signals.
-
-Output a JSON object:
-{
-  "is_direct_baseline": bool — this paper serves as a direct baseline for the domain's anchor method,
-  "in_experiment_table": bool — this paper's method appears in experiment comparison tables of other papers,
-  "same_primary_task": bool — addresses the same primary task as the domain's focus,
-  "has_changed_slots": bool — modifies one or more identifiable method slots,
-  "has_ablation": bool — includes ablation study validating individual components,
-  "has_code": bool — code is publicly available (mentioned in paper),
-  "has_new_dataset": bool — introduces or curates a new dataset,
-  "citation_density": float — 0-1, how densely cited within the domain context (0=barely mentioned, 1=cited everywhere),
-  "method_novelty": float — 0-1, degree of methodological novelty (0=pure application, 1=entirely new paradigm),
-  "evidence_quality": float — 0-1, strength of experimental evidence (0=no experiments, 1=comprehensive with ablations and significance tests),
-  "slot_count": int — number of method slots that are changed,
-  "baseline_count": int — number of baselines compared against,
-  "recommended_depth": str — "deep"|"shallow"|"metadata_only"|"skip",
-  "depth_reason": str — brief justification for recommended depth,
-  "aggregate_score": float — 0-1, weighted composite relevance score
-}
-
-Scoring guidance:
-- aggregate_score formula: 0.25*method_novelty + 0.25*evidence_quality + 0.15*citation_density + 0.1*(1 if has_ablation else 0) + 0.1*(1 if has_code else 0) + 0.1*(1 if same_primary_task else 0) + 0.05*(1 if has_new_dataset else 0)
-- recommended_depth: "deep" if aggregate >= 0.6, "shallow" if >= 0.3, "metadata_only" if >= 0.15, "skip" otherwise
-- Be conservative with method_novelty: most papers are incremental (0.2-0.5 range)
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "ScoreSignals",
-            "item_type": "score_signals",
-            "phase": "shallow",
-        },
-
-        # ── Deep Phase Agents (stubs) ────────────────────────────────────
-
-        "method_delta_full": {
-            "system": """You are a deep method analysis agent. You perform exhaustive slot-level decomposition of a paper's proposed method relative to its baselines.
-
-CRITICAL: Read the method section and algorithm blocks carefully. Do NOT rely solely on abstract claims — verify every slot change against the actual method description, pseudocode, and equations. If the paper claims novelty but the method section shows standard components, flag it.
-
-Given the full method section, algorithm blocks, all formulas, the paper's PaperEssence, and the ReferenceRoleMap, extract a MethodDeltaFull JSON object.
-
-Output a single JSON object with these fields:
-
-{
-  "proposed_method_name": str,
-  "baseline_methods": [
-    {
-      "name": str,
-      "role": "primary_baseline" | "secondary_baseline" | "component_source" | "conceptual_ancestor",
-      "paper_title": str | null,
-      "evidence_refs": [{"claim": str, "section": str, "confidence": float}]
-    }
-  ],
-  "changed_slots": [
-    {
-      "slot_name": str,
-      "baseline_value": str,
-      "proposed_value": str,
-      "change_type": "modified" | "added" | "removed" | "replaced",
-      "is_novel": bool,
-      "evidence_refs": [{"claim": str, "section": str, "confidence": float}]
-    }
-  ],
-  "new_components": [
-    {
-      "name": str,
-      "description": str,
-      "role_in_pipeline": str,
-      "evidence_refs": [{"claim": str, "section": str, "confidence": float}]
-    }
-  ],
-  "removed_components": [
-    {
-      "name": str,
-      "reason": str,
-      "evidence_refs": [{"claim": str, "section": str, "confidence": float}]
-    }
-  ],
-  "combined_methods": [
-    {
-      "name": str,
-      "source_methods": [str],
-      "combination_strategy": str,
-      "evidence_refs": [{"claim": str, "section": str, "confidence": float}]
-    }
-  ],
-  "pipeline_modules": [
-    {
-      "name": str,
-      "input": str,
-      "output": str,
-      "is_new": bool,
-      "replaces": str | null
-    }
-  ],
-  "should_create_method_node": bool,
-  "should_create_lineage_edge": bool,
-  "creation_reason": str | null,
-  "lineage_parent": str | null
-}
-
-Field definitions:
-- slot_name: The functional component being changed (e.g., "reward_function", "attention_mechanism", "loss_function", "encoder", "decoder", "data_augmentation", "sampling_strategy", "normalization", "training_schedule").
-- baseline_value: What the baseline method uses for this slot — be specific (e.g., "cross-entropy loss" not just "standard loss").
-- proposed_value: What this paper proposes instead — include technical detail.
-- change_type: "modified" = tweaked existing component; "added" = entirely new slot not in baseline; "removed" = baseline had it, paper drops it; "replaced" = swapped for fundamentally different approach.
-- is_novel: true ONLY if this specific change has not appeared in prior work cited by the paper. If the paper cites a source for this component, is_novel = false.
-- pipeline_modules: Ordered list of processing stages in the proposed pipeline. Mark is_new=true only for modules that are genuinely novel. replaces = the baseline module name this replaces, or null.
-- should_create_method_node: true if the method is sufficiently novel and self-contained to warrant its own node in the knowledge graph (not just a hyperparameter change or standard combination).
-- should_create_lineage_edge: true if there is a clear parent method this builds upon.
-
-Rules:
-1. Every claim must have evidence_refs pointing to specific sections/equations.
-2. Distinguish between "claims to be novel" and "actually novel based on method description".
-3. If the paper combines existing techniques without genuine novelty, set should_create_method_node=false.
-4. Be specific in slot descriptions — "uses a modified MLP" is too vague; "replaces 2-layer MLP with gated linear unit (GLU) following Dauphin et al." is correct.
-5. pipeline_modules should reflect the actual data flow, not the paper's section structure.
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "MethodDeltaFull",
-            "item_type": "method_delta_full",
-            "phase": "deep",
-        },
-        "experiment": {
-            "system": """You are an experiment analysis agent. You extract structured experiment results, benchmark comparisons, ablation studies, and computational costs from research papers.
-
-CRITICAL: Extract exact numbers from tables and figures. Do NOT paraphrase or approximate — copy the precise values. When a table shows "73.2", report 73.2, not "about 73" or "~73". If you cannot read a number clearly, mark confidence as low and note the uncertainty.
-
-Given the paper's result tables, experiment section, ablation section, PaperEssence, and MethodDelta, extract an ExperimentMatrix JSON object.
-
-Output a single JSON object with these fields:
-
-{
-  "main_results": [
-    {
-      "benchmark": str,
-      "metric": str,
-      "proposed_score": float | str,
-      "baseline_scores": [
-        {
-          "name": str,
-          "score": float | str
-        }
-      ],
-      "improvement": str,
-      "is_sota": bool,
-      "evidence_refs": [{"table_or_figure": str, "section": str, "confidence": float}]
-    }
-  ],
-  "ablations": [
-    {
-      "component_removed": str,
-      "effect": str,
-      "delta_value": float | str | null,
-      "delta_metric": str | null,
-      "supports_core_claim": bool,
-      "evidence_refs": [{"table_or_figure": str, "section": str, "confidence": float}]
-    }
-  ],
-  "costs": {
-    "training_compute": str | null,
-    "inference_latency": str | null,
-    "model_parameters": str | null,
-    "data_requirements": str | null,
-    "gpu_type": str | null,
-    "training_time": str | null
+  "experiment": {
+    "main_results": [{"benchmark": str, "metric": str, "proposed_score": float|str, "baseline_scores": [{"name": str, "score": float|str}], "improvement": str, "is_sota": bool, "evidence_refs": [{"table_or_figure": str, "section": str, "confidence": float}]}],
+    "ablations": [{"component_removed": str, "effect": str, "delta_value": float|str|null, "delta_metric": str|null, "supports_core_claim": bool}],
+    "costs": {"training_compute": str|null, "inference_latency": str|null, "model_parameters": str|null, "gpu_type": str|null, "training_time": str|null},
+    "fairness_assessment": {"are_comparisons_fair": bool, "are_baselines_strongest": bool, "missing_baselines": [str], "potential_issues": [str], "overall_evidence_strength": float}
   },
-  "fairness_assessment": {
-    "are_comparisons_fair": bool,
-    "are_baselines_strongest": bool,
-    "missing_baselines": [str],
-    "potential_issues": [str],
-    "overall_evidence_strength": float
+  "formulas": {
+    "key_formulas": [{"latex": str, "name": str, "explanation_zh": str, "slot_affected": str|null, "differs_from_baseline": bool, "baseline_formula_latex": str|null}],
+    "pipeline_figure": {"description": str, "modules": [{"name": str, "role": str}], "flow_description": str}|null,
+    "figure_roles": [{"fig_ref": str, "semantic_role": "motivation"|"pipeline"|"architecture"|"result"|"failure_case"|"ablation_visual"|"comparison", "description_zh": str}],
+    "formula_derivation_steps": [{"step": int, "from_formula": str, "to_formula": str, "explanation": str, "technique_used": str|null}]
   }
 }
 
-Field definitions:
-- benchmark: The name of the benchmark or evaluation dataset (e.g., "MMLU", "ImageNet-1K", "COCO val2017").
-- metric: The evaluation metric used (e.g., "accuracy", "BLEU", "mAP@50", "FID").
-- proposed_score: The paper's reported score for their method. Use the exact number from the table. If reported as a range, use the primary/best value.
-- baseline_scores: List of baseline methods and their scores from the SAME table/experiment. Include all baselines shown.
-- improvement: A string describing the improvement (e.g., "+2.3 accuracy points over BERT-base", "15% relative reduction in FID").
-- is_sota: true ONLY if the paper explicitly claims state-of-the-art AND the numbers support it.
-- component_removed: Which component was ablated (must match a slot or module from MethodDelta).
-- supports_core_claim: true if removing this component significantly hurts performance, validating its importance.
-- fairness_assessment.are_baselines_strongest: false if the paper compares against weak/outdated baselines when stronger ones exist.
-- fairness_assessment.overall_evidence_strength: 0-1 score. 0.9+ = comprehensive with ablations, multiple benchmarks, significance tests. 0.5-0.7 = reasonable but incomplete. <0.5 = weak evidence.
-
 Rules:
-1. Extract ALL benchmark results from ALL tables, not just the "best" ones.
-2. For ablations, verify whether the ablated component actually corresponds to a claimed contribution. If the paper claims component X is key but doesn't ablate it, note this in fairness_assessment.potential_issues.
-3. Check if ablations actually support the paper's core claims — sometimes ablations show minimal impact, contradicting the narrative.
-4. In missing_baselines, list any well-known strong baselines in the field that the paper does not compare against.
-5. If scores are reported with variance (e.g., "73.2 ± 0.3"), include the full string.
-6. Distinguish between validation and test set results when the paper reports both.
+1. method.changed_slots: be specific — "replaces 2-layer MLP with GLU" not "uses modified MLP".
+2. experiment: extract EXACT numbers from tables. Do not paraphrase or approximate.
+3. formulas: include ALL key formulas, especially the main objective/loss and novel equations.
+4. Every evidence_refs should point to specific sections/equations/tables.
+5. Distinguish "claims novelty" from "actually novel based on method description".
+6. For ablations, check if they actually support core claims.
+7. explanation_zh in formulas should be in Chinese, accessible to graduate students.
 
 Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "ExperimentMatrix",
-            "item_type": "experiment_matrix",
-            "phase": "deep",
-        },
-        "formula_figure": {
-            "system": """You are a formula and figure analysis agent. You extract key equations, analyze figures, and trace formula derivation chains from research papers.
-
-Given the paper's formulas, figure/table captions, method section, and PaperEssence, extract a FormulaFigureAnalysis JSON object.
-
-Output a single JSON object with these fields:
-
-{
-  "key_formulas": [
-    {
-      "latex": str,
-      "name": str,
-      "explanation_zh": str,
-      "slot_affected": str | null,
-      "differs_from_baseline": bool,
-      "baseline_formula_latex": str | null,
-      "evidence_refs": [{"equation_number": str, "section": str, "confidence": float}]
-    }
-  ],
-  "pipeline_figure": {
-    "description": str,
-    "modules": [
-      {
-        "name": str,
-        "role": str
-      }
-    ],
-    "flow_description": str
-  } | null,
-  "figure_roles": [
-    {
-      "fig_ref": str,
-      "semantic_role": "motivation" | "pipeline" | "architecture" | "result" | "failure_case" | "data_example" | "ablation_visual" | "comparison",
-      "description_zh": str
-    }
-  ],
-  "formula_derivation_steps": [
-    {
-      "step": int,
-      "from_formula": str,
-      "to_formula": str,
-      "explanation": str,
-      "technique_used": str | null
-    }
-  ]
-}
-
-Field definitions:
-- latex: The formula in LaTeX notation, exactly as it appears in the paper. Preserve all notation.
-- name: A short semantic name for the formula (e.g., "objective function", "attention score", "reward signal").
-- explanation_zh: A plain-language explanation of what the formula computes, in Chinese. Be concise but precise.
-- slot_affected: Which method slot this formula implements (e.g., "loss_function", "attention_mechanism"). null if the formula is auxiliary (e.g., evaluation metric definition).
-- differs_from_baseline: true if this formula is different from the corresponding formula in the baseline method.
-- baseline_formula_latex: If differs_from_baseline is true, provide the baseline's version of the formula (if known/cited).
-- pipeline_figure: Extracted from the main architecture/pipeline diagram. null if no such figure exists.
-- pipeline_figure.modules: The processing modules shown in the figure, in order.
-- pipeline_figure.flow_description: A text description of the data flow through the pipeline (e.g., "Input text -> Tokenizer -> Encoder -> Cross-Attention with image features -> Decoder -> Output").
-- fig_ref: The figure reference label (e.g., "Figure 1", "Fig. 3(b)", "Table 2").
-- semantic_role: The purpose this figure serves in the paper's argument structure.
-- formula_derivation_steps: Ordered steps showing how a key formula is derived. from_formula and to_formula should be LaTeX strings. explanation describes the mathematical operation applied.
-- technique_used: The mathematical technique applied in this derivation step (e.g., "chain rule", "Jensen's inequality", "reparameterization trick", "Taylor expansion").
-
-Rules:
-1. Include ALL key formulas — at minimum the main objective/loss function and any novel equations.
-2. For formula_derivation_steps, trace the derivation of the paper's MOST IMPORTANT novel formula. If no derivation is shown in the paper, return an empty list.
-3. For pipeline_figure, only extract from actual architecture/pipeline diagrams, not result plots.
-4. figure_roles should cover ALL figures and tables referenced in the paper.
-5. explanation_zh should be accessible to a graduate student — avoid overly terse descriptions.
-6. If a formula uses notation defined elsewhere in the paper, note the meaning of key symbols in explanation_zh.
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "FormulaFigureAnalysis",
-            "item_type": "formula_figure_analysis",
+            "output_schema": "DeepAnalysis",
+            "item_type": "deep_analysis",
             "phase": "deep",
         },
 
@@ -479,108 +239,56 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
             "item_type": "graph_candidates",
             "phase": "graph",
         },
-        "node_profile": {
-            "system": """You are a knowledge graph node profile generation agent. You generate comprehensive, evidence-based wiki-style profiles for entities in the knowledge graph.
+        "kb_profiler": {
+            "system": """You are a knowledge graph profiling agent. You generate profiles for BOTH nodes and edges in a single batch.
 
-Given the node's metadata, its connected papers, connected edges, and supporting evidence, generate a NodeProfile JSON object.
+Given a list of node candidates (with metadata and connected papers) and edge candidates (with source/target nodes and evidence), generate profiles for all of them.
 
-Output a single JSON object with these fields:
-
-{
-  "one_liner": str,
-  "short_intro_md": str,
-  "detailed_md": str,
-  "structured_json": {
-    // Fields depend on node type — see below
-  },
-  "evidence_refs": [{"claim": str, "source_paper": str, "confidence": float}]
-}
-
-Field definitions:
-- one_liner: A single sentence (40-80 chars) that captures the essence of this entity. For methods: what it does and its key innovation. For tasks: what problem it addresses. For datasets: what it contains and its scale.
-
-- short_intro_md: 2-3 paragraphs in Markdown (Chinese). Cover: what this entity is, why it matters, and its key characteristics. Should be self-contained — a reader with no prior context should understand the entity after reading this.
-
-- detailed_md: A full wiki page in Markdown (Chinese) with these sections:
-  ## 概述 (Overview)
-  ## 核心特点 (Key Features / Core Characteristics)
-  ## 技术细节 (Technical Details — for methods/mechanisms)
-  ## 相关工作 (Related Work / Connected Entities)
-  ## 发展历程 (Evolution / History — if applicable)
-  ## 应用场景 (Applications / Use Cases)
-
-- structured_json: Type-dependent structured fields:
-
-  For node_type = "task":
-    {"input_modalities": [str], "output_modalities": [str], "evaluation_metrics": [str], "difficulty_level": str, "parent_task": str | null, "subtasks": [str], "representative_benchmarks": [str]}
-
-  For node_type = "method":
-    {"architecture_type": str, "training_paradigm": str, "key_components": [str], "input_requirements": str, "output_format": str, "computational_cost": str | null, "parent_method": str | null, "year_introduced": int | null, "original_paper": str | null}
-
-  For node_type = "mechanism":
-    {"mechanism_category": str, "applicable_to": [str], "key_formula": str | null, "advantages": [str], "limitations": [str], "common_variants": [str]}
-
-  For node_type = "dataset":
-    {"domain": str, "size": str, "modalities": [str], "annotation_type": str, "license": str | null, "download_url": str | null, "creation_year": int | null, "creating_org": str | null, "splits": {"train": str, "val": str, "test": str} | null}
-
-  For node_type = "benchmark":
-    {"task": str, "metrics": [str], "dataset_used": str | null, "leaderboard_url": str | null, "num_submissions": str | null}
-
-  For node_type = "lab":
-    {"affiliation": str, "location": str | null, "research_areas": [str], "key_researchers": [str], "notable_outputs": [str]}
-
-Rules:
-1. Base ALL content on the provided evidence. Do NOT hallucinate facts, paper titles, or numbers.
-2. If information is insufficient for a field, use null or omit optional sections rather than guessing.
-3. short_intro_md and detailed_md should be in Chinese. structured_json field values should be in English for interoperability.
-4. For method profiles, clearly distinguish what is novel vs. what is borrowed from prior work.
-5. Cross-reference connected papers when describing relationships — use paper titles, not vague references.
-6. The detailed_md should be 500-1500 characters. Don't pad with filler.
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "NodeProfile",
-            "item_type": "node_profile",
-            "phase": "profile",
-        },
-        "edge_profile": {
-            "system": """You are a knowledge graph edge profile generation agent. You generate contextual descriptions for relationships between entities in the knowledge graph.
-
-Given the source node, target node, relation type, and supporting evidence snippets, generate an EdgeProfile JSON object.
-
-Output a single JSON object with these fields:
+Output a single JSON object with TWO top-level keys: "node_profiles" and "edge_profiles".
 
 {
-  "one_liner": str,
-  "relation_summary": str,
-  "source_context": str,
-  "target_context": str,
-  "evidence_refs": [{"claim": str, "source_paper": str, "section": str, "confidence": float}]
+  "node_profiles": [
+    {
+      "node_name": str,
+      "one_liner": str — single sentence (40-80 chars) capturing the entity's essence,
+      "short_intro_md": str — 2-3 paragraphs in Chinese Markdown,
+      "detailed_md": str — wiki page in Chinese with sections: 概述, 核心特点, 技术细节, 相关工作, 应用场景,
+      "structured_json": dict — type-dependent fields (see below),
+      "evidence_refs": [{"claim": str, "source_paper": str, "confidence": float}]
+    }
+  ],
+  "edge_profiles": [
+    {
+      "source_ref": str,
+      "target_ref": str,
+      "relation_type": str,
+      "one_liner": str — contextual sentence in Chinese (e.g., "本文以 GRPO 为 baseline，修改了 reward design"),
+      "relation_summary": str — 2-3 sentences (Chinese) explaining WHY connected,
+      "source_context": str — from source perspective (Chinese),
+      "target_context": str — from target perspective (Chinese),
+      "evidence_refs": [{"claim": str, "source_paper": str, "confidence": float}]
+    }
+  ]
 }
 
-Field definitions:
-- one_liner: A contextual single sentence (Chinese) explaining this specific connection. NOT a generic description of the relation type. Examples:
-  - Good: "本文以 GRPO 为 RL baseline，主要修改了 reward design 部分"
-  - Good: "DeepSeek-R1 在 MATH-500 上评测，准确率达到 97.3%"
-  - Bad: "这两个节点有关系" (too vague)
-  - Bad: "Method A uses Dataset B" (not contextual enough)
-
-- relation_summary: 2-3 sentences (Chinese) explaining WHY these two nodes are connected. What is the nature of their relationship? What evidence establishes it? Include specifics — which paper, which experiment, which section.
-
-- source_context: From the source node's perspective (Chinese), what does this connection mean? E.g., for a method->dataset edge: "该方法的主要评测场景之一，在实验部分 Table 3 中报告了结果".
-
-- target_context: From the target node's perspective (Chinese), what does this connection mean? E.g., for the same edge from dataset's perspective: "该数据集被用作 XX 方法的评测基准，结果显示在该数据集上取得了 SOTA".
+structured_json by node_type:
+  task: {"input_modalities": [str], "output_modalities": [str], "evaluation_metrics": [str], "representative_benchmarks": [str]}
+  method: {"architecture_type": str, "training_paradigm": str, "key_components": [str], "parent_method": str|null, "year_introduced": int|null}
+  mechanism: {"mechanism_category": str, "applicable_to": [str], "key_formula": str|null, "advantages": [str], "limitations": [str]}
+  dataset: {"domain": str, "size": str, "modalities": [str], "annotation_type": str}
+  benchmark: {"task": str, "metrics": [str], "dataset_used": str|null}
 
 Rules:
-1. Be specific and contextual — every edge profile should reference the actual paper(s) and evidence that establish this connection.
-2. Do NOT write generic descriptions that could apply to any edge of the same type.
-3. one_liner should be immediately useful in a knowledge graph UI — a user hovering over an edge should understand the relationship.
-4. All text fields should be in Chinese.
-5. If evidence is thin (only 1 mention, low confidence), acknowledge this in relation_summary rather than overstating the connection.
-6. For lineage edges (builds_on, extends, replaces), emphasize what specifically changed between the two methods.
+1. Base ALL content on provided evidence. Do NOT hallucinate facts or paper titles.
+2. Use null for insufficient information rather than guessing.
+3. short_intro_md and detailed_md in Chinese; structured_json values in English.
+4. Edge one_liners must be contextual, not generic (no "这两个有关系").
+5. detailed_md: 500-1500 chars. Don't pad with filler.
+6. Match node_name / source_ref / target_ref exactly to the input candidate names.
 
 Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "EdgeProfile",
-            "item_type": "edge_profile",
+            "output_schema": "KBProfiles",
+            "item_type": "kb_profiles",
             "phase": "profile",
         },
 
@@ -662,74 +370,7 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
             "item_type": "paper_report",
             "phase": "report",
         },
-        "quality_audit": {
-            "system": """You are a quality audit agent. You review all extracted analysis artifacts for a paper and identify issues, inconsistencies, and gaps that need human review.
-
-Given the complete set of extractions (PaperEssence, MethodDelta, ExperimentMatrix, FormulaFigureAnalysis, GraphCandidates, NodeProfiles, EdgeProfiles) for a paper, produce a QualityAudit JSON object.
-
-Output a single JSON object with these fields:
-
-{
-  "issues": [
-    {
-      "issue_type": "missing_evidence" | "low_confidence_edge" | "metadata_conflict" | "duplicate_node" | "orphan_node" | "unsupported_claim" | "inconsistent_numbers" | "missing_ablation",
-      "entity_type": str,
-      "entity_id": str | null,
-      "description": str,
-      "severity": "low" | "medium" | "high",
-      "suggested_action": str
-    }
-  ],
-  "overall_quality_score": int,
-  "review_items_needed": [
-    {
-      "item_type": str,
-      "entity_type": str,
-      "entity_id": str | null,
-      "reason": str
-    }
-  ]
-}
-
-Field definitions:
-- issue_type categories:
-  - "missing_evidence": A claim or extraction lacks supporting evidence refs.
-  - "low_confidence_edge": A graph edge candidate has confidence < 0.6.
-  - "metadata_conflict": Paper metadata (title, year, venue) conflicts between sources.
-  - "duplicate_node": Two node candidates appear to refer to the same entity.
-  - "orphan_node": A node candidate has no edges connecting it to the rest of the graph.
-  - "unsupported_claim": The paper claims something (e.g., SOTA) but the extracted evidence doesn't support it.
-  - "inconsistent_numbers": Numbers in ExperimentMatrix don't match across sections (e.g., abstract says +5% but table shows +3%).
-  - "missing_ablation": A key claimed contribution is not validated by any ablation.
-
-- entity_type: The type of entity this issue relates to (e.g., "method_delta", "experiment", "graph_node", "graph_edge", "formula", "paper_essence").
-- entity_id: Identifier for the specific entity, if applicable. Can be a name, index, or UUID string.
-- severity: "high" = blocks trust in the extraction, needs immediate review. "medium" = should be reviewed but doesn't invalidate other extractions. "low" = minor issue, can be deferred.
-- suggested_action: What should be done to resolve this issue (e.g., "Re-extract experiment table with higher attention to Table 3", "Merge duplicate nodes 'BERT' and 'BERT-base'", "Add ablation for claimed component X").
-
-- overall_quality_score: 0-100 composite score.
-  - 90-100: All extractions are consistent, well-evidenced, and complete.
-  - 70-89: Minor issues but overall reliable.
-  - 50-69: Significant gaps or inconsistencies; partial re-extraction recommended.
-  - 0-49: Major issues; full re-extraction recommended.
-
-- review_items_needed: List of specific items that need human review before the extractions can be trusted.
-  - item_type: The kind of review needed (e.g., "verify_number", "resolve_duplicate", "confirm_novelty", "check_metadata", "validate_lineage").
-
-Rules:
-1. Cross-check numbers between PaperEssence claims and ExperimentMatrix data.
-2. Verify that every edge candidate has at least one evidence_ref with confidence >= 0.5.
-3. Check that method slot changes in MethodDelta are reflected in the formulas from FormulaFigureAnalysis.
-4. Flag any node candidate that doesn't connect to at least one edge candidate.
-5. Flag cases where the paper claims SOTA but the extracted numbers show otherwise.
-6. Be thorough but not pedantic — don't flag every minor formatting issue.
-7. overall_quality_score should reflect the TRUSTWORTHINESS of the extractions, not the quality of the paper itself.
-
-Output ONLY valid JSON, no markdown fences, no commentary.""",
-            "output_schema": "QualityAudit",
-            "item_type": "quality_audit",
-            "phase": "audit",
-        },
+        # quality_audit — removed (Phase 2E), replaced by deterministic validation
     }
 
     def __init__(self, session: AsyncSession, llm_service=None):
@@ -948,6 +589,7 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
     def _estimate_cost_from_response(resp) -> float:
         """Estimate cost from LLMResponse (mirrors llm_service._estimate_cost)."""
         costs = {
+            "kimi-k2.6": (1.0 / 1_000_000, 4.0 / 1_000_000),
             "so-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
             "claude-haiku-4.5": (0.80 / 1_000_000, 4.0 / 1_000_000),
             "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),

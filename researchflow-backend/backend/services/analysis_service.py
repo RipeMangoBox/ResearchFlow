@@ -1,20 +1,24 @@
-"""Analysis service — L3 skim and L4 deep analysis using LLM.
+"""Analysis service — L3 skim using LLM.
 
-L3 skim: lightweight card from title + abstract + key sections (~2K tokens)
-L4 deep: full analysis from complete text (~10-20K tokens)
+L3 skim: lightweight card from title + abstract + key sections (~2K tokens).
+L4 deep analysis has been moved to ingest_workflow.py (V6 agent pipeline).
 
-Both produce structured output: problem/method/evidence summaries,
-changed_slots, delta card, confidence_notes.
+Retained utilities:
+  - skim_paper() / skim_batch() — L3 skim
+  - _maybe_create_bottleneck() — auto-create bottleneck from analysis data
+  - assign_paradigm() — re-exported for convenience
+  - _gather_text() / _parse_json_safe() — helpers (moved from deleted analysis_steps.py)
 """
 
 import json
 import logging
+import re
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.analysis import MethodDelta, PaperAnalysis
+from backend.models.analysis import PaperAnalysis
 from backend.models.enums import AnalysisLevel, PaperState
 from backend.models.paper import Paper
 from backend.services.llm_service import call_llm
@@ -53,91 +57,6 @@ Category: {category}
 
 Return ONLY valid JSON, no markdown fences."""
 
-L4_SYSTEM = """You are a senior research analyst producing deep, critical paper analysis.
-
-Your analysis must:
-1. Align findings to the domain's canonical paradigm — specify which slots changed
-2. DISTINGUISH STORY FROM SUBSTANCE: what the paper claims in abstract/intro vs what experiments actually prove
-3. VERIFY BASELINES: are they the strongest available? Are comparisons fair? Are any strong baselines suspiciously absent?
-4. Extract atomic evidence units with source anchors — distinguish code-verified from text-stated from inferred
-5. Assess cross-domain transferability
-6. For surveys/benchmarks/theoretical papers: adapt analysis — don't force method/slot analysis on non-method papers
-
-CRITICAL: Do not take the paper's self-assessment at face value. Cross-check claims against tables/figures. Flag if:
-- Abstract claims improvement X% but tables show it's only on subset
-- Baselines are from 2+ years ago when stronger recent ones exist
-- Ablations don't isolate the claimed contribution
-- The 'structural change' is actually just adding a module
-
-Output in Chinese. Be rigorous about evidence quality."""
-
-L4_PROMPT_TEMPLATE = """Produce a comprehensive analysis of this paper in JSON format:
-
-{{
-  "problem_summary": "Part I: 问题与挑战 (detailed, 200-400 words)",
-  "method_summary": "Part II: 方法与洞察 (detailed, 400-600 words)",
-  "evidence_summary": "Part III: 证据与局限 (detailed, 200-400 words)",
-  "core_intuition": "核心直觉 — 什么变了，为什么有效 (100-200 words)",
-  "changed_slots": ["slot1", "slot2"],
-  "is_plugin_patch": false,
-  "worth_deep_read": true,
-  "method_category": "ONE of: structural_architecture | plugin_module | reward_design | training_recipe | data_augmentation | inference_optimization | loss_function | representation_change | evaluation_method | theoretical_analysis",
-  "improvement_type": "ONE of: fundamental_rethink | component_replacement | additive_plugin | hyperparameter_trick | data_scaling | combination_of_existing",
-  "bottleneck_addressed": {{
-    "title": "The core bottleneck/limitation this paper addresses (1 sentence)",
-    "description": "Why this bottleneck matters and what makes it hard (2-3 sentences)",
-    "is_fundamental": true/false
-  }},
-  "structurality_score": 0.0-1.0,
-  "extensionability_score": 0.0-1.0,
-  "transferability_score": 0.0-1.0,
-  "delta_card": {{
-    "paradigm": "inferred standard paradigm name",
-    "slots": {{
-      "slot_name": {{"changed": true/false, "from": "old", "to": "new", "change_type": "structural|plugin"}}
-    }},
-    "is_structural": true/false,
-    "primary_gain_source": "which slot contributes most to improvement"
-  }},
-  "evidence_units": [
-    {{
-      "atom_type": "mechanism|evidence|boundary|transfer",
-      "claim": "specific claim",
-      "confidence": 0.0-1.0,
-      "basis": "code_verified|experiment_backed|text_stated|inferred|speculative",
-      "source_section": "e.g. Table 3, Section 4.2",
-      "conditions": "under what conditions this holds",
-      "failure_modes": "known failure cases"
-    }}
-  ],
-  "key_equations": [
-    {{"latex": "LaTeX formula string (use standard LaTeX notation)", "slot_affected": "which component this equation defines", "explanation": "why this equation is important (1 sentence, Chinese)"}}
-  ],
-  "key_figures": [
-    {{"fig_ref": "Table 2 / Figure 3 / Algorithm 1", "caption": "what this figure shows", "evidence_for": "which claim this figure supports (1 sentence, Chinese)"}}
-  ],
-  "paper_type": "ONE of: method | survey | benchmark | position | theoretical | dataset",
-  "narrative_vs_substance": "Does abstract/intro match experimental results? Note discrepancies (1-2 sentences, Chinese)",
-  "baseline_paper_titles": ["list of paper titles this work directly builds on or compares against"],
-  "baseline_fairness": "Are baselines the strongest available? Any strong methods suspiciously absent? (1-2 sentences, Chinese)",
-  "same_family_method": "name of the broader method family this belongs to (e.g. direct_preference_optimization, group_relative_reward, constitutional_ai)",
-  "confidence_notes": [
-    {{"claim": "...", "confidence": 0.0-1.0, "basis": "...", "reasoning": "..."}}
-  ]
-}}
-
-Paper title: {title}
-Venue: {venue} {year}
-Category: {category}
-Tags: {tags}
-Core operator: {core_operator}
-Primary logic: {primary_logic}
-
-Full text (extracted sections):
-{text_content}
-
-Return ONLY valid JSON, no markdown fences."""
-
 
 # ── L3 Skim ─────────────────────────────────────────────────────
 
@@ -150,11 +69,6 @@ async def skim_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | N
     if not paper:
         return None
 
-    # Gather text: abstract + key L2 sections
-    text_parts = []
-    if paper.abstract:
-        text_parts.append(f"Abstract:\n{paper.abstract}")
-
     # Get L2 parse if available
     l2_result = await session.execute(
         select(PaperAnalysis).where(
@@ -164,15 +78,9 @@ async def skim_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | N
         )
     )
     l2 = l2_result.scalar_one_or_none()
-    if l2 and l2.extracted_sections:
-        for key in ("introduction", "method", "conclusion", "abstract"):
-            if key in l2.extracted_sections:
-                text_parts.append(f"\n{key.title()}:\n{l2.extracted_sections[key][:2000]}")
 
-    if not text_parts and not paper.abstract:
-        text_parts.append(f"Title only: {paper.title}")
-
-    text_content = "\n\n".join(text_parts)
+    # Gather text: abstract + key L2 sections
+    text_content = _gather_text(paper, l2) or f"Title only: {paper.title}"
 
     # Call LLM
     prompt = L3_PROMPT_TEMPLATE.format(
@@ -241,207 +149,19 @@ async def skim_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | N
     return analysis
 
 
-# ── L4 Deep (6-step pipeline) ──────────────────────────────────
-
-async def deep_analyze_paper(session: AsyncSession, paper_id: UUID) -> PaperAnalysis | None:
-    """Run L4 deep analysis — 6-step pipeline with independent retry.
-
-    Pipeline:
-      Step 1: extract_evidence  (equations/figures/evidence_spans)
-      Step 2: build_delta_card  (baseline/slots/mechanisms/bottleneck)
-      Step 3: build_compare_set (auto-fill comparison set from DB)
-      Step 4: propose_lineage   (builds_on/extends/replaces)
-      Step 5: synthesize_concept(multi-paper → update Concept)
-      Step 6: reconcile_neighbors(reverse-update old papers)
-
-    Defense lines:
-      #1 Step 1 reads method/experiments FIRST, then cross-checks abstract.
-      #2 Step 3 auto-fills comparison set from DB, not just paper self-report.
-      #3 High-value claims require ≥2 evidence refs (enforced by publish gate).
-    """
-    from backend.services.analysis_steps import (
-        _gather_text,
-        merge_step_outputs,
-        run_step1_extract_evidence,
-        run_step2_build_delta,
-    )
-
-    paper = await session.get(Paper, paper_id)
-    if not paper:
-        return None
-
-    # ── Gather text from L2 parse ─────────────────────────────
-    l2_result = await session.execute(
-        select(PaperAnalysis).where(
-            PaperAnalysis.paper_id == paper_id,
-            PaperAnalysis.level == AnalysisLevel.L2_PARSE,
-            PaperAnalysis.is_current.is_(True),
-        )
-    )
-    l2 = l2_result.scalar_one_or_none()
-    text_content = _gather_text(paper, l2)
-
-    # ── Step 1: Extract evidence ──────────────────────────────
-    logger.info(f"[L4 Step 1/6] extract_evidence for {paper_id}")
-    step1_data = await run_step1_extract_evidence(session, paper, text_content)
-
-    # ── Step 2: Build delta card ──────────────────────────────
-    logger.info(f"[L4 Step 2/6] build_delta for {paper_id}")
-    step2_data = await run_step2_build_delta(session, paper, text_content, step1_data)
-
-    # Merge into unified analysis_data (backward-compatible shape)
-    analysis_data = merge_step_outputs(step1_data, step2_data)
-
-    # ── Confidence based on input quality ─────────────────────
-    input_length = len(text_content)
-    if input_length < 500:
-        analysis_data["_input_quality"] = "title_only"
-        analysis_confidence = 0.3
-    elif input_length < 2000:
-        analysis_data["_input_quality"] = "abstract_only"
-        analysis_confidence = 0.5
-    else:
-        analysis_data["_input_quality"] = "full_text"
-        analysis_confidence = 0.8
-
-    # ── Supersede old L4 ──────────────────────────────────────
-    old_l4 = await session.execute(
-        select(PaperAnalysis).where(
-            PaperAnalysis.paper_id == paper_id,
-            PaperAnalysis.level == AnalysisLevel.L4_DEEP,
-            PaperAnalysis.is_current.is_(True),
-        )
-    )
-    old = old_l4.scalar_one_or_none()
-    if old:
-        old.is_current = False
-
-    # ── Build report and persist PaperAnalysis ────────────────
-    full_report = _build_report_md(paper, analysis_data)
-
-    model_provider = analysis_data.get("_model_provider", "unknown")
-    model_name = analysis_data.get("_model_name", "unknown")
-
-    analysis = PaperAnalysis(
-        paper_id=paper_id,
-        level=AnalysisLevel.L4_DEEP,
-        model_provider=model_provider,
-        model_name=model_name,
-        prompt_version="l4_step_v1",
-        schema_version="v2",
-        confidence=analysis_confidence,
-        problem_summary=analysis_data.get("problem_summary"),
-        method_summary=analysis_data.get("method_summary"),
-        evidence_summary=analysis_data.get("evidence_summary"),
-        core_intuition=analysis_data.get("core_intuition"),
-        changed_slots=analysis_data.get("changed_slots"),
-        is_plugin_patch=analysis_data.get("is_plugin_patch"),
-        worth_deep_read=analysis_data.get("worth_deep_read"),
-        full_report_md=full_report,
-        confidence_notes=analysis_data.get("confidence_notes"),
-        evidence_spans=analysis_data.get("evidence_units"),
-        is_current=True,
-    )
-    session.add(analysis)
-
-    # Legacy MethodDelta (backward compat)
-    delta_data = analysis_data.get("delta_card")
-    if delta_data and isinstance(delta_data, dict):
-        delta = MethodDelta(
-            paper_id=paper_id,
-            analysis_id=None,
-            paradigm_name=delta_data.get("paradigm", "unknown"),
-            slots=delta_data.get("slots", {}),
-            is_structural=delta_data.get("is_structural"),
-            primary_gain_source=delta_data.get("primary_gain_source"),
-        )
-        session.add(delta)
-
-    # Update state + tags
-    if paper.state != PaperState.CHECKED:
-        paper.state = PaperState.L4_DEEP
-
-    method_cat = analysis_data.get("method_category")
-    improvement_type = analysis_data.get("improvement_type")
-    new_tags = list(paper.tags or [])
-    if method_cat and f"method/{method_cat}" not in new_tags:
-        new_tags.append(f"method/{method_cat}")
-    if improvement_type and f"improvement/{improvement_type}" not in new_tags:
-        new_tags.append(f"improvement/{improvement_type}")
-    if new_tags != list(paper.tags or []):
-        paper.tags = new_tags
-
-    await session.flush()
-    await session.refresh(analysis)
-
-    # ── Auto-create bottleneck from LLM output ────────────────
-    bottleneck_id = await _maybe_create_bottleneck(session, paper, analysis_data)
-
-    # ── Graph pipeline (DeltaCard → IdeaDelta → Assertions) ───
-    await _build_idea_graph(session, paper, analysis, analysis_data, bottleneck_id=bottleneck_id)
-    # Refresh paper to pick up current_delta_card_id set inside _build_idea_graph
-    await session.refresh(paper)
-
-    # ── Steps 3-6: each wrapped with session recovery ─────────
-    # If any step throws a DB error the session enters failed state.
-    # We must rollback and re-fetch the paper to recover before the next step.
-
-    async def _safe_step(step_num: int, step_name: str, coro):
-        """Run a pipeline step with session recovery on failure."""
-        nonlocal paper
-        logger.info(f"[L4 Step {step_num}/6] {step_name} for {paper_id}")
-        try:
-            await coro
-        except Exception as e:
-            logger.warning(f"Step {step_num} ({step_name}) failed for {paper.id}: {e}")
-            await session.rollback()
-            # Re-fetch paper to reset session state after rollback
-            paper = await session.get(Paper, paper_id)
-
-    # ── Step 3: Build comparison set (defense line #2) ────────
-    from backend.services.baseline_comparator_service import build_compare_set
-    await _safe_step(3, "compare_set", build_compare_set(session, paper.id, analysis_data))
-
-    # ── Step 4: Propose lineage ───────────────────────────────
-    from backend.services.evolution_service import link_to_parent_baselines
-    if paper.current_delta_card_id:
-        await _safe_step(4, "lineage", link_to_parent_baselines(session, paper.current_delta_card_id, analysis_data))
-    else:
-        logger.info(f"[L4 Step 4/6] lineage skipped for {paper_id} (no delta card)")
-
-    # ── Step 5: Synthesize concepts ───────────────────────────
-    from backend.services.concept_synthesizer_service import synthesize_concepts
-    await _safe_step(5, "concept", synthesize_concepts(session, paper.id, analysis_data))
-
-    # ── Step 6: Reconcile neighbors ───────────────────────────
-    from backend.services.incremental_reconciler_service import reconcile_neighbors
-    await _safe_step(6, "reconcile", reconcile_neighbors(session, paper.id, analysis_data))
-
-    # ── Auto-export to paperAnalysis/ Markdown ────────────────
-    try:
-        from backend.services.export_service import export_paper_analysis
-        await export_paper_analysis(session, paper.id)
-    except Exception as e:
-        logger.warning(f"Auto-export to paperAnalysis/ failed for {paper.id}: {e}")
-        await session.rollback()
-        paper = await session.get(Paper, paper_id)
-
-    logger.info(f"[L4 complete] 6-step pipeline done for {paper_id}")
-    return analysis
-
+# ── Bottleneck creation ─────────────────────────────────────────
 
 async def _maybe_create_bottleneck(
     session: AsyncSession,
     paper: Paper,
     analysis_data: dict,
 ) -> UUID | None:
-    """Auto-create a ProjectBottleneck + PaperBottleneckClaim from L4 output."""
+    """Auto-create a ProjectBottleneck + PaperBottleneckClaim from analysis output."""
     bn_data = analysis_data.get("bottleneck_addressed")
     if not bn_data or not isinstance(bn_data, dict) or not bn_data.get("title"):
         return None
 
     from backend.models.research import ProjectBottleneck, PaperBottleneckClaim
-    from sqlalchemy import func
 
     # Dedup: check if similar bottleneck already exists
     existing = await session.execute(
@@ -451,13 +171,11 @@ async def _maybe_create_bottleneck(
     )
     bn = existing.scalar_one_or_none()
     if bn:
-        # Link this paper to existing bottleneck
         if bn.related_paper_ids and paper.id not in bn.related_paper_ids:
             bn.related_paper_ids = list(bn.related_paper_ids) + [paper.id]
         elif not bn.related_paper_ids:
             bn.related_paper_ids = [paper.id]
     else:
-        # Create new bottleneck in global ontology
         bn = ProjectBottleneck(
             title=bn_data["title"],
             description=bn_data.get("description", ""),
@@ -469,7 +187,6 @@ async def _maybe_create_bottleneck(
         await session.flush()
         logger.info(f"Auto-created bottleneck: {bn.title} (paper={paper.id})")
 
-    # Always create a paper-level claim (paper says it solves this)
     claim = PaperBottleneckClaim(
         paper_id=paper.id,
         bottleneck_id=bn.id,
@@ -484,98 +201,12 @@ async def _maybe_create_bottleneck(
     return bn.id
 
 
-async def _build_idea_graph(
-    session: AsyncSession,
-    paper: Paper,
-    analysis: PaperAnalysis,
-    analysis_data: dict,
-    bottleneck_id: UUID | None = None,
-) -> None:
-    """Post-L4 hook: build DeltaCard → IdeaDelta → Assertions.
+# ── Paradigm assignment (re-export) ─────────────────────────────
 
-    Pipeline: frame_assign → delta_card_build → evidence → idea_derive → assert → publish
-    DeltaCard is the intermediate truth layer; IdeaDelta is derived from it.
-    """
-    from backend.services.frame_assign_service import assign_paradigm
-    from backend.services.delta_card_service import run_delta_card_pipeline
-
-    try:
-        # 1. Frame assign (with LLM fallback for unknown domains)
-        paradigm, slots = await assign_paradigm(
-            session, paper.category, paper.tags,
-            title=paper.title, abstract=paper.abstract,
-        )
-
-        # 2. Extract changed_slots in graph format
-        delta_card_data = analysis_data.get("delta_card") or {}
-        changed_slots_graph = []
-        raw_slots = analysis_data.get("changed_slots") or []
-        # Build a lookup from delta_card.slots for change_type enrichment
-        dc_slot_info = {}
-        if isinstance(delta_card_data, dict) and "slots" in delta_card_data:
-            for name, info in delta_card_data["slots"].items():
-                if isinstance(info, dict):
-                    dc_slot_info[name] = info
-
-        if isinstance(raw_slots, list) and raw_slots:
-            for s in raw_slots:
-                if isinstance(s, str):
-                    info = dc_slot_info.get(s, {})
-                    changed_slots_graph.append({
-                        "slot_name": s,
-                        "from": info.get("from"),
-                        "to": info.get("to"),
-                        "change_type": info.get("change_type", "structural" if analysis_data.get("structurality_score", 0) >= 0.5 else "plugin"),
-                    })
-                elif isinstance(s, dict):
-                    changed_slots_graph.append(s)
-        elif isinstance(delta_card_data, dict) and "slots" in delta_card_data:
-            for name, info in delta_card_data["slots"].items():
-                if isinstance(info, dict) and info.get("changed"):
-                    changed_slots_graph.append({
-                        "slot_name": name,
-                        "from": info.get("from"),
-                        "to": info.get("to"),
-                        "change_type": info.get("change_type", "unknown"),
-                    })
-
-        # 3. Run full DeltaCard pipeline
-        result = await run_delta_card_pipeline(
-            session,
-            paper_id=paper.id,
-            analysis_id=analysis.id,
-            analysis_data=analysis_data,
-            paradigm_id=paradigm.id if paradigm else None,
-            paradigm_name=paradigm.name if paradigm else None,
-            slots=[{"id": s["id"], "name": s["name"]} for s in slots] if slots else None,
-            changed_slots_graph=changed_slots_graph if changed_slots_graph else None,
-            bottleneck_id=bottleneck_id,
-            model_provider=analysis.model_provider,
-            model_name=analysis.model_name,
-        )
-
-        dc = result["delta_card"]
-        idea = result["idea_delta"]
-
-        # Propagate L4-derived scores back to paper (more accurate than triage heuristics)
-        if dc.structurality_score is not None:
-            paper.structurality_score = dc.structurality_score
-        if dc.extensionability_score is not None:
-            paper.extensionability_score = dc.extensionability_score
-
-        logger.info(
-            f"Graph built for paper {paper.id}: "
-            f"DeltaCard={dc.id}({dc.status}), "
-            f"IdeaDelta={idea.id}({idea.publish_status}), "
-            f"evidence={len(result['evidence_units'])}, "
-            f"assertions={len(result['assertions'])}"
-        )
-
-    except Exception as e:
-        logger.error(f"Graph pipeline error for paper {paper.id}: {e}", exc_info=True)
-        await session.rollback()
-        # Re-fetch paper after rollback to avoid stale session state
-        paper = await session.get(Paper, paper.id)
+async def assign_paradigm(session, category, tags, *, title=None, abstract=None):
+    """Re-export from frame_assign_service for convenience."""
+    from backend.services.frame_assign_service import assign_paradigm as _assign
+    return await _assign(session, category, tags, title=title, abstract=abstract)
 
 
 # ── Batch operations ────────────────────────────────────────────
@@ -616,35 +247,110 @@ async def skim_batch(session: AsyncSession, limit: int = 5) -> list[dict]:
     return results
 
 
-# ── Helpers ─────────────────────────────────────────────────────
+# ── Helpers (moved from deleted analysis_steps.py) ──────────────
+
+def _gather_text(paper: Paper, l2: PaperAnalysis | None) -> str:
+    """Gather paper text from abstract + L2 extracted sections."""
+    parts = []
+    if paper.abstract:
+        parts.append(f"Abstract:\n{paper.abstract}")
+    if l2 and l2.extracted_sections:
+        for key, val in l2.extracted_sections.items():
+            if key != "references":
+                parts.append(f"\n## {key.title()}\n{val}")
+    return "\n\n".join(parts)
+
+
+def _parse_json_safe(text: str) -> dict:
+    """Parse JSON from LLM response, tolerating markdown fences and truncation."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines)
+
+    # 1. Direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Extract JSON object between first { and last }
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            result = json.loads(text[start:end])
+            if isinstance(result, dict) and len(result) >= 3:
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Brute-force repair for truncated JSON
+    if start >= 0:
+        fragment = text[start:]
+        result = _repair_truncated_json(fragment)
+        if result is not None:
+            logger.info(f"JSON repaired from truncated response (len={len(text)})")
+            return result
+
+    logger.error(f"JSON parse failed (len={len(text)}): {text[:300]}")
+    return {}
+
+
+def _repair_truncated_json(text: str) -> dict | None:
+    """Brute-force repair of truncated JSON by trying bracket closures."""
+    candidates = set()
+
+    for m in re.finditer(r',\s*\n\s*"', text):
+        candidates.add(m.start())
+    for m in re.finditer(r',\s*"', text):
+        candidates.add(m.start())
+    for m in re.finditer(r'[}\]]\s*,', text):
+        candidates.add(m.end())
+    for m in re.finditer(r'"\s*,', text):
+        candidates.add(m.end() - 1)
+    for m in re.finditer(r'(?:true|false|null|\d)\s*,', text):
+        candidates.add(m.end() - 1)
+    candidates.add(len(text))
+
+    for pos in sorted(candidates, reverse=True):
+        prefix = text[:pos].rstrip().rstrip(",")
+        opens = prefix.count("{") - prefix.count("}")
+        open_sq = prefix.count("[") - prefix.count("]")
+        if opens < 0 or open_sq < 0:
+            continue
+        for suffix in [
+            "]" * open_sq + "}" * opens,
+            '"' + "]" * open_sq + "}" * opens,
+            '"}' + "]" * max(0, open_sq) + "}" * max(0, opens - 1),
+        ]:
+            attempt = prefix + suffix
+            try:
+                result = json.loads(attempt)
+                if isinstance(result, dict) and len(result) > 0:
+                    return result
+            except json.JSONDecodeError:
+                continue
+    return None
+
 
 def _parse_json_response(text: str, required_fields: list[str] | None = None) -> dict:
-    """Parse JSON from LLM response with validation.
-
-    Handles: markdown fences, leading/trailing text, truncated JSON.
-    Validates: required fields present and non-None.
-    """
-    # Reuse the robust parser from analysis_steps
-    from backend.services.analysis_steps import _parse_json_safe
+    """Parse JSON from LLM response with validation."""
     parsed = _parse_json_safe(text)
-
     if not parsed:
-        logger.error(f"FAILED to parse LLM JSON (total failure): {text[:300]}")
+        logger.error(f"FAILED to parse LLM JSON: {text[:300]}")
         return {}
-
-    # Validate required fields (use `is None`, not `not` — empty list is valid)
     if required_fields:
         missing = [f for f in required_fields if parsed.get(f) is None]
         if missing:
-            logger.warning(f"LLM JSON missing required fields: {missing}. Available keys: {list(parsed.keys())}")
-
+            logger.warning(f"LLM JSON missing required fields: {missing}")
     return parsed
 
 
 def _build_report_md(paper: Paper, data: dict) -> str:
     """Build a Markdown report from analysis data."""
     parts = [f"# {paper.title}\n"]
-
     if data.get("problem_summary"):
         parts.append(f"## Part I：问题与挑战\n\n{data['problem_summary']}\n")
     if data.get("method_summary"):
@@ -653,5 +359,4 @@ def _build_report_md(paper: Paper, data: dict) -> str:
         parts.append(f"### 核心直觉\n\n{data['core_intuition']}\n")
     if data.get("evidence_summary"):
         parts.append(f"## Part III：证据与局限\n\n{data['evidence_summary']}\n")
-
     return "\n".join(parts)

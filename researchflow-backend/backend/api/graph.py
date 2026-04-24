@@ -143,11 +143,11 @@ async def list_mechanisms(
 ):
     """List mechanism families, optionally filtered by domain."""
     from sqlalchemy import select
-    from backend.models.graph import MechanismFamily
+    from backend.models.method import MethodNode
 
-    stmt = select(MechanismFamily).order_by(MechanismFamily.domain, MechanismFamily.name)
+    stmt = select(MethodNode).order_by(MethodNode.domain, MethodNode.name)
     if domain:
-        stmt = stmt.where(MechanismFamily.domain == domain)
+        stmt = stmt.where(MethodNode.domain == domain)
     result = await session.execute(stmt)
     return [
         {"id": str(m.id), "name": m.name, "domain": m.domain, "description": m.description}
@@ -259,7 +259,7 @@ async def get_graph_vis_data(
     # Nodes: papers with delta cards
     paper_rows = (await session.execute(text("""
         SELECT p.id, p.title, p.venue, p.year, p.category,
-               p.mechanism_family, p.structurality_score,
+               p.method_family, p.structurality_score,
                dc.baseline_paradigm
         FROM papers p
         LEFT JOIN delta_cards dc ON dc.id = p.current_delta_card_id
@@ -287,12 +287,12 @@ async def get_graph_vis_data(
         })
 
         # Connect to mechanism
-        if p.mechanism_family:
-            mech_id = f"mechanism:{p.mechanism_family}"
+        if p.method_family:
+            mech_id = f"mechanism:{p.method_family}"
             if mech_id not in node_ids:
                 node_ids.add(mech_id)
                 nodes.append({
-                    "id": mech_id, "label": p.mechanism_family,
+                    "id": mech_id, "label": p.method_family,
                     "group": "mechanism", "size": 18,
                 })
             edges.append({"from": nid, "to": mech_id, "label": "uses", "dashes": True})

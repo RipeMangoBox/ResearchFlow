@@ -12,10 +12,11 @@ concept-aware reconciliation.
 import logging
 from uuid import UUID
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.delta_card import DeltaCard
+from backend.models.lineage import DeltaCardLineage
 from backend.models.paper import Paper
 
 logger = logging.getLogger(__name__)
@@ -54,11 +55,11 @@ async def reconcile_neighbors(
     if paper.current_delta_card_id:
         dc = await session.get(DeltaCard, paper.current_delta_card_id)
 
-    if dc and dc.mechanism_family_ids:
+    if dc and dc.method_node_ids:
         # Find all DeltaCards sharing mechanism families
         neighbors = await session.execute(
             select(DeltaCard).where(
-                DeltaCard.mechanism_family_ids.overlap(dc.mechanism_family_ids),
+                DeltaCard.method_node_ids.overlap(dc.method_node_ids),
                 DeltaCard.paper_id != paper_id,
                 DeltaCard.status != "deprecated",
             ).limit(30)
@@ -72,14 +73,14 @@ async def reconcile_neighbors(
 
     # ── Step 3: Check baseline candidacy ──────────────────────────
     if dc and dc.structurality_score and float(dc.structurality_score) >= 0.6:
-        # This is a structural paper — check if it should be a baseline
-        downstream = await session.execute(
-            select(DeltaCard).where(
-                DeltaCard.parent_delta_card_ids.contains([dc.id]),
-                DeltaCard.status != "deprecated",
+        # This is a structural paper — count children via delta_card_lineage table
+        count_result = await session.execute(
+            select(func.count()).select_from(DeltaCardLineage).where(
+                DeltaCardLineage.parent_delta_card_id == dc.id,
+                DeltaCardLineage.status.in_(["candidate", "published"]),
             )
         )
-        downstream_count = len(list(downstream.scalars()))
+        downstream_count = count_result.scalar() or 0
         dc.downstream_count = downstream_count
 
         if downstream_count >= 3 and not dc.is_established_baseline:

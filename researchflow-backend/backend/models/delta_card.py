@@ -47,11 +47,10 @@ class DeltaCard(Base):
     )
     changed_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     unchanged_slot_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
-    mechanism_family_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    method_node_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
 
     # Baseline evolution — DAG inheritance (core of method lineage tracking)
-    # Which existing methods/papers does this paper build on?
-    parent_delta_card_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    # Parent links live in delta_card_lineage table (single source of truth).
     # Which specific papers are used as baselines? (may differ from parent_delta_cards)
     baseline_paper_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
     # Method lineage depth (0 = foundational paradigm, 1 = direct improvement, 2+ = chain)
@@ -97,6 +96,16 @@ class DeltaCard(Base):
         String(20), default="draft"
     )  # draft / published / deprecated
 
+    # ── Fields absorbed from IdeaDelta (Phase 1A refactor) ──
+    # Graph publish status (independent from card status): draft / auto_published / human_verified
+    publish_status: Mapped[str] = mapped_column(String(20), default="draft")
+    evidence_count: Mapped[int] = mapped_column(SmallInteger, default=0)
+    local_keyness_score: Mapped[float | None] = mapped_column(Float)
+    field_keyness_score: Mapped[float | None] = mapped_column(Float)
+    # Structured changed_slots with from/to/change_type (JSONB, richer than changed_slot_ids)
+    changed_slots_json: Mapped[dict | None] = mapped_column(JSONB)
+    is_structural: Mapped[bool | None] = mapped_column(Boolean)
+
     # Provenance (append-only: each card is an immutable snapshot)
     analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     source_asset_hash: Mapped[str | None] = mapped_column(String(64))
@@ -121,4 +130,5 @@ class DeltaCard(Base):
         Index("idx_delta_cards_status", "status"),
         Index("idx_delta_cards_frame", "frame_id"),
         Index("idx_delta_cards_bottleneck", "primary_bottleneck_id"),
+        Index("idx_delta_cards_publish", "publish_status"),
     )

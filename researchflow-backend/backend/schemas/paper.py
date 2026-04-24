@@ -27,7 +27,7 @@ class PaperBase(BaseModel):
     doi: str | None = None
     abstract: str | None = None
     tags: list[str] = Field(default_factory=list)
-    mechanism_family: str | None = None
+    method_family: str | None = None
     core_operator: str | None = None
     primary_logic: str | None = None
 
@@ -53,7 +53,7 @@ class PaperUpdate(BaseModel):
     project_link: str | None = None
     abstract: str | None = None
     tags: list[str] | None = None
-    mechanism_family: str | None = None
+    method_family: str | None = None
     core_operator: str | None = None
     primary_logic: str | None = None
     is_ephemeral: bool | None = None

@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import GraphEdge, IdeaDelta, MechanismFamily, Slot
+from backend.models.graph import GraphEdge, IdeaDelta, Slot
+from backend.models.method import MethodNode
 from backend.models.paper import Paper
 from backend.models.research import ProjectBottleneck
 
@@ -47,7 +48,7 @@ async def _resolve_node_ref(session: AsyncSession, node: GraphNode):
         "idea_deltas": IdeaDelta,
         "evidence_units": EvidenceUnit,
         "slots": Slot,
-        "mechanism_families": MechanismFamily,
+        "method_nodes": MethodNode,
         "project_bottlenecks": ProjectBottleneck,
         "delta_cards": DeltaCard,
     }
@@ -111,7 +112,9 @@ async def query_citations(
                         })
 
     # Fallback: also check legacy graph_edges for unmigrated data
+    # DEPRECATED (Phase 1E): graph_edges will be removed in Phase 4.
     if not results["cites"] and not results["cited_by"]:
+        logger.warning("Falling back to deprecated graph_edges table for citations")
         results = await _citations_fallback(session, paper_id, direction)
 
     return results
@@ -222,7 +225,7 @@ async def query_by_mechanism(
 
     mf = None
     if mechanism_id:
-        mf = await session.get(MechanismFamily, mechanism_id)
+        mf = await session.get(MethodNode, mechanism_id)
     elif mechanism_name:
         # Try exact match, then alias
         from backend.services.entity_resolution_service import resolve_mechanism
@@ -239,13 +242,13 @@ async def query_by_mechanism(
     }
 
     # Primary: graph_assertions
-    mf_node = await _find_node(session, "mechanism_families", mf.id)
+    mf_node = await _find_node(session, "method_nodes", mf.id)
     seen_ids = set()
     if mf_node:
         edges = await session.execute(
             select(GraphAssertion).where(
                 GraphAssertion.to_node_id == mf_node.id,
-                GraphAssertion.edge_type == "instance_of_mechanism",
+                GraphAssertion.edge_type == "instance_of_method",
                 GraphAssertion.status == "published",
             ).limit(limit)
         )
@@ -258,10 +261,10 @@ async def query_by_mechanism(
                     results["idea_deltas"].append(_idea_to_dict(idea, paper))
                     seen_ids.add(idea.id)
 
-    # Fallback: mechanism_family_ids array on IdeaDelta
+    # Fallback: method_node_ids array on IdeaDelta
     ideas_by_array = await session.execute(
         select(IdeaDelta).where(
-            IdeaDelta.mechanism_family_ids.contains([mf.id])
+            IdeaDelta.method_node_ids.contains([mf.id])
         ).limit(limit)
     )
     for idea in ideas_by_array.scalars():
@@ -414,7 +417,7 @@ async def get_edges_for_node_compat(
         "idea_delta": "idea_deltas",
         "evidence_unit": "evidence_units",
         "slot": "slots",
-        "mechanism_family": "mechanism_families",
+        "method_family": "method_nodes",
         "bottleneck": "project_bottlenecks",
         "delta_card": "delta_cards",
     }
@@ -492,7 +495,7 @@ async def graph_stats(session: AsyncSession) -> dict:
         "SELECT count(*) FROM evidence_units WHERE idea_delta_id IS NOT NULL"
     ))).scalar()
     slot_count = (await session.execute(text("SELECT count(*) FROM slots"))).scalar()
-    mf_count = (await session.execute(text("SELECT count(*) FROM mechanism_families"))).scalar()
+    mf_count = (await session.execute(text("SELECT count(*) FROM method_nodes"))).scalar()
 
     # Assertion status distribution
     assertion_dist = (await session.execute(text(
@@ -522,7 +525,7 @@ async def graph_stats(session: AsyncSession) -> dict:
         "legacy_graph_edges": legacy_edge_count,
         "evidence_linked": evidence_linked,
         "slots": slot_count,
-        "mechanism_families": mf_count,
+        "method_nodes": mf_count,
         "review_pending": review_pending,
         "assertion_status": {row[0]: row[1] for row in assertion_dist},
         "assertion_edge_types": {row[0]: row[1] for row in edge_type_dist},

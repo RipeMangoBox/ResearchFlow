@@ -77,7 +77,7 @@ class Paper(Base):
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list
     )
-    mechanism_family: Mapped[str | None] = mapped_column(String(100))
+    method_family: Mapped[str | None] = mapped_column(String(100))
     supervision_type: Mapped[str | None] = mapped_column(String(50))
     inference_pattern: Mapped[str | None] = mapped_column(String(100))
 

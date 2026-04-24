@@ -1,4 +1,7 @@
-"""PaperAnalysis, MethodDelta, ParadigmTemplate models."""
+"""PaperAnalysis, ParadigmTemplate models.
+
+MethodDelta has been removed (Phase 1D) — superseded by DeltaCard.
+"""
 
 import uuid
 from datetime import datetime
@@ -62,8 +65,8 @@ class PaperAnalysis(Base):
     full_report_md: Mapped[str | None] = mapped_column(Text)
     full_report_object_key: Mapped[str | None] = mapped_column(Text)
 
-    # Evidence spans — per-section source anchors
-    # Schema: [{page, paragraph, quote, section_ref}]
+    # Evidence spans — used by L2 parse for GROBID/TeX data.
+    # L4 evidence now goes to evidence_units table (no longer written here at L4).
     evidence_spans: Mapped[dict | None] = mapped_column(JSONB)
 
     # Extracted figure images — stored in object storage
@@ -90,38 +93,6 @@ class PaperAnalysis(Base):
         Index("idx_analyses_paper", "paper_id"),
         Index("idx_analyses_current", "paper_id", "is_current", postgresql_where="is_current"),
         Index("idx_analyses_level", "level"),
-    )
-
-
-class MethodDelta(Base):
-    __tablename__ = "method_deltas"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    paper_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-
-    # Domain paradigm reference
-    paradigm_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    paradigm_version: Mapped[str] = mapped_column(String(20), default="v1")
-
-    # Slot-level delta
-    slots: Mapped[dict] = mapped_column(JSONB, nullable=False)
-
-    is_structural: Mapped[bool | None] = mapped_column(Boolean)
-    primary_gain_source: Mapped[str | None] = mapped_column(String(100))
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    __table_args__ = (
-        Index("idx_deltas_paper", "paper_id"),
-        Index("idx_deltas_paradigm", "paradigm_name"),
     )
 
 

@@ -132,15 +132,17 @@ class ContextPackBuilder:
     # ── Pack Configurations ──────────────────────────────────────────────
 
     PACK_CONFIGS = {
-        "shallow_paper": {
-            "global": ["node_types", "relation_types"],
-            "domain": ["scope", "existing_tasks_summary", "existing_methods_summary"],
+        # ── Shallow Phase (merged) ──
+        "shallow_extractor": {
+            "global": ["node_types", "relation_types", "slot_types"],
+            "domain": ["scope", "existing_tasks_summary", "existing_methods_summary", "baselines"],
             "paper": [
                 "abstract", "introduction_excerpt", "method_excerpt",
                 "experiment_excerpt", "figure_table_captions",
+                "algorithm_blocks", "formula_contexts",
             ],
             "run": [],
-            "token_budget": 12_000,
+            "token_budget": 18_000,
         },
         "reference_role": {
             "global": ["reference_role_definitions"],
@@ -149,67 +151,54 @@ class ContextPackBuilder:
             "run": [],
             "token_budget": 30_000,
         },
-        "method_delta_lite": {
-            "global": ["slot_types"],
-            "domain": ["existing_methods_with_slots", "baselines"],
-            "paper": ["method_section", "algorithm_blocks", "formula_contexts"],
-            "run": ["paper_essence"],
-            "token_budget": 15_000,
-        },
-        "method_delta_full": {
-            "global": ["slot_types", "relation_types"],
-            "domain": ["method_profiles", "baseline_profiles"],
+
+        # ── Deep Phase (merged) ──
+        "deep_analyzer": {
+            "global": ["slot_types", "relation_types", "experiment_schema"],
+            "domain": ["method_profiles", "baseline_profiles", "known_benchmarks"],
             "paper": [
                 "method_section_full", "algorithm_blocks", "all_formula_contexts",
+                "result_tables", "experiment_section", "ablation_section",
             ],
-            "run": ["paper_essence", "reference_role_map"],
-            "token_budget": 30_000,
-        },
-        "experiment": {
-            "global": ["experiment_schema"],
-            "domain": ["known_benchmarks", "known_baselines"],
-            "paper": ["result_tables", "experiment_section", "ablation_section"],
-            "run": ["paper_essence", "method_delta"],
-            "token_budget": 25_000,
+            "run": ["shallow_extract", "reference_role_map"],
+            "token_budget": 40_000,
         },
         "graph_candidate": {
             "global": ["node_types", "relation_types", "edge_rules"],
             "domain": ["graph_summary", "task_hierarchy", "method_hierarchy"],
             "paper": [],
             "run": [
-                "paper_essence", "method_delta", "task_facet",
-                "mechanism_facet", "dataset_use", "experiment_matrix",
+                "shallow_extract", "deep_analysis",
                 "reference_role_map",
             ],
             "token_budget": 20_000,
         },
-        "score": {
-            "global": ["score_signal_definitions"],
+
+        # ── Profile Phase (merged) ──
+        "kb_profiler": {
+            "global": ["profile_schema", "edge_profile_schema"],
             "domain": [],
             "paper": [],
-            "run": ["paper_essence", "method_delta", "reference_role_map"],
-            "token_budget": 8_000,
+            "run": ["graph_candidates"],
+            "token_budget": 20_000,
         },
-        "node_profile": {
-            "global": ["profile_schema"],
-            "domain": [],
-            "paper": [],
-            "run": ["node_metadata", "connected_papers", "connected_edges"],
-            "token_budget": 15_000,
-        },
-        "edge_profile": {
-            "global": ["edge_profile_schema"],
-            "domain": [],
-            "paper": [],
-            "run": ["source_node", "target_node", "relation_type", "evidence_snippets"],
-            "token_budget": 12_000,
-        },
+
+        # ── Report Phase ──
         "paper_report": {
             "global": ["report_section_schema"],
             "domain": [],
             "paper": ["selected_evidence"],
             "run": ["ALL_VERIFIED"],
             "token_budget": 80_000,
+        },
+
+        # ── Legacy aliases (for backward compat during transition) ──
+        "shallow_paper": {
+            "global": ["node_types", "relation_types"],
+            "domain": ["scope", "existing_tasks_summary", "existing_methods_summary"],
+            "paper": ["abstract", "introduction_excerpt", "method_excerpt", "experiment_excerpt", "figure_table_captions"],
+            "run": [],
+            "token_budget": 12_000,
         },
     }
 

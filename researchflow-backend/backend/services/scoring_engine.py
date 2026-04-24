@@ -719,12 +719,12 @@ class ScoringEngine:
     def _compute_novelty_signal(signals: dict) -> float:
         """Compute NoveltySignal from graph gap, new mechanism, new setting.
 
-        fills_graph_gap: 45, new_mechanism: 35, new_setting: 20.
+        fills_graph_gap: 45, new_method: 35, new_setting: 20.
         """
         total = 0.0
         if signals.get("fills_graph_gap", False):
             total += 45.0
-        if signals.get("new_mechanism", False):
+        if signals.get("new_method", False):
             total += 35.0
         if signals.get("new_setting", False):
             total += 20.0

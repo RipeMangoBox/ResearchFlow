@@ -155,7 +155,7 @@ async def build_collection_index(
 
     rows = (await session.execute(text("""
         SELECT p.id, p.title, p.venue, p.year, p.category, p.tags,
-               p.mechanism_family, p.structurality_score,
+               p.method_family, p.structurality_score,
                p.keep_score, p.importance, p.state,
                dc.delta_statement, dc.baseline_paradigm
         FROM papers p
@@ -175,7 +175,7 @@ async def build_collection_index(
                 "year": r.year,
                 "category": r.category,
                 "tags": list(r.tags) if r.tags else [],
-                "mechanism_family": r.mechanism_family,
+                "method_family": r.method_family,
                 "structurality_score": float(r.structurality_score) if r.structurality_score else None,
                 "keep_score": float(r.keep_score) if r.keep_score else None,
                 "importance": r.importance,
@@ -308,7 +308,7 @@ async def export_obsidian_vault(
     papers = (await session.execute(text("""
         SELECT p.id, p.title, p.title_sanitized, p.venue, p.year, p.category,
                p.tags, p.core_operator, p.primary_logic, p.abstract,
-               p.paper_link, p.code_url, p.mechanism_family, p.ring,
+               p.paper_link, p.code_url, p.method_family, p.ring,
                p.structurality_score, p.keep_score,
                p.open_code, p.open_data, p.importance, p.state,
                dc.delta_statement, dc.baseline_paradigm,
@@ -336,12 +336,12 @@ async def export_obsidian_vault(
 
     mechanisms = (await session.execute(text(
         "SELECT id, name, domain, description, aliases "
-        "FROM mechanism_families ORDER BY name"
+        "FROM method_nodes ORDER BY name"
     ))).fetchall()
 
     canonical_ideas = (await session.execute(text("""
         SELECT ci.id, ci.title, ci.description, ci.domain,
-               ci.mechanism_family_id, ci.aliases, ci.tags,
+               ci.method_node_id, ci.aliases, ci.tags,
                ci.contribution_count
         FROM canonical_ideas ci
         WHERE ci.status IN ('candidate', 'established')
@@ -369,7 +369,7 @@ async def export_obsidian_vault(
         SELECT dcl.relation_type, dcl.confidence,
                child_p.title AS child_title,
                child_p.title_sanitized AS child_sanitized,
-               child_p.mechanism_family AS child_mech,
+               child_p.method_family AS child_mech,
                parent_p.title AS parent_title,
                parent_p.title_sanitized AS parent_sanitized
         FROM delta_card_lineage dcl
@@ -397,8 +397,8 @@ async def export_obsidian_vault(
     # Mechanism → papers
     mech_papers: dict[str, list] = {}
     for p in papers:
-        if p.mechanism_family:
-            mech_papers.setdefault(p.mechanism_family, []).append(p)
+        if p.method_family:
+            mech_papers.setdefault(p.method_family, []).append(p)
 
     mech_id_to_name = {str(m.id): m.name for m in mechanisms}
 
@@ -434,8 +434,8 @@ async def export_obsidian_vault(
     for mf in mechanisms:
         slug = _safe_name(mf.name)
         linked_ideas = [ci for ci in canonical_ideas
-                        if ci.mechanism_family_id
-                        and str(ci.mechanism_family_id) == str(mf.id)]
+                        if ci.method_node_id
+                        and str(ci.method_node_id) == str(mf.id)]
         used_idea_ids.update(str(ci.id) for ci in linked_ideas)
 
         concepts.append({
@@ -476,7 +476,7 @@ async def export_obsidian_vault(
     for p in papers:
         san = p.title_sanitized
         if san in lineage_map or san in reverse_lineage:
-            group = p.mechanism_family or "Mixed"
+            group = p.method_family or "Mixed"
             grp = lineage_groups.setdefault(group, {"papers": set(), "edges": []})
             grp["papers"].add(san)
             for rel, parent_san in lineage_map.get(san, []):

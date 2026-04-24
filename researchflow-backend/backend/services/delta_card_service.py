@@ -43,7 +43,7 @@ async def build_delta_card(
     paradigm_name: str | None = None,
     slot_ids: list[UUID] | None = None,
     changed_slot_ids: list[UUID] | None = None,
-    mechanism_family_ids: list[UUID] | None = None,
+    method_node_ids: list[UUID] | None = None,
     bottleneck_id: UUID | None = None,
     model_provider: str | None = None,
     model_name: str | None = None,
@@ -104,7 +104,7 @@ async def build_delta_card(
         linkage_conf += 0.15
     if bottleneck_id:
         linkage_conf += 0.1
-    if mechanism_family_ids:
+    if method_node_ids:
         linkage_conf += 0.05
 
     card = DeltaCard(
@@ -115,7 +115,7 @@ async def build_delta_card(
         primary_bottleneck_id=bottleneck_id,
         changed_slot_ids=changed_slot_ids,
         unchanged_slot_ids=unchanged_slot_ids,
-        mechanism_family_ids=mechanism_family_ids,
+        method_node_ids=method_node_ids,
         delta_statement=delta_statement[:2000],
         key_ideas_ranked=key_ideas if key_ideas else None,
         key_equations=analysis_data.get("key_equations"),
@@ -200,7 +200,22 @@ async def derive_idea_delta(
     """Derive an IdeaDelta from a DeltaCard.
 
     IdeaDelta is the reusable knowledge atom; DeltaCard is the raw extraction.
+    Dual-write: also writes absorbed fields to DeltaCard for Phase 1A transition.
     """
+    is_structural = (
+        delta_card.structurality_score >= 0.5
+        if delta_card.structurality_score is not None
+        else None
+    )
+    ev_count = len(evidence_units)
+
+    # ── Dual-write: update DeltaCard with absorbed IdeaDelta fields ──
+    delta_card.changed_slots_json = changed_slots_graph
+    delta_card.is_structural = is_structural
+    delta_card.evidence_count = ev_count
+    delta_card.publish_status = "draft"
+
+    # ── Still create IdeaDelta for backward compat (remove in Phase 4) ──
     idea = IdeaDelta(
         paper_id=delta_card.paper_id,
         analysis_id=delta_card.analysis_id,
@@ -209,17 +224,13 @@ async def derive_idea_delta(
         paradigm_id=delta_card.frame_id,
         delta_statement=delta_card.delta_statement,
         changed_slots=changed_slots_graph,
-        mechanism_family_ids=delta_card.mechanism_family_ids,
+        method_node_ids=delta_card.method_node_ids,
         structurality_score=delta_card.structurality_score,
         transferability_score=delta_card.transferability_score,
         confidence=delta_card.extraction_confidence,
-        is_structural=(
-            delta_card.structurality_score >= 0.5
-            if delta_card.structurality_score is not None
-            else None
-        ),
+        is_structural=is_structural,
         publish_status="draft",
-        evidence_count=len(evidence_units),
+        evidence_count=ev_count,
     )
     session.add(idea)
     await session.flush()
@@ -334,16 +345,16 @@ async def propose_assertions(
                 session.add(assertion)
                 assertions.append(assertion)
 
-    # 3. instance_of_mechanism: IdeaDelta → MechanismFamily
-    if idea.mechanism_family_ids:
-        for mf_id in idea.mechanism_family_ids:
+    # 3. instance_of_method: IdeaDelta → MethodNode
+    if idea.method_node_ids:
+        for mf_id in idea.method_node_ids:
             mf_node = await get_or_create_node(
-                session, "mechanism", "mechanism_families", mf_id
+                session, "mechanism", "method_nodes", mf_id
             )
             assertion = GraphAssertion(
                 from_node_id=idea_node.id,
                 to_node_id=mf_node.id,
-                edge_type="instance_of_mechanism",
+                edge_type="instance_of_method",
                 assertion_source="system_inferred",
                 confidence=idea.confidence,
                 status="published",
@@ -405,7 +416,7 @@ async def check_and_publish(
         if paper:
             paper.current_delta_card_id = delta_card.id
 
-    # IdeaDelta publish check
+    # IdeaDelta publish check (dual-write to both IdeaDelta and DeltaCard)
     if evidence_count >= MIN_EVIDENCE_FOR_PUBLISH:
         confidences = [
             c for c in [
@@ -416,6 +427,10 @@ async def check_and_publish(
         ]
         if confidences and min(confidences) >= AUTO_PUBLISH_CONFIDENCE:
             idea.publish_status = "auto_published"
+            delta_card.publish_status = "auto_published"  # dual-write
+
+    # Sync evidence_count to DeltaCard
+    delta_card.evidence_count = evidence_count
 
     await session.flush()
     return delta_card.status, idea.publish_status
@@ -432,7 +447,7 @@ async def run_delta_card_pipeline(
     paradigm_name: str | None,
     slots: list[dict] | None,
     changed_slots_graph: list[dict] | None,
-    mechanism_family_ids: list[UUID] | None = None,
+    method_node_ids: list[UUID] | None = None,
     bottleneck_id: UUID | None = None,
     model_provider: str | None = None,
     model_name: str | None = None,
@@ -462,7 +477,7 @@ async def run_delta_card_pipeline(
         paradigm_name=paradigm_name,
         slot_ids=slot_ids,
         changed_slot_ids=changed_slot_ids if changed_slot_ids else None,
-        mechanism_family_ids=mechanism_family_ids,
+        method_node_ids=method_node_ids,
         bottleneck_id=bottleneck_id,
         model_provider=model_provider,
         model_name=model_name,
@@ -503,11 +518,11 @@ async def run_delta_card_pipeline(
         )
 
     # 7. Populate same-family paper IDs (papers sharing mechanism families)
-    if mechanism_family_ids:
+    if method_node_ids:
         from backend.models.paper import Paper
         same_fam = await session.execute(
             select(DeltaCard.paper_id).where(
-                DeltaCard.mechanism_family_ids.overlap(mechanism_family_ids),
+                DeltaCard.method_node_ids.overlap(method_node_ids),
                 DeltaCard.paper_id != paper_id,
                 DeltaCard.status != "deprecated",
             ).limit(20)

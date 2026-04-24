@@ -1,7 +1,7 @@
 """Concept synthesizer service — Step 5 of the 6-step analysis pipeline.
 
 When a new paper arrives, check if its mechanism/concept already exists
-as a CanonicalIdea or MechanismFamily. If so, link; if not, create.
+as a CanonicalIdea or MethodNode. If so, link; if not, create.
 
 Produces cross-paper concept synthesis, not per-paper isolated concepts.
 """
@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.canonical_idea import CanonicalIdea, ContributionToCanonicalIdea
-from backend.models.graph import MechanismFamily
+from backend.models.method import MethodNode
 from backend.models.delta_card import DeltaCard
 from backend.models.paper import Paper
 
@@ -28,10 +28,10 @@ async def synthesize_concepts(
     """Link or create concepts for a newly analyzed paper.
 
     Steps:
-    1. Resolve mechanism_family from same_family_method or existing DB match
+    1. Resolve method_family from same_family_method or existing DB match
     2. Resolve or create CanonicalIdea from the method's core contribution
     3. Create ContributionToCanonicalIdea linking paper → idea
-    4. Update MechanismFamily if paper adds new understanding
+    4. Update MethodNode if paper adds new understanding
 
     Returns summary of what was linked/created.
     """
@@ -41,15 +41,15 @@ async def synthesize_concepts(
 
     stats = {"mechanism_linked": False, "idea_linked": False, "idea_created": False}
 
-    # ── 1. Resolve MechanismFamily ────────────────────────────────
+    # ── 1. Resolve MethodNode ────────────────────────────────
     family_name = analysis_data.get("same_family_method")
     mf = None
 
     if family_name:
         # Try exact match
         result = await session.execute(
-            select(MechanismFamily).where(
-                func.lower(MechanismFamily.name) == family_name.lower()
+            select(MethodNode).where(
+                func.lower(MethodNode.name) == family_name.lower()
             ).limit(1)
         )
         mf = result.scalar_one_or_none()
@@ -57,35 +57,35 @@ async def synthesize_concepts(
         if not mf:
             # Try alias match
             result = await session.execute(
-                select(MechanismFamily).where(
-                    MechanismFamily.aliases.any(family_name)
+                select(MethodNode).where(
+                    MethodNode.aliases.any(family_name)
                 ).limit(1)
             )
             mf = result.scalar_one_or_none()
 
         if not mf:
-            # Create new MechanismFamily
-            mf = MechanismFamily(
+            # Create new MethodNode
+            mf = MethodNode(
                 name=family_name,
                 domain=paper.category,
                 description=analysis_data.get("core_intuition", "")[:500],
             )
             session.add(mf)
             await session.flush()
-            logger.info(f"Created MechanismFamily: {family_name}")
+            logger.info(f"Created MethodNode: {family_name}")
 
         # Link paper to mechanism
-        paper.mechanism_family = mf.name
+        paper.method_family = mf.name
         stats["mechanism_linked"] = True
 
         # Update DeltaCard with mechanism family ID
         if paper.current_delta_card_id:
             dc = await session.get(DeltaCard, paper.current_delta_card_id)
             if dc:
-                existing_ids = list(dc.mechanism_family_ids or [])
+                existing_ids = list(dc.method_node_ids or [])
                 if mf.id not in existing_ids:
                     existing_ids.append(mf.id)
-                    dc.mechanism_family_ids = existing_ids
+                    dc.method_node_ids = existing_ids
 
     # ── 2. Resolve or create CanonicalIdea ────────────────────────
     core_intuition = analysis_data.get("core_intuition", "")
@@ -117,7 +117,7 @@ async def synthesize_concepts(
         # Check if there's an idea linked to this mechanism family
         result = await session.execute(
             select(CanonicalIdea).where(
-                CanonicalIdea.mechanism_family_id == mf.id,
+                CanonicalIdea.method_node_id == mf.id,
                 CanonicalIdea.status.in_(["candidate", "established"]),
             ).limit(1)
         )
@@ -133,7 +133,7 @@ async def synthesize_concepts(
             title=concept_title[:200],
             description=core_intuition[:1000] if core_intuition else "",
             domain=paper.category,
-            mechanism_family_id=mf.id if mf else None,
+            method_node_id=mf.id if mf else None,
             contribution_count=1,
             status="candidate",
         )

@@ -4,6 +4,8 @@ One call to run the complete pipeline for a paper:
   ingest → download_pdf → enrich → parse → skim → deep → delta_card → graph
 
 Also supports: seed a domain from one paper by discovering related work.
+
+L4 deep analysis uses the V6 ingest_workflow (agent pipeline).
 """
 
 import logging
@@ -238,24 +240,26 @@ async def run_full_pipeline(
     )).scalar_one_or_none()
 
     if not has_l4:
-        from backend.services import analysis_service
-        l4 = await analysis_service.deep_analyze_paper(session, paper_id)
+        from backend.services.ingest_workflow import IngestWorkflow
+        from backend.services.scoring_engine import ScoringEngine
+        workflow = IngestWorkflow(session, scoring_engine=ScoringEngine())
+        v6_result = await workflow.deep_ingest(paper_id)
         progress["steps"]["deep_l4"] = {
-            "model": f"{l4.model_provider}/{l4.model_name}" if l4 else "failed",
+            "agents_run": v6_result.get("agents_run", []),
+            "graph": v6_result.get("graph", {}),
         }
         await session.commit()
     else:
         progress["steps"]["deep_l4"] = "skipped (already analyzed)"
-        # If L4 exists but DeltaCard is missing, re-run graph building
+        # If L4 exists but DeltaCard is missing, re-run graph materialization
         if not paper.current_delta_card_id:
-            from backend.services import analysis_service
             try:
+                from backend.services.delta_card_service import run_delta_card_pipeline
+                from backend.services.analysis_service import _maybe_create_bottleneck, assign_paradigm
                 l4_analysis = has_l4
-                # Reconstruct analysis_data from stored fields
-                # Generate minimal evidence_units from evidence_summary
                 evidence_units = []
                 if l4_analysis.evidence_summary:
-                    for i, sentence in enumerate(l4_analysis.evidence_summary.split("。")[:5]):
+                    for sentence in l4_analysis.evidence_summary.split("。")[:5]:
                         if sentence.strip():
                             evidence_units.append({
                                 "atom_type": "evidence",
@@ -271,13 +275,27 @@ async def run_full_pipeline(
                     "core_intuition": l4_analysis.core_intuition,
                     "changed_slots": l4_analysis.changed_slots or [],
                     "evidence_units": evidence_units,
+                    "delta_card": {"paradigm": "unknown", "slots": {}, "is_structural": False},
                 }
-                if analysis_data:
-                    bottleneck_id = await analysis_service._maybe_create_bottleneck(session, paper, analysis_data)
-                    await analysis_service._build_idea_graph(session, paper, l4_analysis, analysis_data, bottleneck_id=bottleneck_id)
-                    await session.refresh(paper)
-                    progress["steps"]["graph_repair"] = f"dc_ptr={'set' if paper.current_delta_card_id else 'failed'}"
-                    await session.commit()
+                bottleneck_id = await _maybe_create_bottleneck(session, paper, analysis_data)
+                paradigm, slots = await assign_paradigm(
+                    session, paper.category, paper.tags,
+                    title=paper.title, abstract=paper.abstract,
+                )
+                await run_delta_card_pipeline(
+                    session,
+                    paper_id=paper.id,
+                    analysis_id=l4_analysis.id,
+                    analysis_data=analysis_data,
+                    paradigm_id=paradigm.id if paradigm else None,
+                    paradigm_name=paradigm.name if paradigm else None,
+                    slots=[{"id": s["id"], "name": s["name"]} for s in slots] if slots else None,
+                    changed_slots_graph=None,
+                    bottleneck_id=bottleneck_id,
+                )
+                await session.refresh(paper)
+                progress["steps"]["graph_repair"] = f"dc_ptr={'set' if paper.current_delta_card_id else 'failed'}"
+                await session.commit()
             except Exception as e:
                 logger.warning(f"Graph repair failed for {paper_id}: {e}")
                 await session.rollback()
@@ -339,7 +357,7 @@ async def run_full_pipeline(
             )
         )
         if True:  # Always re-assign (idempotent)
-            # Auto-assign from paper.category, tags, mechanism_family, keywords
+            # Auto-assign from paper.category, tags, method_family, keywords
             assigned = 0
             seen_node_roles = set()  # Track (node_id, facet_role) to prevent duplicates
             for tag in (paper.tags or []):
@@ -374,11 +392,11 @@ async def run_full_pipeline(
                     ))
                     assigned += 1
 
-            # Map mechanism_family
-            if paper.mechanism_family:
+            # Map method_family
+            if paper.method_family:
                 mech_node = (await session.execute(
                     select(TaxonomyNode).where(
-                        TaxonomyNode.name.ilike(f"%{paper.mechanism_family.replace('_', '%')}%"),
+                        TaxonomyNode.name.ilike(f"%{paper.method_family.replace('_', '%')}%"),
                     ).limit(1)
                 )).scalar_one_or_none()
                 if mech_node and (mech_node.id, "mechanism") not in seen_node_roles:

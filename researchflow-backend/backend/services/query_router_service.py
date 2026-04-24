@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.assertion import GraphAssertion, GraphNode
 from backend.models.delta_card import DeltaCard
 from backend.models.evidence import EvidenceUnit
-from backend.models.graph import IdeaDelta, ImplementationUnit, MechanismFamily
+from backend.models.graph import IdeaDelta, ImplementationUnit
+from backend.models.method import MethodNode
 from backend.models.lineage import DeltaCardLineage
 from backend.models.paper import Paper
 from backend.models.research import ProjectBottleneck, PaperBottleneckClaim
@@ -287,7 +288,7 @@ async def query_mechanism(
 ) -> dict:
     """What approaches exist for this mechanism family?
 
-    Recall priority: canonical_ideas → mechanism_families → paper_contributions
+    Recall priority: canonical_ideas → method_nodes → paper_contributions
     """
     c = constraints or {}
 
@@ -319,18 +320,18 @@ async def query_mechanism(
         for ci in ci_result.scalars()
     ]
 
-    # 2. Search mechanism_families
+    # 2. Search method_nodes
     mfs = await session.execute(
-        select(MechanismFamily).where(
+        select(MethodNode).where(
             or_(
-                MechanismFamily.name.ilike(f"%{query}%"),
-                MechanismFamily.description.ilike(f"%{query}%"),
+                MethodNode.name.ilike(f"%{query}%"),
+                MethodNode.description.ilike(f"%{query}%"),
             )
         ).limit(10)
     )
     mechanism_results = [
         {
-            "source": "mechanism_family",
+            "source": "method_family",
             "id": str(mf.id),
             "name": mf.name,
             "domain": mf.domain,
@@ -377,7 +378,7 @@ async def query_mechanism(
         "intent": "mechanism",
         "query": query,
         "canonical_ideas": canonical_results,
-        "mechanism_families": mechanism_results,
+        "method_nodes": mechanism_results,
         "paper_contributions": contribution_results[:limit],
     }
 

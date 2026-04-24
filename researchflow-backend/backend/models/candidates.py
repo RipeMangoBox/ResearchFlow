@@ -92,9 +92,9 @@ class SlotCandidate(Base):
     )
 
 
-class MechanismCandidate(Base):
-    """A candidate mechanism family discovered during analysis, pending review."""
-    __tablename__ = "mechanism_candidates"
+class MethodCandidate(Base):
+    """A candidate method/mechanism discovered during analysis, pending review."""
+    __tablename__ = "method_candidates"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

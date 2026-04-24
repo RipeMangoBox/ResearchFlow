@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.analysis import ParadigmTemplate
 from backend.models.delta_card import DeltaCard
 from backend.models.graph import IdeaDelta, Slot
+from backend.models.lineage import DeltaCardLineage
 from backend.models.paper import Paper
 
 logger = logging.getLogger(__name__)
@@ -69,11 +70,11 @@ async def link_to_parent_baselines(
             baseline_paper_ids.append(parent.paper_id)
 
     # Strategy 2: Match by mechanism families
-    if card.mechanism_family_ids and not parent_ids:
-        for mf_id in card.mechanism_family_ids[:3]:
+    if card.method_node_ids and not parent_ids:
+        for mf_id in card.method_node_ids[:3]:
             related = await session.execute(
                 select(DeltaCard).where(
-                    DeltaCard.mechanism_family_ids.contains([mf_id]),
+                    DeltaCard.method_node_ids.contains([mf_id]),
                     DeltaCard.status == "published",
                     DeltaCard.paper_id != card.paper_id,
                 ).order_by(desc(DeltaCard.downstream_count)).limit(3)
@@ -104,8 +105,7 @@ async def link_to_parent_baselines(
         if parent and parent.lineage_depth is not None:
             max_parent_depth = max(max_parent_depth, parent.lineage_depth)
 
-    # Update DeltaCard
-    card.parent_delta_card_ids = parent_ids if parent_ids else None
+    # Update DeltaCard (parent links now live in delta_card_lineage table only)
     card.baseline_paper_ids = baseline_paper_ids if baseline_paper_ids else None
     card.lineage_depth = max_parent_depth + 1 if parent_ids else 0
 
@@ -121,7 +121,6 @@ async def link_to_parent_baselines(
     await session.flush()
 
     # Create lineage records in independent table + auto review tasks
-    from backend.models.lineage import DeltaCardLineage
     from backend.services.review_service import create_review_task
     for pid in parent_ids:
         lineage = DeltaCardLineage(
@@ -330,7 +329,13 @@ async def _walk_ancestors(session: AsyncSession, card: DeltaCard, max_depth: int
         current, depth = queue.pop(0)
         if depth >= max_depth:
             break
-        for pid in (current.parent_delta_card_ids or []):
+        # Query parent links from delta_card_lineage table
+        parent_links = await session.execute(
+            select(DeltaCardLineage.parent_delta_card_id).where(
+                DeltaCardLineage.child_delta_card_id == current.id,
+            )
+        )
+        for (pid,) in parent_links:
             if pid in seen:
                 continue
             seen.add(pid)
@@ -352,17 +357,20 @@ async def _walk_descendants(session: AsyncSession, card: DeltaCard, max_depth: i
         current, depth = queue.pop(0)
         if depth >= max_depth:
             break
-        children = await session.execute(
-            select(DeltaCard).where(
-                DeltaCard.parent_delta_card_ids.contains([current.id])
+        # Query child links from delta_card_lineage table
+        child_links = await session.execute(
+            select(DeltaCardLineage.child_delta_card_id).where(
+                DeltaCardLineage.parent_delta_card_id == current.id,
             )
         )
-        for child in children.scalars():
-            if child.id in seen:
+        for (cid,) in child_links:
+            if cid in seen:
                 continue
-            seen.add(child.id)
-            descendants.append(await _card_summary(session, child, depth=depth + 1))
-            queue.append((child, depth + 1))
+            seen.add(cid)
+            child = await session.get(DeltaCard, cid)
+            if child:
+                descendants.append(await _card_summary(session, child, depth=depth + 1))
+                queue.append((child, depth + 1))
 
     return descendants
 
@@ -415,7 +423,6 @@ async def refresh_connections(
             await _refresh_same_family(session, dc, stats)
 
     # Recompute downstream counts from lineage table
-    from backend.models.lineage import DeltaCardLineage
     parent_counts = await session.execute(
         select(
             DeltaCardLineage.parent_delta_card_id,
@@ -440,12 +447,12 @@ async def refresh_connections(
 
 async def _refresh_same_family(session: AsyncSession, dc: DeltaCard, stats: dict):
     """Update same_family_paper_ids for a single DeltaCard."""
-    if not dc.mechanism_family_ids:
+    if not dc.method_node_ids:
         return
 
     same_fam = await session.execute(
         select(DeltaCard.paper_id).where(
-            DeltaCard.mechanism_family_ids.overlap(dc.mechanism_family_ids),
+            DeltaCard.method_node_ids.overlap(dc.method_node_ids),
             DeltaCard.paper_id != dc.paper_id,
             DeltaCard.status != "deprecated",
         ).limit(20)

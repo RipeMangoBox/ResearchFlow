@@ -46,7 +46,7 @@ async def build_compare_set(
         dc = await session.get(DeltaCard, paper.current_delta_card_id)
 
     frame_id = dc.frame_id if dc else None
-    mechanism_ids = dc.mechanism_family_ids if dc else None
+    mechanism_ids = dc.method_node_ids if dc else None
 
     # Collect comparison candidates from multiple sources
     seen_ids: set[UUID] = {paper_id}
@@ -95,7 +95,7 @@ async def build_compare_set(
             )
             .join(Paper, Paper.id == DeltaCard.paper_id)
             .where(
-                DeltaCard.mechanism_family_ids.overlap(mechanism_ids),
+                DeltaCard.method_node_ids.overlap(mechanism_ids),
                 DeltaCard.status != "deprecated",
                 DeltaCard.paper_id != paper_id,
             )

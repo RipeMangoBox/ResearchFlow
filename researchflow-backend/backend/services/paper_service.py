@@ -29,7 +29,7 @@ async def create_paper(session: AsyncSession, data: PaperCreate) -> Paper:
         doi=data.doi,
         abstract=data.abstract,
         tags=data.tags or [data.category],
-        mechanism_family=data.mechanism_family,
+        method_family=data.method_family,
         core_operator=data.core_operator,
         primary_logic=data.primary_logic,
         is_ephemeral=data.is_ephemeral,

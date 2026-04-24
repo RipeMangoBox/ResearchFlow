@@ -395,7 +395,7 @@ _OVERRIDE_TARGETS = {
         "status", "confidence", "edge_type", "assertion_source",
     }),
     "paper": ("backend.models.paper", "Paper", {
-        "importance", "category", "venue", "year", "mechanism_family",
+        "importance", "category", "venue", "year", "method_family",
         "tags", "role_in_kb",
     }),
 }

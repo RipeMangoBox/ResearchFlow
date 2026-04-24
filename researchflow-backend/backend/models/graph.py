@@ -51,29 +51,8 @@ class Slot(Base):
     )
 
 
-# ── MechanismFamily (机制族，层级结构) ──────────────────────────
-
-class MechanismFamily(Base):
-    """A family of related mechanisms, optionally hierarchical.
-
-    Examples: diffusion, flow_matching, masked_modeling, reinforcement_learning
-    """
-    __tablename__ = "mechanism_families"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
-    domain: Mapped[str | None] = mapped_column(String(100))
-    description: Mapped[str | None] = mapped_column(Text)
-    parent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("mechanism_families.id")
-    )
-    aliases: Mapped[list[str] | None] = mapped_column(ARRAY(Text))  # for entity resolution
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
+# MechanismFamily has been merged into MethodNode (models/method.py).
+# Use MethodNode with type='mechanism_family' for mechanism families.
 
 # ── IdeaDelta (核心主对象) ──────────────────────────────────────
 
@@ -111,7 +90,7 @@ class IdeaDelta(Base):
     changed_slots: Mapped[dict | None] = mapped_column(JSONB)
     # Schema: [{slot_id, slot_name, from, to, change_type: "structural"|"plugin"|"tweak"}]
 
-    mechanism_family_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    method_node_ids: Mapped[list | None] = mapped_column(ARRAY(UUID(as_uuid=True)))
 
     # Scores (the 4 key dimensions from design doc)
     structurality_score: Mapped[float | None] = mapped_column()

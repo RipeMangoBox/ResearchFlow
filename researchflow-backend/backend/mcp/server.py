@@ -3,7 +3,7 @@
 v3 architecture: DeltaCard-centric tools, resource URIs, workflow prompts.
 
 Tools (actions):
-  search_research_kb, search_ideas, get_paper_report, compare_papers,
+  search_research_kb, search_ideas, get_paper_report,
   import_research_sources, get_digest, get_reading_plan, enqueue_analysis,
   refresh_assets, record_user_feedback, get_paper_detail,
   get_graph_stats, review_queue, submit_review_decision
@@ -96,16 +96,27 @@ TOOLS = [
             "required": ["paper_ids"],
         },
     ),
+    # ── Venue index tools ──────────────────────────────────────
     Tool(
-        name="compare_papers",
-        description="Compare 2-5 papers side by side: delta cards, evidence strength, structural vs plugin.",
+        name="build_venue_index",
+        description="Crawl conference/journal accepted papers and store in local index. "
+                    "After building, enrich_paper will match locally first (zero API cost). "
+                    "Supports: ICLR, NeurIPS, ICML, CVPR, ECCV, ICCV, ACL, EMNLP, AAAI, KDD, SIGGRAPH, "
+                    "ACMMM, TPAMI, IJCV, JMLR, AIJ, TNNLS + ArXiv HiCite + HF Daily Papers.",
         inputSchema={
             "type": "object",
             "properties": {
-                "paper_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 5},
+                "venues": {"type": "array", "items": {"type": "string"},
+                           "description": "Filter by venue names, e.g. ['ICLR', 'CVPR']. Omit for all."},
+                "years": {"type": "array", "items": {"type": "integer"},
+                           "description": "Filter by years, e.g. [2024, 2025]. Omit for all."},
             },
-            "required": ["paper_ids"],
         },
+    ),
+    Tool(
+        name="venue_index_stats",
+        description="Show coverage stats of the pre-crawled venue index.",
+        inputSchema={"type": "object", "properties": {}},
     ),
 
     # ── Ingestion tools ───────────────────────────────────────
@@ -446,17 +457,7 @@ TOOLS = [
             "required": ["center_entity_type", "center_entity_id"],
         },
     ),
-    Tool(
-        name="rf_review_queue",
-        description="View the review queue for items needing human review (promotions, edges, conflicts).",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "default": "pending", "description": "Filter by status"},
-                "limit": {"type": "integer", "default": 20},
-            },
-        },
-    ),
+    # rf_review_queue removed — use review_queue instead (same service, superset params)
     Tool(
         name="rf_score_explain",
         description="Explain the scoring breakdown for a paper candidate — shows all sub-scores, signals, caps, and boosts.",
@@ -557,10 +558,19 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             session, paper_ids, args.get("report_type", "briefing"), args.get("topic"),
         )
 
-    elif name == "compare_papers":
-        from backend.services import report_service
-        paper_ids = [UUID(pid) for pid in args["paper_ids"]]
-        return await report_service.generate_report(session, paper_ids, "deep_compare")
+    elif name == "build_venue_index":
+        from backend.services.venue_index.service import build_venue_index
+        result = await build_venue_index(
+            session,
+            venues=args.get("venues"),
+            years=args.get("years"),
+        )
+        await session.commit()
+        return result
+
+    elif name == "venue_index_stats":
+        from backend.services.venue_index.service import get_index_stats
+        return await get_index_stats(session)
 
     elif name == "import_research_sources":
         from backend.schemas.import_ import LinkImportItem
@@ -874,15 +884,6 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             center_entity_type=args["center_entity_type"],
             center_entity_id=UUID(args["center_entity_id"]),
             depth=args.get("depth", 1),
-        )
-        return result
-
-    elif name == "rf_review_queue":
-        from backend.services import review_service
-        result = await review_service.list_reviews(
-            session,
-            status=args.get("status", "pending"),
-            limit=args.get("limit", 20),
         )
         return result
 
