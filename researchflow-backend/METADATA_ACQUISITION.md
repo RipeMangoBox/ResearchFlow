@@ -2,16 +2,41 @@
 
 > 每个字段的获取是一条**有优先级的 fallback 链**：前一级获取不到或不可信时，才尝试下一级。
 > 部分字段需要 **二次审核**（API 交叉验证或 VLM 判断）来确认准确性。
+> 方案对比了 ResearchFlow 自有实现与 [resmax](../resmax/) 的方案，择优采用。
 
 ---
 
 ## 0. 设计原则
 
-1. **逐级 fallback**：每个字段有 3-5 层获取方案，前一层成功即停止
+1. **逐级 fallback**：每个字段有 3-6 层获取方案，前一层成功即停止
 2. **二次审核**：关键字段（venue、acceptance、code_url）需要多源交叉验证或 VLM 辅助判断
 3. **观测记账**：所有获取结果写入 `metadata_observations` 表，附带 source + confidence + authority_rank
 4. **最终写入**：只有通过审核的值才写入 `papers` 表对应字段
 5. **限速保护**：所有外部 API 通过 `TokenBucketLimiter` 统一限速，429 时指数退避
+6. **标题模糊匹配门控**：所有跨源查询必须做 `_is_title_match()` (Jaccard ≥ 0.80 + 子串兜底)，防止张冠李戴
+
+---
+
+## 0.1 resmax 方案对比 — 每个字段的最优来源
+
+| 字段 | RF 当前方案 | resmax 方案 | **推荐采用** | 理由 |
+|------|------------|------------|-------------|------|
+| **abstract** | arXiv → OpenAlex → S2 (3 层) | S2 batch → arXiv batch → CVF → AAAI → OpenAlex → CrossRef → S2 → arXiv search → Google (9 层) | **resmax 9 层** | 会议论文 (CVPR/AAAI/KDD) 在 arXiv 上可能不存在，需要会议专属抓取 |
+| **code_url** | GitHub search API (keyword 搜索) | Papers With Code dump → S2 batch → abstract regex (3 层) | **resmax PWC 优先** | PWC 是历史匹配最精准的来源，覆盖百万级论文，GitHub search 误匹配率高 |
+| **title match** | `_titles_similar()` 简单归一化 | `_is_title_match()` Jaccard + 子串 + 无空格比较 | **resmax 方案** | 更鲁棒，处理了 accent/特殊字符/长短标题/子串关系 |
+| **PDF 下载** | arxiv.org/pdf/{id} 单源 | pdf_url → arXiv → OpenReview → ACM DOI → paper_link (5 级 + magic byte 验证) | **resmax 5 级 + 验证** | 非 arXiv 论文需要多源 PDF，`%PDF-` magic byte 防 HTML 错误页 |
+| **acceptance** | 5 层 cascade + VLM | venue_index → virtual_conf JSON → decision normalization | **融合两者** | RF 有 VLM 兜底，resmax 有更多会议源 |
+| **review 数据** | 无 | OpenReview API v2 → JSON 缓存 | **引入 resmax** | OpenReview review scores 对论文评估很有价值 |
+| **source text** | PDF text only | arXiv TeX + PDF text + MinerU markdown (3 层互补) | **resmax 三层** | TeX 最精确，PDF text 最可靠 URL 提取，markdown 最适合 LLM 阅读 |
+| **公式/图表/section** | VLM + PyMuPDF (当前实现) | 无 (resmax 不做 PDF 内容提取) | **保持 RF** | resmax 专注元数据，不做 PDF 内容结构化 |
+
+### 关键提升点
+
+1. **abstract 9 层 fallback** — 会议专属路径 (CVF/AAAI/ACM) + 通用搜索 (OpenAlex/CrossRef/S2/arXiv) + 兜底 (Google Scholar)
+2. **code_url 用 PWC dump 优先** — 百万级精准匹配，再用 S2 补充，最后 abstract regex 兜底
+3. **标题匹配强化** — `_is_title_match()` 用 Jaccard + 子串 + 无空格比较，阈值 0.80
+4. **PDF 下载 magic byte 验证** — 检查 `%PDF-` 头，防止 200 OK 但返回 HTML 错误页
+5. **三层文本提取** — arXiv TeX (最精确 URL/公式) + PDF text (最可靠字符) + markdown (最适合 LLM)
 
 ---
 
@@ -33,23 +58,58 @@ L3  Crossref title search → 返回结果做 _titles_similar() 校验
 L4  S2 paper/search?query={title} → _titles_similar() 校验
 ```
 
-**二次审核**: `_titles_similar()` 归一化比较（去标点、小写、去多余空格），阈值 ~0.85。防止 arXiv/S2/Crossref 返回同名但不同论文。
+**二次审核**: `_is_title_match()` (resmax 方案，替代原 `_titles_similar()`)
+- NFKD unicode 归一化 + accent 去除 + 小写 + 去标点
+- Jaccard 相似度 ≥ 0.80 (词集交集/并集)
+- 兜底: 子串包含检查 + 无空格精确比较
+- 防止 arXiv/S2/Crossref 返回同名但不同论文
 
 ---
 
 ### 1.2 abstract
 
+> 来自 resmax 的 9 层方案，增加了会议专属抓取路径。
+
 ```
 L1  venue_index 本地查询
  ↓ 空
-L2  arXiv API → abstract 字段
+L2  S2 batch API → abstract (500 篇/请求，最高效的批量来源)
+     └─ ID 构建: ARXIV:{id} → DOI:{doi} → URL:{openreview}
  ↓ 空
-L3  OpenAlex API → inverted_index 还原 abstract
- ↓ 空
-L4  S2 API → abstract 字段
+L3  arXiv API → abstract 字段 (单篇或 batch 80 篇/请求)
+     └─ 二次审核: _is_title_match() 验证返回的 title
+ ↓ 无 arxiv_id 或不匹配
+
+--- 会议专属快速路径 (resmax 方案) ---
+
+L4  CVF OpenAccess 页面抓取 (CVPR/ICCV 专用)
+     └─ 抓取 openaccess.thecvf.com → <div id="abstract">
+     └─ 100% 可靠 (官方页面，结构固定)
+ ↓ 非 CVF 论文
+L5  AAAI OJS 页面抓取 (AAAI 专用)
+     └─ 抓取 ojs.aaai.org → <section class="item abstract">
+ ↓ 非 AAAI
+L6  ACM DL 页面抓取 (KDD/MM/SIGIR 等)
+     └─ 抓取 dl.acm.org/doi/{doi} → abstract section
+     └─ 需要 browser User-Agent 绕过 403
+
+--- 通用搜索路径 ---
+
+L7  OpenAlex title search → inverted_index 还原 abstract
+     └─ 二次审核: _is_title_match() 验证
+ ↓ 不匹配
+L8  Crossref title search → abstract 字段 (JATS XML 清洗)
+     └─ 二次审核: _is_title_match() 验证
+ ↓ 不匹配
+L9  S2 title search → abstract
+     └─ 二次审核: _is_title_match() (Jaccard ≥ 0.80)
+ ↓ 不匹配
+L10 arXiv title search → 关键词搜索 (去 stopwords, 取 top 6 词)
+     └─ 二次审核: _is_title_match()
 ```
 
-无需二次审核。直接取第一个非空结果。
+**二次审核**: L3-L10 的所有 title search 都必须做 `_is_title_match()` 校验。
+**有效性检查**: `is_valid_abstract()` — 长度 ≥10 chars, 不是 "none"/"null"/"N/A" 等占位符。
 
 ---
 
@@ -278,27 +338,41 @@ L2  与 S2 references 交叉映射
 
 ### 1.14 code_url (GitHub 开源)
 
+> 采用 resmax 的 PWC (Papers With Code) 优先方案 + RF 的 GitHub search 兜底。
+
 ```
 L1  venue_index → code_url (预爬)
  ↓ 无
-L2  GitHub search API → title 关键词搜索
+L2  Papers With Code dump (离线，最精准)
+     └─ 下载 links-between-papers-and-code.json.gz (~50MB, 百万级映射)
+     └─ 查找: arxiv_id → paper_url → repo_url
+     └─ 备用: normalized_title → paper_url → repo_url
+     └─ 优先返回 github.com 链接
+ ↓ PWC 未命中
+L3  S2 batch API → externalIds.GitHub
+     └─ 500 篇/请求，一次调用即可获取
+     └─ normalize_repo_url() 规范化
+ ↓ S2 无 GitHub 链接
+L4  arXiv TeX 源码 → \url{github.com/...} 提取 (char-faithful, 零 OCR 误差)
+ ↓ 无 TeX
+L5  PDF text-layer → github.com URL regex (PyMuPDF, char-faithful)
+     └─ 用 PDF text 而非 markdown (I/l/1 不会混淆)
+ ↓ 无 URL
+L6  GitHub search API → title 关键词搜索 (最后手段)
      ├─ 提取 title keywords (去 stopwords)
      ├─ 搜索 repos: title keywords + "in:readme"
      ├─ 评分: keyword 在 repo name/description 中的匹配数
      └─ 过滤: 去除 awesome-list、generic repos
  ↓ 未命中
-L3  GitHub search → arXiv ID 搜索 (如有)
- ↓ 未命中
-L4  arXiv TeX 源码 → \url{github.com/...} 提取
- ↓ 无 TeX
-L5  PDF 全文 → github.com URL regex
+L7  Abstract 中的 github.com URL regex (最弱)
 ```
 
 **二次审核**:
-1. **keyword 匹配验证**: repo 的 name + description 必须包含 ≥2 个 title keywords，或 repo README 必须包含 ≥3 个 title keywords
-2. **README title 验证**: 从 README 中提取论文标题，做 `_titles_similar()` 校验
-3. **过滤 awesome-list**: repo name 含 "awesome" 或 star > 10k 且 description 无 title keyword → 跳过
-4. **过滤社区复现**: 优先选 star 数最高且标题匹配的 repo
+1. **normalize_repo_url()**: 规范化为 `https://github.com/{owner}/{repo}`，去 `.git` 后缀，去 www
+2. **repo_cache_key()**: 小写 `owner/repo` 去重
+3. **过滤无效 repo 路径**: 跳过 `features/issues/pulls/blob/tree/wiki` 等 GitHub 功能路径
+4. **README title 验证** (L6): 从 README 中提取论文标题，做 `_is_title_match()` 校验
+5. **过滤 awesome-list** (L6): repo name 含 "awesome" 或 star > 10k 且 description 无 title keyword → 跳过
 
 ---
 
@@ -323,6 +397,75 @@ L4  项目主页 → 抓取页面 → 提取 dataset 链接
 - PDF 中的 `is_released_by_paper` 检测: 匹配 "we release/publish/provide ... dataset" 动词
 - HuggingFace 搜索结果需要标题匹配验证（HF 搜索很模糊，容易返回同名不同论文的 dataset）
 - 区分 **论文自发布的数据集** vs **论文使用的已有数据集**
+
+---
+
+### 1.16 PDF 下载 (5 级 fallback + magic byte 验证)
+
+> 采用 resmax 方案，增加多源候选和 PDF 验证。
+
+```
+L1  pdf_url (已知直链，来自 venue_index / accepted list)
+ ↓ 空
+L2  arXiv PDF → https://arxiv.org/pdf/{arxiv_id}.pdf
+ ↓ 无 arxiv_id
+L3  OpenReview PDF → https://openreview.net/pdf?id={forum_id}
+     └─ 需要 browser User-Agent 绕过 403
+ ↓ 无 forum_id
+L4  ACM DOI PDF → https://dl.acm.org/doi/pdf/{doi}
+     └─ 部分 IP 受限，需要机构网络或 Unpaywall OA 替代
+ ↓ 无 DOI
+L5  paper_link (如果以 .pdf 结尾)
+```
+
+**二次审核**:
+- **magic byte 验证**: 下载后检查前 5 字节是否为 `%PDF-`，防止 HTML 错误页伪装为 200 OK
+- **大小上限**: 80 MB (安全上限，过滤异常大文件)
+- **Unpaywall 兜底**: 当 DOI 可用但直链受限时，查 Unpaywall API 获取 OA PDF
+
+---
+
+### 1.17 三层文本提取 (source text)
+
+> 采用 resmax 的三层互补方案。三层各有优势，取并集。
+
+```
+Layer A: arXiv TeX 源码 (最高保真)
+  └─ arxiv-to-prompt: TeX → flattened text
+  └─ 优势: 公式精确, \cite{} 准确, \url{} 无 OCR 误差
+  └─ 局限: 仅 arXiv 论文, ~90% 有 TeX 源
+
+Layer B: PDF text-layer (PyMuPDF, char-faithful)
+  └─ page.get_text("text") → 每页文本拼接
+  └─ 优势: I/l/1 区分准确 (ToUnicode CMap), URL 提取最可靠
+  └─ 局限: 布局不保留 (双栏拼接), 图表文字混入正文
+
+Layer C: MinerU markdown (LLM 友好)
+  └─ 段落重排, 章节结构化, 公式 LaTeX
+  └─ 优势: 最适合 LLM 阅读和分析
+  └─ 局限: URL 中 I/l/1 可能混淆, 依赖 GPU
+```
+
+**URL 提取策略**: 从 TeX 和 PDF text 中提取 (char-faithful)，markdown 仅做补充参考。
+**公式提取策略**: TeX > VLM (from PDF image) > PyMuPDF regex。
+**图表提取策略**: 仅从 PDF (PyMuPDF + VLM)，TeX 提供 caption 交叉验证。
+
+---
+
+### 1.18 review 数据 (OpenReview)
+
+> 来自 resmax，RF 当前缺失。
+
+```
+L1  OpenReview API v2 → /notes?content.venueid={venue_id}
+     └─ 提取: reviewer_id, rating, confidence, summary, strengths, weaknesses
+     └─ 保存: reviews/{conf_year}/{forum_id}.json
+     └─ 汇总: review_scores, review_confidence, review_num_reviewers
+ ↓ 非 OpenReview 会议
+L2  标记 review_available="no"
+```
+
+**覆盖范围**: ICLR, NeurIPS, ICML (公开 review)。CVPR/ACL 等不公开 review。
 
 ---
 
