@@ -45,6 +45,22 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
 
     # ── Parser Ensemble ──────────────────────────────────────────
 
+    # 0. arXiv TeX source (highest fidelity for formulas/citations/figures)
+    tex_result = None
+    if paper.arxiv_id:
+        try:
+            from backend.services.tex_extraction_service import extract_all_from_tex
+            tex_result = extract_all_from_tex(paper.arxiv_id)
+            if tex_result:
+                logger.info(
+                    f"TeX extraction for {paper_id}: "
+                    f"{len(tex_result['formulas'])} formulas, "
+                    f"{len(tex_result['bibkeys'])} bibkeys, "
+                    f"{len(tex_result['figures'])} figures"
+                )
+        except Exception as e:
+            logger.debug(f"TeX extraction failed for {paper_id}: {e}")
+
     # 1. PyMuPDF (always available, fast fallback)
     pymupdf_result = parse_pdf(pdf_path)
 
@@ -93,13 +109,33 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         logger.info("GROBID not available, using PyMuPDF only")
 
     # ── S2 fallback for refs + authors when GROBID fails ─────────
-    if not grobid_refs and paper.arxiv_id:
+    if not grobid_refs:
         try:
             import httpx
-            from backend.services.enrich_service import _s2_headers
+            from backend.services.enrich_service import _s2_headers, _build_s2_id, _titles_similar
             S2_API = "https://api.semanticscholar.org/graph/v1"
-            s2_id = f"ARXIV:{paper.arxiv_id}"
+            # Build S2 ID: arxiv_id → DOI → openreview URL → title search
+            s2_id = _build_s2_id(paper) if hasattr(paper, 'doi') else (
+                f"ARXIV:{paper.arxiv_id}" if paper.arxiv_id else None
+            )
             async with httpx.AsyncClient(timeout=30) as client:
+                # Title-based search fallback when no structured ID
+                if not s2_id and paper.title:
+                    from backend.utils.api_clients import limiters as _lim
+                    await _lim["s2"].acquire()
+                    search_resp = await client.get(
+                        f"{S2_API}/paper/search",
+                        params={"query": paper.title[:200], "limit": "1",
+                                "fields": "title,externalIds"},
+                        headers=_s2_headers(),
+                    )
+                    if search_resp.status_code == 200:
+                        hits = search_resp.json().get("data", [])
+                        if hits and _titles_similar(paper.title, hits[0].get("title", "")):
+                            s2_id = hits[0].get("paperId")
+
+                if not s2_id:
+                    raise ValueError("No S2 paper ID found")
                 # Fetch references
                 resp = await client.get(
                     f"{S2_API}/paper/{s2_id}/references",
@@ -120,8 +156,8 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
                     logger.info(f"S2 fallback refs for {paper_id}: {len(grobid_refs)}")
 
                 # Fetch detailed author info
-                import asyncio as _asyncio
-                await _asyncio.sleep(1.2)
+                from backend.utils.api_clients import limiters
+                await limiters["s2"].acquire()
                 resp2 = await client.get(
                     f"{S2_API}/paper/{s2_id}/authors",
                     params={"fields": "name,affiliations,hIndex"},
@@ -204,9 +240,11 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             paper_id, pymupdf_result.figure_images, figure_captions
         )
 
-    # ── Formula extraction (VLM page scan, GROBID coords optional) ──
+    # ── Formula extraction ──────────────────────────────────────
+    # Priority: TeX source (zero error) → VLM page scan → PyMuPDF regex
     extracted_formulas = pymupdf_result.formulas  # PyMuPDF regex as baseline
     grobid_formula_data = []
+    formula_source = "pymupdf"
 
     if grobid_result and grobid_result.formulas:
         grobid_formula_data = [
@@ -215,7 +253,13 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             if f.text
         ]
 
-    if pdf_path and (settings.anthropic_api_key or settings.openai_api_key):
+    # Priority 1: TeX source formulas (exact LaTeX, zero OCR error)
+    if tex_result and tex_result.get("formulas"):
+        extracted_formulas = [f["latex"] for f in tex_result["formulas"] if f.get("latex")]
+        formula_source = "arxiv_tex"
+        logger.info(f"Using TeX source formulas for {paper_id}: {len(extracted_formulas)} formulas (zero OCR error)")
+    # Priority 2: VLM page scan (when no TeX available)
+    elif pdf_path and (settings.anthropic_api_key or settings.openai_api_key):
         try:
             from backend.services.formula_extraction_service import extract_formulas
             vlm_formulas = await extract_formulas(
@@ -226,23 +270,57 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             )
             if vlm_formulas:
                 extracted_formulas = [f["latex"] for f in vlm_formulas if f.get("latex")]
+                formula_source = "vlm"
                 logger.info(f"Formula extraction: {len(vlm_formulas)} formulas via VLM for {paper_id}")
         except Exception as e:
             logger.warning(f"Formula extraction failed for {paper_id}: {e}")
+
+    # ── Table content extraction (VLM → Markdown) ────────────────
+    if figure_image_records and (settings.anthropic_api_key or settings.openai_api_key):
+        table_regions = [r for r in figure_image_records if r.get("type") == "table"]
+        if table_regions:
+            try:
+                from backend.services.vlm_extraction_service import extract_table_content
+                table_contents = await extract_table_content(
+                    table_images=table_regions,
+                    paper_id=paper_id,
+                    session=session,
+                )
+                # Merge structured content into table_captions
+                for tc in table_contents:
+                    for existing in table_captions:
+                        if existing.get("table_num") == tc.get("table_num"):
+                            existing["markdown"] = tc.get("markdown", "")
+                            existing["headers"] = tc.get("headers", [])
+                            existing["rows"] = tc.get("rows", [])
+                            break
+                    else:
+                        # Table detected by VLM but not in captions — add it
+                        table_captions.append(tc)
+                logger.info(f"Table content extraction: {len(table_contents)} tables for {paper_id}")
+            except Exception as e:
+                logger.warning(f"Table content extraction failed for {paper_id}: {e}")
 
     # ── Build parse metadata ─────────────────────────────────────
     parse_metadata = {
         "parsers_used": ["pymupdf"],
         "grobid_available": grobid_result is not None,
+        "tex_available": tex_result is not None,
+        "formula_source": formula_source,
         "grobid_ref_count": len(grobid_refs),
         "grobid_author_count": len(grobid_authors),
         "pymupdf_section_count": len(pymupdf_result.sections),
         "pymupdf_formula_count": len(pymupdf_result.formulas),
         "grobid_formula_count": len(grobid_formula_data),
+        "tex_formula_count": len(tex_result["formulas"]) if tex_result else 0,
+        "tex_bibkey_count": len(tex_result["bibkeys"]) if tex_result else 0,
+        "tex_figure_count": len(tex_result["figures"]) if tex_result else 0,
         "final_formula_count": len(extracted_formulas),
         "pymupdf_figure_count": len(pymupdf_result.figure_captions),
-        "vlm_available": True,  # Claude API always available (no GPU needed)
+        "vlm_available": True,
     }
+    if tex_result:
+        parse_metadata["parsers_used"].append("arxiv_tex")
     if grobid_result:
         parse_metadata["parsers_used"].append("grobid")
 
@@ -266,8 +344,19 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             "grobid_authors": grobid_authors,
             "grobid_abstract": grobid_result.abstract if grobid_result else None,
             "grobid_keywords": grobid_result.keywords if grobid_result else [],
+            "tex_bibkeys": tex_result["bibkeys"] if tex_result else [],
+            "tex_figures": tex_result["figures"][:20] if tex_result else [],
+            "tex_urls": tex_result["urls"] if tex_result else {},
+            "tex_formulas_labeled": [
+                {"latex": f["latex"], "label": f["label"], "env": f["env_type"]}
+                for f in (tex_result["formulas"] if tex_result else [])
+                if f.get("label")
+            ][:30],
             "parse_metadata": parse_metadata,
-        } if grobid_result else {"parse_metadata": parse_metadata},
+            "section_hierarchy": pymupdf_result.sections_hierarchy if pymupdf_result else [],
+            "citation_contexts": pymupdf_result.citation_contexts[:100] if pymupdf_result else [],
+            "dataset_mentions": pymupdf_result.dataset_mentions if pymupdf_result else [],
+        },
         is_current=True,
     )
     session.add(analysis)

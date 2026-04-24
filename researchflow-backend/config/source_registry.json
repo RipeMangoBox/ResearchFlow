@@ -1,0 +1,770 @@
+{
+  "conference_years": [
+    {
+      "venue": "ICLR",
+      "year": 2024,
+      "conf_year": "ICLR_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://iclr.cc/static/virtual/data/iclr-2024-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 2382
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON. title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "ICLR",
+      "year": 2025,
+      "conf_year": "ICLR_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://iclr.cc/static/virtual/data/iclr-2025-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 4040
+      },
+      "auxiliary_sources": [
+        {
+          "kind": "iclr_virtual_html",
+          "url": "fixture://iclr_2025_virtual.html",
+          "parser": "iclr_virtual_html",
+          "expected_count": null
+        }
+      ],
+      "notes": "Virtual conference JSON primary. Fixture HTML auxiliary fallback."
+    },
+    {
+      "venue": "ICLR",
+      "year": 2026,
+      "conf_year": "ICLR_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://iclr.cc/static/virtual/data/iclr-2026-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 5695
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON live before conference. Abstracts included. ~5695 entries (449 oral + 5246 poster)."
+    },
+    {
+      "venue": "NeurIPS",
+      "year": 2024,
+      "conf_year": "NeurIPS_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://neurips.cc/static/virtual/data/neurips-2024-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 4610
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON. title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "NeurIPS",
+      "year": 2025,
+      "conf_year": "NeurIPS_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://neurips.cc/static/virtual/data/neurips-2025-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 6002
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON. title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "ICML",
+      "year": 2024,
+      "conf_year": "ICML_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://icml.cc/static/virtual/data/icml-2024-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 2778
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON. title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "ICML",
+      "year": 2025,
+      "conf_year": "ICML_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://icml.cc/static/virtual/data/icml-2025-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 3459
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON. title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "CVPR",
+      "year": 2024,
+      "conf_year": "CVPR_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "cvpr_openaccess_html",
+        "url": "https://openaccess.thecvf.com/CVPR2024?day=all",
+        "parser": "cvpr_openaccess_html",
+        "expected_count": 2720
+      },
+      "auxiliary_sources": [
+        {
+          "kind": "virtual_conference_json",
+          "url": "https://cvpr.thecvf.com/static/virtual/data/cvpr-2024-orals-posters.json",
+          "parser": "virtual_conference_json",
+          "expected_count": 2806
+        }
+      ],
+      "notes": "CVF OpenAccess primary (pdf/arxiv links). VC JSON auxiliary (decision/abstract/acceptance_type). VC JSON has 2806 papers (90 oral + 324 highlight + 2302 poster)."
+    },
+    {
+      "venue": "CVPR",
+      "year": 2025,
+      "conf_year": "CVPR_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "cvpr_openaccess_html",
+        "url": "fixture://cvpr_2025_openaccess.html",
+        "parser": "cvpr_openaccess_html",
+        "expected_count": 2871
+      },
+      "auxiliary_sources": [
+        {
+          "kind": "virtual_conference_json",
+          "url": "https://cvpr.thecvf.com/static/virtual/data/cvpr-2025-orals-posters.json",
+          "parser": "virtual_conference_json",
+          "expected_count": 2966
+        }
+      ],
+      "notes": "CVF OpenAccess primary (pdf/arxiv links). VC JSON auxiliary (abstract/event_type). VC JSON decision is None; event_type has Oral(95)/Poster(2871) but no highlight info."
+    },
+    {
+      "venue": "CVPR",
+      "year": 2026,
+      "conf_year": "CVPR_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://cvpr.thecvf.com/static/virtual/data/cvpr-2026-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 4212
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON (EventHosts). 4212 papers (282 oral + 575 highlight + 3355 poster). Has abstracts. First CVPR year using virtual JSON instead of CVF OpenAccess."
+    },
+    {
+      "venue": "ECCV",
+      "year": 2024,
+      "conf_year": "ECCV_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "virtual_conference_json",
+        "url": "https://eccv.ecva.net/static/virtual/data/eccv-2024-orals-posters.json",
+        "parser": "virtual_conference_json",
+        "expected_count": 2587
+      },
+      "auxiliary_sources": [],
+      "notes": "Virtual conference JSON (ECVA platform). title/authors/abstract/decision/topic."
+    },
+    {
+      "venue": "ICCV",
+      "year": 2025,
+      "conf_year": "ICCV_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "cvpr_openaccess_html",
+        "url": "https://openaccess.thecvf.com/ICCV2025?day=all",
+        "parser": "cvpr_openaccess_html",
+        "expected_count": null
+      },
+      "auxiliary_sources": [
+        {
+          "kind": "virtual_conference_json",
+          "url": "https://iccv.thecvf.com/static/virtual/data/iccv-2025-orals-posters.json",
+          "parser": "virtual_conference_json",
+          "expected_count": 2765
+        }
+      ],
+      "notes": "CVF OpenAccess primary (pdf/arxiv links). VC JSON auxiliary (decision/abstract/acceptance_type). VC JSON: 128 oral + 263 highlight + 2374 poster = 2765."
+    },
+    {
+      "venue": "ACL",
+      "year": 2024,
+      "conf_year": "ACL_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acl_anthology_html",
+        "url": "https://aclanthology.org/events/acl-2024/",
+        "parser": "acl_anthology_html",
+        "expected_count": 1965
+      },
+      "auxiliary_sources": [],
+      "notes": "ACL Anthology. title/authors/abstract."
+    },
+    {
+      "venue": "ACL",
+      "year": 2025,
+      "conf_year": "ACL_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acl_anthology_html",
+        "url": "https://aclanthology.org/events/acl-2025/",
+        "parser": "acl_anthology_html",
+        "expected_count": 3351
+      },
+      "auxiliary_sources": [],
+      "notes": "ACL Anthology. title/authors/abstract."
+    },
+    {
+      "venue": "EMNLP",
+      "year": 2024,
+      "conf_year": "EMNLP_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acl_anthology_html",
+        "url": "https://aclanthology.org/events/emnlp-2024/",
+        "parser": "acl_anthology_html",
+        "expected_count": 2448
+      },
+      "auxiliary_sources": [],
+      "notes": "ACL Anthology. title/authors/abstract."
+    },
+    {
+      "venue": "AAAI",
+      "year": 2024,
+      "conf_year": "AAAI_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "aaai_ojs_multi_issue",
+        "url": "https://ojs.aaai.org/index.php/AAAI/issue/archive",
+        "parser": "aaai_ojs_html",
+        "parser_args": "AAAI-24",
+        "expected_count": null
+      },
+      "auxiliary_sources": [],
+      "notes": "AAAI OJS multi-issue aggregation. Automatically discovers all Technical Tracks issues."
+    },
+    {
+      "venue": "AAAI",
+      "year": 2025,
+      "conf_year": "AAAI_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "aaai_ojs_multi_issue",
+        "url": "https://ojs.aaai.org/index.php/AAAI/issue/archive",
+        "parser": "aaai_ojs_html",
+        "parser_args": "AAAI-25",
+        "expected_count": null
+      },
+      "auxiliary_sources": [],
+      "notes": "AAAI OJS multi-issue aggregation. Automatically discovers all Technical Tracks issues."
+    },
+    {
+      "venue": "KDD",
+      "year": 2024,
+      "conf_year": "KDD_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "kdd_html",
+        "url": "https://kdd2024.kdd.org/research-track-papers/",
+        "parser": "kdd_html",
+        "expected_count": 411
+      },
+      "auxiliary_sources": [],
+      "notes": "KDD official site. title/authors. No abstract."
+    },
+    {
+      "venue": "KDD",
+      "year": 2025,
+      "conf_year": "KDD_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "kdd_html",
+        "url": "https://kdd2025.kdd.org/research-track-papers/",
+        "parser": "kdd_html",
+        "expected_count": 552
+      },
+      "auxiliary_sources": [],
+      "notes": "KDD official site. title/authors. No abstract."
+    },
+    {
+      "venue": "SIGGRAPH",
+      "year": 2025,
+      "conf_year": "SIGGRAPH_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "kesen_siggraph_html",
+        "url": "fixture://siggraph_2025_kesen.html",
+        "parser": "kesen_siggraph_html",
+        "expected_count": 330
+      },
+      "auxiliary_sources": [],
+      "notes": "Ke-Sen Huang paper list. title/authors/paper_link/arxiv. No abstract."
+    },
+    {
+      "venue": "SIGGRAPH_Asia",
+      "year": 2025,
+      "conf_year": "SIGGRAPH_Asia_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "kesen_siggraph_html",
+        "url": "fixture://siggraph_asia_2025_kesen.html",
+        "parser": "kesen_siggraph_html",
+        "expected_count": 319
+      },
+      "auxiliary_sources": [],
+      "notes": "Ke-Sen Huang paper list. title/authors/paper_link/arxiv. No abstract."
+    },
+    {
+      "venue": "ACMMM",
+      "year": 2024,
+      "conf_year": "ACMMM_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acmmm_vue_accepted",
+        "url": "https://2024.acmmm.org",
+        "parser": "acmmm_vue_accepted",
+        "expected_count": 1150,
+        "parser_args": "chunk-240a60f6"
+      },
+      "auxiliary_sources": [],
+      "notes": "Accepted list embedded in Vue webpack chunk (route /accepted-list). title/authors only; use enrich scripts for abstracts."
+    },
+    {
+      "venue": "ACMMM",
+      "year": 2025,
+      "conf_year": "ACMMM_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acmmm_html",
+        "url": "fixture://acmmm_2025_regular.html",
+        "parser": "acmmm_html",
+        "expected_count": 1250
+      },
+      "auxiliary_sources": [],
+      "notes": "Official accepted regular papers page. title/authors only. No abstract."
+    },
+    {
+      "venue": "TPAMI",
+      "year": 2024,
+      "conf_year": "TPAMI_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S199944782",
+        "parser": "openalex_works",
+        "expected_count": 676,
+        "parser_args": "2024"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0162-8828. IEEE TPAMI."
+    },
+    {
+      "venue": "TPAMI",
+      "year": 2025,
+      "conf_year": "TPAMI_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S199944782",
+        "parser": "openalex_works",
+        "expected_count": 700,
+        "parser_args": "2025"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0162-8828. IEEE TPAMI."
+    },
+    {
+      "venue": "TPAMI",
+      "year": 2026,
+      "conf_year": "TPAMI_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S199944782",
+        "parser": "openalex_works",
+        "expected_count": null,
+        "parser_args": "2026"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0162-8828. IEEE TPAMI. 2026 partial year."
+    },
+    {
+      "venue": "IJCV",
+      "year": 2024,
+      "conf_year": "IJCV_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S25538012",
+        "parser": "openalex_works",
+        "expected_count": 356,
+        "parser_args": "2024"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0920-5691. Springer IJCV. No abstract from OpenAlex; use fallback.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "IJCV",
+      "year": 2025,
+      "conf_year": "IJCV_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S25538012",
+        "parser": "openalex_works",
+        "expected_count": 360,
+        "parser_args": "2025"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0920-5691. Springer IJCV. No abstract from OpenAlex; use fallback.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "IJCV",
+      "year": 2026,
+      "conf_year": "IJCV_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S25538012",
+        "parser": "openalex_works",
+        "expected_count": null,
+        "parser_args": "2026"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0920-5691. Springer IJCV. 2026 partial year.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "JMLR",
+      "year": 2024,
+      "conf_year": "JMLR_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "jmlr_html",
+        "url": "https://jmlr.org/papers/v25/",
+        "parser": "jmlr_html",
+        "expected_count": 350
+      },
+      "auxiliary_sources": [],
+      "notes": "JMLR official site. Volume 25 = 2024."
+    },
+    {
+      "venue": "JMLR",
+      "year": 2025,
+      "conf_year": "JMLR_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "jmlr_html",
+        "url": "https://jmlr.org/papers/v26/",
+        "parser": "jmlr_html",
+        "expected_count": 300
+      },
+      "auxiliary_sources": [],
+      "notes": "JMLR official site. Volume 26 = 2025."
+    },
+    {
+      "venue": "JMLR",
+      "year": 2026,
+      "conf_year": "JMLR_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "jmlr_html",
+        "url": "https://jmlr.org/papers/v27/",
+        "parser": "jmlr_html",
+        "expected_count": null
+      },
+      "auxiliary_sources": [],
+      "notes": "JMLR official site. Volume 27 = 2026. Partial year."
+    },
+    {
+      "venue": "AIJ",
+      "year": 2024,
+      "conf_year": "AIJ_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S196139623",
+        "parser": "openalex_works",
+        "expected_count": 132,
+        "parser_args": "2024"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0004-3702. Elsevier Artificial Intelligence.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "AIJ",
+      "year": 2025,
+      "conf_year": "AIJ_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S196139623",
+        "parser": "openalex_works",
+        "expected_count": 130,
+        "parser_args": "2025"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0004-3702. Elsevier Artificial Intelligence.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "AIJ",
+      "year": 2026,
+      "conf_year": "AIJ_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S196139623",
+        "parser": "openalex_works",
+        "expected_count": null,
+        "parser_args": "2026"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=0004-3702. Elsevier Artificial Intelligence. 2026 partial year.",
+      "expected_abstract_coverage": 65.0
+    },
+    {
+      "venue": "TNNLS",
+      "year": 2024,
+      "conf_year": "TNNLS_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S4210175523",
+        "parser": "openalex_works",
+        "expected_count": 842,
+        "parser_args": "2024"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=2162-237X. IEEE TNNLS."
+    },
+    {
+      "venue": "TNNLS",
+      "year": 2025,
+      "conf_year": "TNNLS_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S4210175523",
+        "parser": "openalex_works",
+        "expected_count": 850,
+        "parser_args": "2025"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=2162-237X. IEEE TNNLS."
+    },
+    {
+      "venue": "TNNLS",
+      "year": 2026,
+      "conf_year": "TNNLS_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "openalex_api",
+        "url": "S4210175523",
+        "parser": "openalex_works",
+        "expected_count": null,
+        "parser_args": "2026"
+      },
+      "auxiliary_sources": [],
+      "notes": "OpenAlex API. ISSN=2162-237X. IEEE TNNLS. 2026 partial year."
+    },
+    {
+      "venue": "ArXiv_HiCite",
+      "year": 2024,
+      "conf_year": "ArXiv_HiCite_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "s2_bulk_search",
+        "url": "https://api.semanticscholar.org/graph/v1/paper/search/bulk",
+        "parser": "s2_bulk_papers",
+        "expected_count": null,
+        "parser_args": "year=2024,minCitationCount=auto"
+      },
+      "auxiliary_sources": [],
+      "notes": "S2 Bulk Search: high-citation arXiv preprints not in peer-reviewed venues. CS field, dynamic citation threshold."
+    },
+    {
+      "venue": "ArXiv_HiCite",
+      "year": 2025,
+      "conf_year": "ArXiv_HiCite_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "s2_bulk_search",
+        "url": "https://api.semanticscholar.org/graph/v1/paper/search/bulk",
+        "parser": "s2_bulk_papers",
+        "expected_count": null,
+        "parser_args": "year=2025,minCitationCount=auto"
+      },
+      "auxiliary_sources": [],
+      "notes": "S2 Bulk Search: high-citation arXiv preprints. 2025. Dynamic citation threshold."
+    },
+    {
+      "venue": "ArXiv_HiCite",
+      "year": 2026,
+      "conf_year": "ArXiv_HiCite_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "s2_bulk_search",
+        "url": "https://api.semanticscholar.org/graph/v1/paper/search/bulk",
+        "parser": "s2_bulk_papers",
+        "expected_count": null,
+        "parser_args": "year=2026,minCitationCount=auto"
+      },
+      "auxiliary_sources": [],
+      "notes": "S2 Bulk Search: high-citation arXiv preprints. 2026 partial year. Dynamic citation threshold."
+    },
+    {
+      "venue": "HF_DailyPapers",
+      "year": 2024,
+      "conf_year": "HF_DailyPapers_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "hf_daily_papers_api",
+        "url": "https://huggingface.co/api/daily_papers",
+        "parser": "hf_daily_papers",
+        "expected_count": null,
+        "parser_args": "year=2024,minUpvotes=30"
+      },
+      "auxiliary_sources": [],
+      "notes": "HuggingFace Daily Papers: community-selected papers with >=30 upvotes."
+    },
+    {
+      "venue": "HF_DailyPapers",
+      "year": 2025,
+      "conf_year": "HF_DailyPapers_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "hf_daily_papers_api",
+        "url": "https://huggingface.co/api/daily_papers",
+        "parser": "hf_daily_papers",
+        "expected_count": null,
+        "parser_args": "year=2025,minUpvotes=30"
+      },
+      "auxiliary_sources": [],
+      "notes": "HuggingFace Daily Papers: community-selected papers. 2025."
+    },
+    {
+      "venue": "HF_DailyPapers",
+      "year": 2026,
+      "conf_year": "HF_DailyPapers_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "hf_daily_papers_api",
+        "url": "https://huggingface.co/api/daily_papers",
+        "parser": "hf_daily_papers",
+        "expected_count": null,
+        "parser_args": "year=2026,minUpvotes=15"
+      },
+      "auxiliary_sources": [],
+      "notes": "HuggingFace Daily Papers: community-selected papers. 2026 partial year, lower threshold."
+    },
+    {
+      "venue": "Anthropic_Research",
+      "year": 2024,
+      "conf_year": "Anthropic_Research_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "anthropic_sitemap_cached",
+        "url": "https://www.anthropic.com/research",
+        "parser": "anthropic_research",
+        "expected_count": null,
+        "parser_args": ""
+      },
+      "auxiliary_sources": [],
+      "notes": "Anthropic research blog + transformer-circuits.pub. Sitemap scrape, filtered by year.",
+      "expected_abstract_coverage": 70.0
+    },
+    {
+      "venue": "Anthropic_Research",
+      "year": 2025,
+      "conf_year": "Anthropic_Research_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "anthropic_sitemap_cached",
+        "url": "https://www.anthropic.com/research",
+        "parser": "anthropic_research",
+        "expected_count": null,
+        "parser_args": ""
+      },
+      "auxiliary_sources": [],
+      "notes": "Anthropic research blog. 2025.",
+      "expected_abstract_coverage": 70.0
+    },
+    {
+      "venue": "Anthropic_Research",
+      "year": 2026,
+      "conf_year": "Anthropic_Research_2026",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "anthropic_sitemap_cached",
+        "url": "https://www.anthropic.com/research",
+        "parser": "anthropic_research",
+        "expected_count": null,
+        "parser_args": ""
+      },
+      "auxiliary_sources": [],
+      "notes": "Anthropic research blog. 2026 partial year.",
+      "expected_abstract_coverage": 70.0
+    }
+  ]
+}

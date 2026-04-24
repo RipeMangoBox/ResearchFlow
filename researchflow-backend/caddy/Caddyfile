@@ -1,4 +1,8 @@
-{$DOMAIN:localhost} {
+{
+    auto_https off
+}
+
+:80 {
     # API
     handle /api/* {
         reverse_proxy api:8000
@@ -10,7 +14,7 @@
         reverse_proxy api:8000
     }
 
-    # MCP SSE server (remote connection for Claude Code)
+    # MCP SSE server
     handle /sse {
         reverse_proxy mcp:8001
     }
@@ -18,7 +22,7 @@
         reverse_proxy mcp:8001
     }
 
-    # Frontend (everything else)
+    # Frontend
     handle {
         reverse_proxy frontend:3000
     }

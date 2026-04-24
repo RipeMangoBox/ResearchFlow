@@ -6,3 +6,5 @@ exports/
 storage/
 frontend/node_modules/
 frontend/.next/
+.secrets/
+*.pem

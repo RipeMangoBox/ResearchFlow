@@ -87,7 +87,7 @@ async def call_llm(
                 # Prefer OpenAI-compatible proxy when OPENAI_BASE_URL is set
                 # (proxy handles routing; Anthropic direct often fails in CN)
                 if settings.openai_api_key and getattr(settings, "openai_base_url", None):
-                    default_model = settings.openai_model or "so-4.6"
+                    default_model = settings.openai_model or "kimi-k2.6"
                     resp = await asyncio.wait_for(
                         _call_openai(prompt, system, model or default_model, max_tokens, temperature),
                         timeout=180,
@@ -98,7 +98,7 @@ async def call_llm(
                         timeout=180,
                     )
                 else:
-                    default_model = settings.openai_model or "so-4.6"
+                    default_model = settings.openai_model or "kimi-k2.6"
                     resp = await asyncio.wait_for(
                         _call_openai(prompt, system, model or default_model, max_tokens, temperature),
                         timeout=180,
@@ -186,6 +186,8 @@ async def _call_openai(prompt: str, system: str, model: str,
     kwargs = {"api_key": settings.openai_api_key}
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
+    # Kimi API requires coding-agent User-Agent header
+    kwargs["default_headers"] = {"User-Agent": "claude-code/1.0"}
     client = openai.AsyncOpenAI(**kwargs)
 
     start = time.monotonic()
@@ -238,7 +240,9 @@ def _mock_response(prompt: str, system: str) -> LLMResponse:
 def _estimate_cost(resp: LLMResponse) -> float:
     """Rough cost estimate in USD."""
     costs = {
-        # apicursor.com proxy model names
+        # Kimi K2.6 (kimi.com/coding)
+        "kimi-k2.6": (1.0 / 1_000_000, 4.0 / 1_000_000),
+        # Legacy proxy model names (keep for old records)
         "so-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
         "op-4.6": (15.0 / 1_000_000, 75.0 / 1_000_000),
         "mock": (0, 0),

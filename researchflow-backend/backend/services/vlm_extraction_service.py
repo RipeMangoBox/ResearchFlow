@@ -24,9 +24,9 @@ from backend.models.system import ModelRun
 
 logger = logging.getLogger(__name__)
 
-# Model selection: use Sonnet for routine VLM tasks (cheaper), Opus for complex judgment
-VLM_MODEL_ROUTINE = "so-4.6"  # figure classification, simple OCR
-VLM_MODEL_COMPLEX = "op-4.6"    # formula derivation, acceptance judgment
+# Model selection: Kimi K2.6 for all VLM tasks (native multimodal, single model)
+VLM_MODEL_ROUTINE = "kimi-k2.6"  # figure classification, simple OCR
+VLM_MODEL_COMPLEX = "kimi-k2.6"  # formula derivation, acceptance judgment
 
 
 async def call_vlm(
@@ -54,7 +54,7 @@ async def call_vlm(
     if not settings.anthropic_api_key and not settings.openai_api_key:
         return {"text": "[VLM mock — no API key]", "input_tokens": 0, "output_tokens": 0, "model": "mock"}
 
-    # Build multimodal content in OpenAI format (works with apicursor proxy too)
+    # Build multimodal content in OpenAI format
     content = []
     for img in images:
         if "data" in img:
@@ -76,12 +76,13 @@ async def call_vlm(
     start = time.monotonic()
 
     try:
-        # Primary: OpenAI SDK with streaming (works with apicursor)
+        # Primary: OpenAI SDK with streaming (Kimi K2.6)
         if settings.openai_api_key:
             import openai
             client = openai.AsyncOpenAI(
                 api_key=settings.openai_api_key,
                 base_url=settings.openai_base_url or None,
+                default_headers={"User-Agent": "claude-code/1.0"},
             )
             actual_model = settings.openai_model or model
             messages = [{"role": "user", "content": content}]
@@ -239,7 +240,7 @@ Only return the JSON, no other text."""
             prompt=prompt,
             images=[{"data": img_data, "media_type": media_type}],
             model=VLM_MODEL_ROUTINE,
-            max_tokens=500,
+            max_tokens=settings.vlm_max_tokens_light,
             session=session,
             paper_id=paper_id,
         )
@@ -312,7 +313,7 @@ Return format (only if formula):
             prompt=prompt,
             images=[{"data": img_data, "media_type": f"image/{ext}"}],
             model=VLM_MODEL_ROUTINE,
-            max_tokens=300,
+            max_tokens=settings.vlm_max_tokens_light,
             session=session,
             paper_id=paper_id,
         )
@@ -375,7 +376,7 @@ Return JSON only:
         prompt=prompt,
         system="You are a metadata resolver for academic papers. Be conservative — only say 'accepted' if evidence is strong.",
         model=VLM_MODEL_ROUTINE,
-        max_tokens=300,
+        max_tokens=settings.vlm_max_tokens_tiny,
         temperature=0.1,
         session=session,
         paper_id=paper_id,
@@ -388,9 +389,128 @@ Return JSON only:
         return {"accepted": None, "confidence": 0.0, "reasoning": "Failed to parse LLM response"}
 
 
+# ── Table content extraction ──────────────────────────────────────
+
+
+async def extract_table_content(
+    table_images: list[dict],
+    paper_id: UUID | None = None,
+    session: AsyncSession | None = None,
+    max_tables: int = 10,
+) -> list[dict]:
+    """Extract table cell data via VLM → Markdown table.
+
+    Args:
+        table_images: [{image_bytes, caption, table_num, page_num, ext}]
+    Returns:
+        [{table_num, caption, markdown, headers, rows, page_num}]
+    """
+    results: list[dict] = []
+
+    for item in table_images[:max_tables]:
+        img_data = item.get("image_bytes")
+        if not img_data:
+            continue
+
+        ext = item.get("ext", "png")
+        if isinstance(img_data, bytes):
+            img_data = base64.b64encode(img_data).decode()
+
+        table_num = item.get("table_num", item.get("figure_num", 0))
+        caption = item.get("caption", "")
+
+        prompt = f"""Convert this table image to a Markdown table. Requirements:
+- Preserve all column headers and row labels exactly as shown
+- Preserve numeric precision (do not round)
+- For merged cells, repeat the value in each covered cell
+- Use standard Markdown table syntax with | separators and --- header row
+- Only output the Markdown table, no explanation
+
+{"Table caption: " + caption if caption else ""}"""
+
+        try:
+            vlm_result = await call_vlm(
+                prompt=prompt,
+                images=[{"data": img_data, "media_type": f"image/{ext}"}],
+                model=VLM_MODEL_ROUTINE,
+                max_tokens=settings.vlm_max_tokens_heavy,
+                temperature=0.1,
+                session=session,
+                paper_id=paper_id,
+            )
+
+            md_text = vlm_result.get("text", "").strip()
+            # Strip markdown code fence if present
+            md_text = md_text.strip("```markdown").strip("```").strip()
+
+            parsed = _parse_markdown_table(md_text)
+            results.append({
+                "table_num": table_num,
+                "caption": caption,
+                "markdown": md_text,
+                "headers": parsed.get("headers", []),
+                "rows": parsed.get("rows", []),
+                "page_num": item.get("page_num", 0),
+            })
+        except Exception as e:
+            logger.warning(f"Table OCR failed for table {table_num}: {e}")
+            results.append({
+                "table_num": table_num,
+                "caption": caption,
+                "markdown": "",
+                "headers": [],
+                "rows": [],
+                "page_num": item.get("page_num", 0),
+            })
+
+    return results
+
+
+def _parse_markdown_table(md: str) -> dict:
+    """Parse a Markdown table string into {headers, rows}.
+
+    Handles standard format:
+      | Col1 | Col2 |
+      |------|------|
+      | val  | val  |
+    """
+    lines = [l.strip() for l in md.strip().splitlines() if l.strip()]
+    if not lines:
+        return {"headers": [], "rows": []}
+
+    def _split_row(line: str) -> list[str]:
+        # Remove leading/trailing pipes and split
+        cells = line.strip("|").split("|")
+        return [c.strip() for c in cells]
+
+    headers: list[str] = []
+    rows: list[list[str]] = []
+    header_done = False
+
+    for line in lines:
+        if "|" not in line:
+            continue
+        # Separator row: |---|---|
+        if re.match(r"^\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$", line):
+            header_done = True
+            continue
+        cells = _split_row(line)
+        if not header_done:
+            headers = cells
+        else:
+            rows.append(cells)
+
+    # If no separator found, treat first row as header
+    if not header_done and headers and not rows:
+        pass  # headers already set, no data rows
+
+    return {"headers": headers, "rows": rows}
+
+
 def _estimate_vlm_cost(input_tokens: int, output_tokens: int, model: str) -> float:
     """Estimate cost for VLM calls (image tokens are more expensive)."""
     costs = {
+        "kimi-k2.6": (1.0 / 1_000_000, 4.0 / 1_000_000),
         "so-4.6": (3.0 / 1_000_000, 15.0 / 1_000_000),
         "op-4.6": (15.0 / 1_000_000, 75.0 / 1_000_000),
     }

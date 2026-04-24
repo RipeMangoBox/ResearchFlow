@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.models.enums import PaperState
 from backend.models.paper import Paper
+from backend.utils.api_clients import limiters, _github_headers
 
 logger = logging.getLogger(__name__)
 
@@ -545,22 +546,31 @@ def _s2_headers() -> dict:
         h["x-api-key"] = settings.s2_api_key
     return h
 
-async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> dict | None:
-    """Fetch citation count + venue from Semantic Scholar."""
-    # Find paper on S2
-    s2_id = None
-    if paper.arxiv_id:
-        s2_id = f"arXiv:{re.sub(r'v[0-9]+$', '', paper.arxiv_id)}"
-    elif paper.doi:
-        s2_id = f"DOI:{paper.doi}"
 
+def _build_s2_id(paper: "Paper") -> str | None:
+    """Build S2 paper ID with 3-level fallback: arxiv_id → DOI → openreview URL."""
+    if paper.arxiv_id:
+        return f"ARXIV:{re.sub(r'v[0-9]+$', '', paper.arxiv_id)}"
+    if paper.doi:
+        return f"DOI:{paper.doi}"
+    # Fallback: try openreview forum_id if stored in paper_link
+    link = paper.paper_link or ""
+    m = re.search(r'openreview\.net/(?:forum|pdf)\?id=([a-zA-Z0-9_-]+)', link)
+    if m:
+        return f"URL:https://openreview.net/forum?id={m.group(1)}"
+    return None
+
+
+async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> dict | None:
+    """Fetch citation count + venue + abstract from Semantic Scholar."""
+    s2_id = _build_s2_id(paper)
     if not s2_id:
         return None
 
     try:
         resp = await client.get(
             f"{S2_API}/paper/{s2_id}",
-            params={"fields": "title,venue,year,citationCount,referenceCount,externalIds,url"},
+            params={"fields": "title,abstract,venue,year,citationCount,referenceCount,externalIds,url,openAccessPdf"},
             headers=_s2_headers(),
             timeout=15,
         )
@@ -568,7 +578,7 @@ async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> 
             return None
 
         data = resp.json()
-        return {
+        result = {
             "citation_count": data.get("citationCount", 0),
             "reference_count": data.get("referenceCount", 0),
             "venue": data.get("venue", ""),
@@ -576,8 +586,122 @@ async def _fetch_semantic_scholar(client: httpx.AsyncClient, paper: "Paper") -> 
             "s2_url": data.get("url", ""),
             "external_ids": data.get("externalIds", {}),
         }
+        if data.get("abstract"):
+            result["abstract"] = data["abstract"]
+        # OA PDF from S2
+        oa_pdf = data.get("openAccessPdf") or {}
+        if oa_pdf.get("url"):
+            result["oa_pdf_url"] = oa_pdf["url"]
+        return result
     except Exception as e:
         logger.debug(f"S2 API error for {s2_id}: {e}")
+        return None
+
+
+async def _fetch_s2_batch_abstracts(
+    client: httpx.AsyncClient, papers: list["Paper"],
+) -> dict[str, dict]:
+    """Batch-fetch abstracts from S2 for up to 500 papers at once.
+
+    Returns: {paper_id_str: {abstract, arxiv_id, doi, oa_pdf_url}}
+    Inspired by resmax's enrich_abstracts.py.
+    """
+    # Build S2 IDs
+    id_map: dict[str, str] = {}  # s2_id → paper.id str
+    s2_ids = []
+    for p in papers:
+        s2_id = _build_s2_id(p)
+        if s2_id:
+            s2_ids.append(s2_id)
+            id_map[s2_id] = str(p.id)
+
+    if not s2_ids:
+        return {}
+
+    results: dict[str, dict] = {}
+    # Process in batches of 500 (S2 batch limit)
+    for i in range(0, len(s2_ids), 500):
+        batch = s2_ids[i:i + 500]
+        try:
+            resp = await client.post(
+                f"{S2_API}/paper/batch",
+                json={"ids": batch},
+                params={"fields": "title,abstract,externalIds,openAccessPdf"},
+                headers=_s2_headers(),
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                for j, item in enumerate(resp.json()):
+                    if item is None:
+                        continue
+                    s2_id = batch[j]
+                    pid = id_map.get(s2_id)
+                    if not pid:
+                        continue
+                    data = {}
+                    if item.get("abstract"):
+                        data["abstract"] = item["abstract"]
+                    ext = item.get("externalIds") or {}
+                    if ext.get("ArXiv"):
+                        data["arxiv_id"] = ext["ArXiv"]
+                    if ext.get("DOI"):
+                        data["doi"] = ext["DOI"]
+                    oa = item.get("openAccessPdf") or {}
+                    if oa.get("url"):
+                        data["oa_pdf_url"] = oa["url"]
+                    if data:
+                        results[pid] = data
+            elif resp.status_code == 429:
+                logger.warning("S2 batch API rate-limited, backing off")
+                await limiters["s2"].backoff_429(attempt=0, base=30.0)
+        except Exception as e:
+            logger.warning(f"S2 batch API error: {e}")
+        if i + 500 < len(s2_ids):
+            await limiters["s2"].acquire()
+
+    return results
+
+
+# ── Unpaywall OA PDF resolution ──────────────────────────────
+
+UNPAYWALL_API = "https://api.unpaywall.org/v2"
+
+async def _fetch_unpaywall(client: httpx.AsyncClient, doi: str) -> dict | None:
+    """Find open-access PDF via Unpaywall (by DOI).
+
+    Inspired by resmax's oa_resolvers.py.
+    """
+    if not doi:
+        return None
+    try:
+        resp = await client.get(
+            f"{UNPAYWALL_API}/{doi}",
+            params={"email": "researchflow@example.com"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        result = {"is_oa": data.get("is_oa", False)}
+
+        # Best OA location
+        best = data.get("best_oa_location") or {}
+        if best.get("url_for_pdf"):
+            result["oa_pdf_url"] = best["url_for_pdf"]
+        elif best.get("url"):
+            result["oa_landing_url"] = best["url"]
+
+        # Fallback: check all locations
+        if "oa_pdf_url" not in result:
+            for loc in (data.get("oa_locations") or []):
+                if loc.get("url_for_pdf"):
+                    result["oa_pdf_url"] = loc["url_for_pdf"]
+                    break
+
+        return result if result.get("oa_pdf_url") or result.get("is_oa") else None
+    except Exception as e:
+        logger.debug(f"Unpaywall error for DOI {doi}: {e}")
         return None
 
 
@@ -674,6 +798,55 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
     record_observation = _record_obs()
     updated = {}
 
+    # ── 0. Venue index local lookup (zero API cost) ──────────
+    try:
+        from backend.services.venue_index.service import lookup_paper
+        vi_data = await lookup_paper(
+            session, title=paper.title or "", arxiv_id=paper.arxiv_id or "", doi=paper.doi or "",
+        )
+        if vi_data:
+            logger.info(f"Venue index hit for {paper.id}: {vi_data.get('conf_year')}")
+            # Fill missing fields from pre-crawled data
+            if not paper.abstract and vi_data.get("abstract"):
+                paper.abstract = vi_data["abstract"]
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="abstract", value=vi_data["abstract"][:500],
+                    source="venue_index")
+                updated["abstract"] = True
+            if not paper.venue and vi_data.get("venue"):
+                paper.venue = vi_data["venue"][:100]
+                updated["venue"] = True
+            if not paper.year and vi_data.get("year"):
+                paper.year = vi_data["year"]
+                updated["year"] = True
+            if not paper.arxiv_id and vi_data.get("arxiv_id"):
+                paper.arxiv_id = vi_data["arxiv_id"]
+                updated["arxiv_id"] = True
+            if not paper.doi and vi_data.get("doi"):
+                paper.doi = vi_data["doi"]
+                updated["doi"] = True
+            if not paper.code_url and vi_data.get("code_url"):
+                paper.code_url = vi_data["code_url"]
+                paper.open_code = True
+                updated["code_url"] = True
+            if not paper.acceptance_type and vi_data.get("acceptance_type"):
+                paper.acceptance_type = vi_data["acceptance_type"]
+                updated["acceptance_type"] = True
+            elif not paper.acceptance_type and vi_data.get("decision"):
+                paper.acceptance_type = vi_data["decision"]
+                updated["acceptance_type"] = True
+            if vi_data.get("acceptance_type") or vi_data.get("decision"):
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="acceptance_status", value="accepted",
+                    source="venue_index", confidence=0.95)
+            if not paper.authors and vi_data.get("authors"):
+                # Parse "A; B; C" format to list
+                names = [n.strip() for n in vi_data["authors"].split(";") if n.strip()]
+                paper.authors = [{"name": n} for n in names]
+                updated["authors"] = True
+    except Exception as e:
+        logger.debug(f"Venue index lookup failed for {paper.id}: {e}")
+
     # ── 1. arXiv ──────────────────────────────────────────────
     if paper.arxiv_id:
         arxiv_data = await _fetch_arxiv(client, paper.arxiv_id)
@@ -759,7 +932,7 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
     # Skip Crossref if title is still a placeholder (arxiv ID) — would match wrong papers
     title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
     if not paper.doi and paper.title and not title_is_placeholder:
-        await asyncio.sleep(0.5)
+        await limiters["crossref"].acquire()
         cr_data = await _fetch_crossref(client, paper.title)
         if cr_data:
             if cr_data.get("venue_crossref"):
@@ -816,14 +989,13 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             paper.year = oa_data["year"]
             updated["year"] = True
 
-    # ── 4. Semantic Scholar (citation count + venue) ──────────
+    # ── 4. Semantic Scholar (citation count + venue + abstract fallback) ──
     s2_data = await _fetch_semantic_scholar(client, paper)
     if s2_data:
         if s2_data.get("citation_count"):
             await record_observation(session, entity_type="paper", entity_id=paper.id,
                 field_name="citation_count", value=s2_data["citation_count"],
                 source="semantic_scholar", source_url=s2_data.get("s2_url"))
-            # S2 is more authoritative for citations — always overwrite
             s2_count = min(s2_data["citation_count"], 32767)
             if s2_count > (paper.cited_by_count or 0):
                 paper.cited_by_count = s2_count
@@ -835,15 +1007,36 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
             if not paper.venue and s2_data["venue"].strip():
                 paper.venue = s2_data["venue"][:100]
                 updated["venue"] = True
+        # Abstract fallback: S2 → fills when arXiv/OpenAlex missed
+        if not paper.abstract and s2_data.get("abstract"):
+            paper.abstract = s2_data["abstract"]
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="abstract", value=s2_data["abstract"][:500],
+                source="semantic_scholar", source_url=s2_data.get("s2_url"))
+            updated["abstract"] = True
+        # OA PDF from S2
+        if not paper.pdf_object_key and not paper.pdf_path_local and s2_data.get("oa_pdf_url"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="oa_pdf_url", value=s2_data["oa_pdf_url"],
+                source="semantic_scholar")
+
+    # ── 4b. Unpaywall OA PDF (by DOI) ──────────────────────
+    if paper.doi and not paper.pdf_object_key and not paper.pdf_path_local:
+        unpaywall = await _fetch_unpaywall(client, paper.doi)
+        if unpaywall and unpaywall.get("oa_pdf_url"):
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="oa_pdf_url", value=unpaywall["oa_pdf_url"],
+                source="unpaywall")
+            updated["oa_pdf_url"] = True
 
     # ── 5. GitHub code discovery ──────────────────────────────
     title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
     if not paper.code_url and paper.title and not title_is_placeholder:
-        await asyncio.sleep(0.3)
+        await limiters["github"].acquire()
         gh_data = await _discover_github_links(client, paper.title, arxiv_id=paper.arxiv_id)
         # Fallback: search by arXiv ID if title search fails
         if not gh_data and paper.arxiv_id:
-            await asyncio.sleep(0.3)
+            await limiters["github"].acquire()
             gh_data = await _discover_github_links(
                 client, paper.arxiv_id, arxiv_id=paper.arxiv_id,
             )
@@ -857,7 +1050,7 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
 
     # ── 6. HuggingFace model/dataset discovery ────────────────
     if paper.title and not title_is_placeholder:
-        await asyncio.sleep(0.3)
+        await limiters["huggingface"].acquire()
         hf_data = await _discover_huggingface(client, paper.title)
         if hf_data:
             if hf_data.get("huggingface_model_url"):
@@ -907,7 +1100,7 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
 
     # ── 8. Project page acceptance check ─────────────────────
     if paper.project_link and not paper.acceptance_type:
-        await asyncio.sleep(0.3)
+        await limiters["crossref"].acquire()  # general web fetch throttle
         page_data = await _check_project_page_acceptance(client, paper.project_link)
         if page_data:
             if page_data.get("acceptance_from_project_page"):
@@ -1000,6 +1193,24 @@ async def enrich_batch(
 
     results = []
     async with httpx.AsyncClient() as client:
+        # ── Pre-fill: S2 batch abstract enrichment (500/req) ──
+        papers_missing_abstract = [p for p in papers if not p.abstract]
+        if papers_missing_abstract:
+            try:
+                batch_data = await _fetch_s2_batch_abstracts(client, papers_missing_abstract)
+                for p in papers_missing_abstract:
+                    data = batch_data.get(str(p.id))
+                    if data:
+                        if data.get("abstract") and not p.abstract:
+                            p.abstract = data["abstract"]
+                        if data.get("arxiv_id") and not p.arxiv_id:
+                            p.arxiv_id = data["arxiv_id"]
+                        if data.get("doi") and not p.doi:
+                            p.doi = data["doi"]
+                logger.info(f"S2 batch pre-fill: {len(batch_data)}/{len(papers_missing_abstract)} abstracts")
+            except Exception as e:
+                logger.warning(f"S2 batch pre-fill failed: {e}")
+
         for paper in papers:
             try:
                 updated = await enrich_paper(session, paper, client)
@@ -1015,8 +1226,8 @@ async def enrich_batch(
                     "title": paper.title[:60],
                     "error": str(e)[:100],
                 })
-            # Rate limit: ~1 paper/sec
-            await asyncio.sleep(1.0)
+            # Rate limit between papers in batch
+            await limiters["s2"].acquire()
 
     await session.flush()
     return results

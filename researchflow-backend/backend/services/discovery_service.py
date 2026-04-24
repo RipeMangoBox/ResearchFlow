@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.models.enums import PaperState
 from backend.models.paper import Paper
+from backend.utils.api_clients import limiters
 from backend.schemas.import_ import LinkImportItem
 from backend.services.ingestion_service import ingest_link
 
@@ -37,10 +38,10 @@ def _s2_headers() -> dict:
 async def _s2_get(client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict | None:
     """Make a rate-limited Semantic Scholar API call."""
     try:
+        await limiters["s2"].acquire()
         resp = await client.get(url, params=params, headers=_s2_headers(), timeout=20)
         if resp.status_code == 429:
-            logger.warning("S2 rate limit hit, sleeping 3s")
-            await asyncio.sleep(3)
+            await limiters["s2"].backoff_429(attempt=0)
             resp = await client.get(url, params=params, headers=_s2_headers(), timeout=20)
         resp.raise_for_status()
         return resp.json()
@@ -130,7 +131,7 @@ async def discover_related_papers(
                 if cited and cited.get("title"):
                     result["references"].append(_s2_to_dict(cited))
 
-        await asyncio.sleep(0.5)  # Rate limit
+        await limiters["s2"].acquire()
 
         # 2. Get citations
         cit_data = await _s2_get(
@@ -143,7 +144,7 @@ async def discover_related_papers(
                 if citing and citing.get("title"):
                     result["citations"].append(_s2_to_dict(citing))
 
-        await asyncio.sleep(0.5)
+        await limiters["s2"].acquire()
 
         # 3. Get related papers (S2 recommendations)
         rec_data = await _s2_get(

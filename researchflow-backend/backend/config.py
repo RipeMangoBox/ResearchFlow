@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     openai_base_url: str = ""  # Custom base URL for OpenAI-compatible APIs
     openai_model: str = ""     # Custom model name override
 
+    # VLM max_tokens — Kimi K2.6 需要开大，否则截断
+    vlm_max_tokens_heavy: int = 16384   # 公式页扫描 (多页多公式, 大表格)
+    vlm_max_tokens_medium: int = 8192   # 图表分类+遗漏恢复
+    vlm_max_tokens_light: int = 4096    # 单图描述/单公式 OCR
+    vlm_max_tokens_tiny: int = 2048     # acceptance 判断等短回复
+
+    # GitHub
+    github_token: str = ""  # Personal access token for 5000 req/hr (vs 10 req/min)
+
     # App
     debug: bool = False
     api_prefix: str = "/api/v1"

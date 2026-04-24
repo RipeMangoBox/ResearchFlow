@@ -17,11 +17,14 @@ class ParsedPDF:
     full_text: str = ""
     page_count: int = 0
     sections: dict[str, str] = field(default_factory=dict)
+    sections_hierarchy: list[dict] = field(default_factory=list)
     formulas: list[str] = field(default_factory=list)
     tables: list[dict] = field(default_factory=list)
     figure_captions: list[dict] = field(default_factory=list)
     figure_images: list[dict] = field(default_factory=list)
     references_text: str = ""
+    citation_contexts: list[dict] = field(default_factory=list)
+    dataset_mentions: list[dict] = field(default_factory=list)
 
 
 # Common section header patterns
@@ -97,6 +100,7 @@ def parse_pdf(pdf_path: str | Path) -> ParsedPDF:
 
     # Parse sections
     result.sections = _extract_sections(result.full_text)
+    result.sections_hierarchy = _extract_sections_hierarchical(result.full_text)
 
     # Extract formulas (lines containing formula patterns)
     result.formulas = _extract_formulas(result.full_text)
@@ -110,6 +114,10 @@ def parse_pdf(pdf_path: str | Path) -> ParsedPDF:
     # Extract references section
     if "references" in result.sections:
         result.references_text = result.sections["references"]
+
+    # Citation contexts & dataset mentions
+    result.citation_contexts = _extract_citation_contexts(result.full_text, result.sections)
+    result.dataset_mentions = _extract_dataset_mentions(result.full_text, result.sections)
 
     return result
 
@@ -200,6 +208,277 @@ def _extract_table_captions(text: str) -> list[dict]:
                 "caption": caption_text[:500],
             })
     return captions
+
+
+# ── Hierarchical section heading regex ────────────────────────────
+# Matches: "1 Introduction", "2. Method", "3.1 Encoder", "3.1.2 Details", "A.1 Appendix"
+_HEADING_RE = re.compile(
+    r"^([A-Z]?\d+(?:\.\d+)*)\s*\.?\s+([A-Z][^\n]{2,80})$", re.MULTILINE
+)
+
+
+def _extract_sections_hierarchical(text: str) -> list[dict]:
+    """Extract sections preserving heading hierarchy (1 → 1.1 → 1.1.1).
+
+    Returns a flat list of sections ordered by appearance, each with:
+      {number, title, level, text, start_char}
+    Level is determined by dot-count: "3" → 1, "3.1" → 2, "3.1.2" → 3.
+    """
+    headings: list[dict] = []
+    for m in _HEADING_RE.finditer(text):
+        number = m.group(1)
+        title = m.group(2).strip()
+        # Level = number of numeric components
+        level = number.count(".") + 1
+        headings.append({
+            "number": number,
+            "title": title,
+            "level": level,
+            "start_char": m.start(),
+        })
+
+    if not headings:
+        return []
+
+    # Fill text between headings
+    sections: list[dict] = []
+    for i, h in enumerate(headings):
+        text_start = h["start_char"] + len(f"{h['number']} {h['title']}")
+        text_end = headings[i + 1]["start_char"] if i + 1 < len(headings) else len(text)
+        body = text[text_start:text_end].strip()
+        sections.append({
+            "number": h["number"],
+            "title": h["title"],
+            "level": h["level"],
+            "text": body[:5000],  # cap per section
+            "start_char": h["start_char"],
+        })
+
+    return sections
+
+
+# ── Citation context extraction ───────────────────────────────────
+# Numeric: [1], [1,2], [1-3], [1, 2, 3]
+_CITE_NUMERIC_RE = re.compile(r"\[(\d+(?:\s*[,\-–]\s*\d+)*)\]")
+# Author-year: (Smith et al., 2023), Smith et al. (2023)
+_CITE_AUTHOR_RE = re.compile(r"\(([A-Z][a-z]+\s+et\s+al\.?,?\s*\d{4})\)")
+
+
+def _extract_citation_contexts(
+    full_text: str, sections: dict[str, str], max_contexts: int = 150,
+) -> list[dict]:
+    """Extract in-text citation mentions with ±120 chars context.
+
+    Returns: [{ref_marker, context, section, char_offset}]
+    """
+    # Build section boundary map: char_offset → section_name
+    section_ranges: list[tuple[int, int, str]] = []
+    for sec_name, sec_text in sections.items():
+        idx = full_text.find(sec_text[:100])
+        if idx >= 0:
+            section_ranges.append((idx, idx + len(sec_text), sec_name))
+    section_ranges.sort()
+
+    def _find_section(pos: int) -> str:
+        for start, end, name in section_ranges:
+            if start <= pos < end:
+                return name
+        return "unknown"
+
+    contexts: list[dict] = []
+    seen: dict[str, list[str]] = {}  # ref_marker → list of sections already recorded
+
+    for pattern in (_CITE_NUMERIC_RE, _CITE_AUTHOR_RE):
+        for m in pattern.finditer(full_text):
+            if len(contexts) >= max_contexts:
+                break
+            raw_marker = m.group(0)
+            # Expand numeric ranges: "[1-3]" → "1", "2", "3"
+            markers = _expand_citation_markers(m.group(1))
+            ctx_start = max(0, m.start() - 120)
+            ctx_end = min(len(full_text), m.end() + 120)
+            context = full_text[ctx_start:ctx_end].replace("\n", " ").strip()
+            section = _find_section(m.start())
+
+            # Skip very short / non-prose contexts
+            if len(context) < 30:
+                continue
+
+            for marker in markers:
+                key = marker
+                if key not in seen:
+                    seen[key] = []
+                # Max 3 contexts per marker, prefer different sections
+                if len(seen[key]) >= 3 and section in seen[key]:
+                    continue
+                seen[key].append(section)
+                contexts.append({
+                    "ref_marker": marker,
+                    "context": context,
+                    "section": section,
+                    "char_offset": m.start(),
+                })
+
+    return contexts
+
+
+def _expand_citation_markers(raw: str) -> list[str]:
+    """Expand "[1, 3-5]" into ["1", "3", "4", "5"]."""
+    markers: list[str] = []
+    for part in re.split(r"[,\s]+", raw):
+        part = part.strip()
+        range_m = re.match(r"(\d+)\s*[-–]\s*(\d+)", part)
+        if range_m:
+            lo, hi = int(range_m.group(1)), int(range_m.group(2))
+            for n in range(lo, min(hi + 1, lo + 20)):  # safety cap
+                markers.append(str(n))
+        elif part.isdigit():
+            markers.append(part)
+        else:
+            markers.append(part)  # author-year passthrough
+    return markers
+
+
+# ── Dataset mention detection ─────────────────────────────────────
+# Well-known ML dataset names (case-insensitive matching)
+_KNOWN_DATASETS = {
+    # Vision
+    "imagenet", "coco", "cifar-10", "cifar-100", "mnist", "fashion-mnist",
+    "lsun", "celeba", "voc", "ade20k", "cityscapes", "kitti",
+    "laion", "cc3m", "cc12m", "webvid", "howto100m", "ego4d",
+    # NLP
+    "glue", "superglue", "squad", "wmt", "xsum", "cnn/dailymail",
+    "mmlu", "hellaswag", "winogrande", "arc", "truthfulqa",
+    # Multimodal
+    "vqa", "gqa", "visual genome", "nocaps", "flickr30k",
+    "textvqa", "okvqa", "a-okvqa",
+    # Motion / 3D
+    "humanml3d", "amass", "babel", "kit-ml", "h3.6m", "human3.6m",
+    "aist++", "motionx", "motion-x", "grab", "ntu rgb+d",
+    # Audio / speech
+    "librispeech", "commonvoice", "voxceleb", "audioset",
+    # Agent / tool
+    "webshop", "alfworld", "scienceworld", "toolbench", "agentbench",
+    # Video
+    "kinetics-400", "kinetics-700", "something-something",
+    "activitynet", "ucf101", "hmdb51", "charades",
+    "msrvtt", "msvd", "didemo", "youcook2", "vatex",
+    # Generation benchmarks
+    "fid", "is", "clip-score", "fvd",
+}
+
+# URL patterns for datasets
+_DATASET_URL_RE = re.compile(
+    r"(https?://(?:"
+    r"huggingface\.co/datasets/[\w\-\.\/]+"
+    r"|kaggle\.com/[\w\-\/]+"
+    r"|zenodo\.org/record/\d+"
+    r"|figshare\.com/[\w\-\/]+"
+    r"|drive\.google\.com/[\w\-\/\?=&]+"
+    r"|github\.com/[\w\-]+/[\w\-]+/(?:tree|blob)/[\w\-]+/data"
+    r"))",
+    re.IGNORECASE,
+)
+
+# Detect paper-released dataset: "we release/publish/provide/introduce ... dataset"
+_RELEASE_VERB_RE = re.compile(
+    r"\b(?:we|our)\s+(?:release|publish|provide|introduce|present|contribute|propose)\b"
+    r"[^.]{0,80}\b(?:dataset|benchmark|corpus|data)\b",
+    re.IGNORECASE,
+)
+
+# Generic dataset mention in experiments: "train/evaluate on the X dataset"
+_DATASET_USAGE_RE = re.compile(
+    r"(?:train|evaluat|test|benchmark|fine-?tun)\w*\s+"
+    r"(?:on|with|using)\s+(?:the\s+)?([A-Z][\w\-\.]+(?:\s+[\w\-\.]+){0,2})"
+    r"\s+(?:dataset|benchmark|corpus)",
+    re.IGNORECASE,
+)
+
+
+def _extract_dataset_mentions(
+    full_text: str, sections: dict[str, str],
+) -> list[dict]:
+    """Detect dataset references from PDF text.
+
+    Three-layer detection:
+    1. Data Availability / Datasets section parsing
+    2. Known dataset name matching in experiments section
+    3. URL pattern matching across full text
+
+    Returns: [{name, url, source_section, context, is_released_by_paper}]
+    """
+    mentions: list[dict] = []
+    seen_names: set[str] = set()
+
+    # Check if paper releases its own dataset
+    is_releasing = bool(_RELEASE_VERB_RE.search(full_text))
+
+    # 1. Scan dedicated sections: "Data Availability", "Datasets", "Experimental Setup"
+    data_sections = {}
+    for sec_name, sec_text in sections.items():
+        lower = sec_name.lower()
+        if any(kw in lower for kw in ("data", "dataset", "experiment", "setup", "benchmark")):
+            data_sections[sec_name] = sec_text
+
+    # 2. Known dataset name matching
+    search_text = ""
+    for sec_name in ("experiments", "method", "ablation"):
+        if sec_name in sections:
+            search_text += sections[sec_name] + "\n"
+    if not search_text:
+        search_text = full_text
+
+    for name in _KNOWN_DATASETS:
+        pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
+        m = pattern.search(search_text)
+        if m:
+            norm = name.lower()
+            if norm not in seen_names:
+                seen_names.add(norm)
+                ctx_start = max(0, m.start() - 60)
+                ctx_end = min(len(search_text), m.end() + 60)
+                mentions.append({
+                    "name": name,
+                    "url": None,
+                    "source_section": "experiments",
+                    "context": search_text[ctx_start:ctx_end].replace("\n", " ").strip(),
+                    "is_released_by_paper": False,
+                })
+
+    # Also check generic pattern: "evaluate on the FooBar dataset"
+    for m in _DATASET_USAGE_RE.finditer(search_text):
+        candidate = m.group(1).strip()
+        norm = candidate.lower()
+        if norm not in seen_names and len(candidate) > 2:
+            seen_names.add(norm)
+            ctx_start = max(0, m.start() - 40)
+            ctx_end = min(len(search_text), m.end() + 40)
+            mentions.append({
+                "name": candidate,
+                "url": None,
+                "source_section": "experiments",
+                "context": search_text[ctx_start:ctx_end].replace("\n", " ").strip(),
+                "is_released_by_paper": False,
+            })
+
+    # 3. URL pattern matching
+    for m in _DATASET_URL_RE.finditer(full_text):
+        url = m.group(1)
+        # Infer name from URL
+        parts = url.rstrip("/").split("/")
+        name = parts[-1] if parts else url
+        ctx_start = max(0, m.start() - 60)
+        ctx_end = min(len(full_text), m.end() + 60)
+        mentions.append({
+            "name": name,
+            "url": url,
+            "source_section": "body",
+            "context": full_text[ctx_start:ctx_end].replace("\n", " ").strip(),
+            "is_released_by_paper": is_releasing,
+        })
+
+    return mentions[:50]  # cap
 
 
 def _extract_figure_images(doc) -> list[dict]:

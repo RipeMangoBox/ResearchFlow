@@ -148,8 +148,9 @@ async def _call_vlm_page_scan(
     client = openai.AsyncOpenAI(
         api_key=settings.openai_api_key or settings.anthropic_api_key,
         base_url=settings.openai_base_url or None,
+        default_headers={"User-Agent": "claude-code/1.0"},
     )
-    actual_model = settings.openai_model or "so-4.6"
+    actual_model = settings.openai_model or "kimi-k2.6"
 
     content = []
     for p in page_images:
@@ -181,7 +182,7 @@ Rules:
     try:
         stream = await client.chat.completions.create(
             model=actual_model,
-            max_tokens=4000,
+            max_tokens=settings.vlm_max_tokens_heavy,
             temperature=0.1,
             messages=[{"role": "user", "content": content}],
             stream=True,
@@ -312,8 +313,9 @@ async def _ocr_formula_crops(
     client = openai.AsyncOpenAI(
         api_key=settings.openai_api_key or settings.anthropic_api_key,
         base_url=settings.openai_base_url or None,
+        default_headers={"User-Agent": "claude-code/1.0"},
     )
-    actual_model = settings.openai_model or "so-4.6"
+    actual_model = settings.openai_model or "kimi-k2.6"
 
     images_to_send = formula_images[:20]
     content = []
@@ -339,7 +341,7 @@ Rules:
     start = time.monotonic()
     try:
         stream = await client.chat.completions.create(
-            model=actual_model, max_tokens=4000, temperature=0.1,
+            model=actual_model, max_tokens=settings.vlm_max_tokens_heavy, temperature=0.1,
             messages=[{"role": "user", "content": content}], stream=True,
         )
         chunks = []

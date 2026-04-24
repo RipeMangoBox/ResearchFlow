@@ -29,22 +29,24 @@
 ```
 Layer 1: 确定性后端 (CPU, 免费)
 ├── PyMuPDF: 文本/section/图片/caption 提取
-├── VLM page scan: 公式 LaTeX 提取 (PyMuPDF 渲染 + Claude Vision)
+├── VLM page scan: 公式 LaTeX 提取 (PyMuPDF 渲染 + Kimi K2.6 Vision)
 ├── S2 API: 结构化 references/authors (GROBID 已移除)
 └── Figure 区域检测: caption 锚定 + 向上扫描
 
-Layer 2: 来源适配器 (8 个 API)
+Layer 2: 来源适配器 (10 个 API)
 ├── arXiv API: title/abstract/authors/year/keywords/comments
 ├── Crossref: DOI/venue/year
-├── OpenAlex: venue/citations/open_access
-├── Semantic Scholar: citations/recommendations
+├── OpenAlex: venue/citations/open_access/abstract(inverted_index)
+├── Semantic Scholar: citations/abstract/OA PDF (单篇 + 批量500篇/次)
+├── Unpaywall: OA PDF 链接 (通过 DOI 查询)
 ├── DBLP: 会议 proceedings 验证
 ├── OpenReview (SDK): decisions/reviews/scores
 ├── GitHub: code repo search + README 分析
-└── HuggingFace: models + datasets discovery
+├── HuggingFace: models + datasets discovery
+└── S2 ID 三级链: arxiv_id → DOI → openreview_forum_id
 
-Layer 3: Claude VLM (API, 按需)
-├── Figure 分类 + 补漏: 1 次调用/篇 (~$0.02)
+Layer 3: Kimi K2.6 VLM (API, 按需)
+├── Figure 分类 + 补漏: 1 次调用/篇
 ├── Formula OCR → LaTeX: 1 次调用/篇
 └── Acceptance 冲突判断: 按需
 
@@ -434,31 +436,86 @@ MotionGen:     motion_tokenizer → denoiser → conditioning → objective → 
 
 ---
 
-## 7. Figure/Formula 提取
+## 7. 结构化内容提取 (2026-04-25 更新)
 
-### 图表提取流程
+### 7.1 图表提取流程
 
 ```
 1. PyMuPDF caption 文本扫描 → 找到 "Figure X." / "Table X."
 2. 向上扫描找最近的正文文本 → 确定图的上边界
 3. caption 宽度判断: >55% 页宽 = 全宽图, 否则列宽
 4. 裁剪区域 → 2.5x 高清 PNG → OSS 上传
-5. VLM (1 次调用): 分类 + 补漏漏检的图
+5. VLM (1 次调用, max_tokens=8192): 分类 + 补漏漏检的图
 6. VLM 返回: label, semantic_role, description (中文)
 ```
 
-### 公式提取流程 (VLM page scan, 2026-04-20 重构)
+### 7.2 表格内容提取 (新增)
+
+```
+1. figure_extraction_service 标记 type="table" 的区域
+2. 对每个 table 区域: 截图 → Kimi K2.6 Vision → Markdown table
+3. Markdown → 结构化解析: {headers, rows, raw_markdown}
+4. 存入 extracted_tables JSONB (追加 markdown/headers/rows 字段)
+```
+
+使用 `vlm_max_tokens_heavy=16384` 确保大表不被截断。
+小表 (≤5行) 可 batch 4 个/call，大表 1 个/call。
+
+### 7.3 公式提取流程 (VLM page scan)
 
 ```
 1. PyMuPDF 扫描每页文本 → 按数学符号密度排序
 2. 选 top 9 页 (3 页/batch × 3 batch)
 3. PyMuPDF 渲染页面图片 (1.5x zoom)
-4. Claude VLM: 页面图片 → 提取所有公式 LaTeX + label + context
-5. (可选) GROBID 坐标增强: 精确裁剪 → VLM OCR (如 GROBID 可用)
+4. Kimi K2.6 VLM: 页面图片 → 提取所有公式 LaTeX + label + context
+   (max_tokens=16384, 确保多公式 JSON 不截断)
+5. (优先) arXiv TeX 源码: 零 OCR 误差，精确 LaTeX
 ```
 
-> 旧方案 (GROBID): GROBID 坐标 → bbox 扩展 → 3x 截图 → VLM OCR。
-> 因长 PDF OOM 且占 2-3GB 内存，已改为 VLM page scan。
+### 7.4 Section 层级提取 (新增)
+
+```
+1. PyMuPDF 提取全文
+2. _extract_sections(): flat dict (向后兼容, 存入 extracted_sections)
+3. _extract_sections_hierarchical(): 保留 1→1.1→1.1.1 子 section
+   匹配: ^(\d+(?:\.\d+)*)\s*\.?\s+(.+)$
+   输出: [{number, title, level, text, start_char}]
+   存入 evidence_spans["section_hierarchy"]
+```
+
+### 7.5 行内引用上下文 (新增)
+
+```
+1. 数字引用 regex: [1], [1,2], [1-3]
+2. Author-year regex: (Smith et al., 2023)
+3. 每个 match 取 ±120 chars context + 所在 section
+4. 展开范围: "[1-3]" → ["1","2","3"]
+5. 去重: 同一 ref_marker 最多 3 条 (优先不同 section)
+6. 存入 evidence_spans["citation_contexts"]
+7. 可与 S2 reference list 交叉映射 ref_marker → 论文标题
+```
+
+### 7.6 Dataset 检测 (新增)
+
+```
+三层检测:
+1. 专用 section: "Data Availability" / "Datasets" / "Experimental Setup"
+2. 已知名匹配: 120+ 常见 ML dataset 名 (case-insensitive)
+3. URL 模式: huggingface.co/datasets, kaggle.com, zenodo.org, etc.
+4. 发布检测: "we release/publish/provide ... dataset" 动词模式
+
+输出: [{name, url, source_section, context, is_released_by_paper}]
+存入 evidence_spans["dataset_mentions"]
+```
+
+### 7.7 限速基础设施
+
+所有外部 API 调用通过 `TokenBucketLimiter` 统一限速 (`backend/utils/rate_limiter.py`):
+- 异步令牌桶，支持 burst + exponential backoff on 429
+- 集中管理: `backend/utils/api_clients.py` 中 `limiters` 字典
+- 替代原来分散的 `asyncio.sleep()` 调用
+
+> 旧方案: GROBID 容器占 2-3GB, 长 PDF OOM，已于 2026-04-20 移除。
 
 ---
 
@@ -637,7 +694,7 @@ EPHEMERAL_RECEIVED → CANONICALIZED → ENRICHED → WAIT → DOWNLOADED
 | **paper_service.py** | 论文 CRUD |
 | **llm_service.py** | LLM API 调用 (Anthropic/OpenAI) |
 | **object_storage.py** | 对象存储 (COS/OSS) |
-| **vault_export_v5.py** | Obsidian vault 导出 |
+| **vault_export_v6.py** | Obsidian vault 导出 (含 profiles + labs) |
 | **export_service.py** | 通用导出 |
 | **openreview_adapter.py** | OpenReview API 集成 |
 | **dblp_adapter.py** | DBLP 元数据查询 |
@@ -788,7 +845,7 @@ GET /explore/{id}
 | 任务队列 | ARQ (Redis) |
 | PDF 解析 | PyMuPDF + VLM + S2 API |
 | LLM | Anthropic Claude / OpenAI (streaming) |
-| VLM | Claude Vision (图表分类 + 公式 OCR) |
+| VLM | Kimi K2.6 Vision (图表分类 + 公式 OCR) |
 | MCP | Python MCP SDK (stdio + SSE) |
 | 元数据 | arXiv + Crossref + OpenAlex + S2 + DBLP + OpenReview + GitHub + HuggingFace |
 | 对象存储 | Tencent COS / Alibaba OSS / Local |

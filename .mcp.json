@@ -9,10 +9,7 @@
       }
     },
     "researchflow-remote": {
-      "url": "https://researchflow.xyz/sse",
-      "headers": {
-        "Authorization": "Bearer ${MCP_AUTH_TOKEN}"
-      }
+      "url": "http://47.101.167.55/sse"
     }
   }
 }
