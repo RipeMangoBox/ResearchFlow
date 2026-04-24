@@ -276,30 +276,48 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             logger.warning(f"Formula extraction failed for {paper_id}: {e}")
 
     # ── Table content extraction (VLM → Markdown) ────────────────
-    if figure_image_records and (settings.anthropic_api_key or settings.openai_api_key):
-        table_regions = [r for r in figure_image_records if r.get("type") == "table"]
-        if table_regions:
-            try:
-                from backend.services.vlm_extraction_service import extract_table_content
-                table_contents = await extract_table_content(
-                    table_images=table_regions,
-                    paper_id=paper_id,
-                    session=session,
-                )
-                # Merge structured content into table_captions
-                for tc in table_contents:
-                    for existing in table_captions:
-                        if existing.get("table_num") == tc.get("table_num"):
-                            existing["markdown"] = tc.get("markdown", "")
-                            existing["headers"] = tc.get("headers", [])
-                            existing["rows"] = tc.get("rows", [])
-                            break
-                    else:
-                        # Table detected by VLM but not in captions — add it
-                        table_captions.append(tc)
-                logger.info(f"Table content extraction: {len(table_contents)} tables for {paper_id}")
-            except Exception as e:
-                logger.warning(f"Table content extraction failed for {paper_id}: {e}")
+    table_regions = [r for r in (figure_image_records or []) if r.get("type") == "table"]
+
+    # Fallback: if VLM didn't tag any tables but PyMuPDF found table captions,
+    # render table regions from PDF using figure_images that overlap with table captions
+    if not table_regions and table_captions and pdf_path:
+        try:
+            import fitz as _fitz
+            _doc = _fitz.open(pdf_path)
+            for tc in table_captions[:8]:
+                # Find a figure_image_record on a nearby page, or render a heuristic region
+                # Simple approach: render the full-width region on the page where the caption is likely at
+                for fig_rec in (figure_image_records or []):
+                    cap_text = tc.get("caption", "").lower()
+                    fig_label = (fig_rec.get("label") or "").lower()
+                    if f"table {tc.get('table_num', -1)}" in fig_label or f"table {tc.get('table_num', -1)}" in (fig_rec.get("caption") or "").lower():
+                        table_regions.append({**fig_rec, "type": "table", "table_num": tc.get("table_num")})
+                        break
+            _doc.close()
+        except Exception as e:
+            logger.debug(f"Table region fallback failed: {e}")
+
+    if table_regions and (settings.anthropic_api_key or settings.openai_api_key):
+        try:
+            from backend.services.vlm_extraction_service import extract_table_content
+            table_contents = await extract_table_content(
+                table_images=table_regions,
+                paper_id=paper_id,
+                session=session,
+            )
+            # Merge structured content into table_captions
+            for tc in table_contents:
+                for existing in table_captions:
+                    if existing.get("table_num") == tc.get("table_num"):
+                        existing["markdown"] = tc.get("markdown", "")
+                        existing["headers"] = tc.get("headers", [])
+                        existing["rows"] = tc.get("rows", [])
+                        break
+                else:
+                    table_captions.append(tc)
+            logger.info(f"Table content extraction: {len(table_contents)} tables for {paper_id}")
+        except Exception as e:
+            logger.warning(f"Table content extraction failed for {paper_id}: {e}")
 
     # ── Build parse metadata ─────────────────────────────────────
     parse_metadata = {

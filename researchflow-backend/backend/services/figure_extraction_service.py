@@ -56,11 +56,11 @@ async def extract_figures_precise(
 
     logger.info(f"Found {len(candidates)} candidate regions for {paper_id}")
 
-    # Step 2: Crop low-res thumbnails for Claude
+    # Step 2: Crop low-res thumbnails for VLM (0.5x to reduce request size)
     thumbnails = []
     for c in candidates:
         page = doc[c["page_num"]]
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), clip=fitz.Rect(*c["bbox"]))
+        pix = page.get_pixmap(matrix=fitz.Matrix(0.5, 0.5), clip=fitz.Rect(*c["bbox"]))
         thumbnails.append({
             **c,
             "thumb_bytes": pix.tobytes("png"),
@@ -114,13 +114,13 @@ async def extract_figures_precise(
                 "description": missed.get("description", ""),
             })
     else:
-        # No VLM — use label from detection, skip tables (only keep figures)
+        # No VLM — use label from detection, keep BOTH figures and tables
         classifications = []
         for i, c in enumerate(candidates):
             label = c.get("label", f"Figure {i+1}")
             is_table = label.lower().startswith("table")
             classifications.append({
-                "index": i, "is_figure_or_table": not is_table,
+                "index": i, "is_figure_or_table": True,
                 "label": label, "type": "table" if is_table else "figure",
                 "semantic_role": "other", "description": "",
                 "caption": c.get("caption_text", ""),
@@ -545,9 +545,9 @@ async def _classify_and_detect_missed(
     content = []
 
     # Part A: candidate crops (OpenAI image_url format)
-    # Cap at 15 candidates to stay within token limits
+    # Cap at 10 candidates + 3 pages to stay within VLM token limits
     detected_labels = set()
-    capped_thumbnails = thumbnails[:15] if thumbnails else []
+    capped_thumbnails = thumbnails[:10] if thumbnails else []
     if capped_thumbnails:
         content.append({"type": "text", "text": f"=== PART A: {len(capped_thumbnails)} candidate crops ==="})
         for i, thumb in enumerate(capped_thumbnails):
@@ -565,7 +565,7 @@ async def _classify_and_detect_missed(
 
     # Part B: full page thumbnails for missed detection
     # Cap at 5 pages to avoid token limit (each page ~1500 tokens)
-    capped_pages = page_thumbs[:5]
+    capped_pages = page_thumbs[:3]
     content.append({"type": "text", "text": f"\n=== PART B: {len(capped_pages)} full page thumbnails ==="})
     for pt in capped_pages:
         content.append({
@@ -671,13 +671,13 @@ Rules:
 
     except Exception as e:
         logger.error(f"VLM classify+detect failed: {e}")
-        # Fallback: use original labels, filter out tables
+        # Fallback: use original labels, keep BOTH figures and tables
         fallback = []
         for i, t in enumerate(thumbnails):
             label = t.get("label", f"Figure {i+1}")
             is_table = label.lower().startswith("table")
             fallback.append({
-                "index": i, "is_figure_or_table": not is_table,
+                "index": i, "is_figure_or_table": True,
                 "label": label, "type": "table" if is_table else "figure",
                 "semantic_role": "other", "description": "",
                 "caption": t.get("caption_text", ""),
