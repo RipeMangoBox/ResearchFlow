@@ -202,3 +202,191 @@ async def download_pdf_to_oss(
     await session.flush()
     logger.info(f"PDF stored for paper {paper_id}: {object_key} ({len(data)} bytes, {pdf_url[:80]})")
     return True
+
+
+# ── Venue papers bulk PDF download ─────────────────────────────
+
+def _vp_object_key(conf_year: str, arxiv_id: str, title: str, vp_id: int) -> str:
+    """Build OSS key for venue_papers PDF.
+
+    Pattern: venue-papers/pdf/{conf_year}/{identifier}.pdf
+    Identifier priority: arxiv_id > title_slug > id_hash
+    """
+    import hashlib
+
+    if arxiv_id:
+        ident = re.sub(r"v\d+$", "", arxiv_id).replace("/", "_")
+    elif title:
+        # Slugify: first 40 chars, ascii-safe
+        slug = re.sub(r"[^a-zA-Z0-9]+", "_", title[:60]).strip("_")[:40]
+        hash_suffix = hashlib.md5(title.encode()).hexdigest()[:8]
+        ident = f"{slug}_{hash_suffix}"
+    else:
+        ident = f"vp_{vp_id}"
+
+    return f"venue-papers/pdf/{conf_year}/{ident}.pdf"
+
+
+def _resolve_vp_pdf_url(pdf_url: str, arxiv_id: str, openreview_forum_id: str) -> str:
+    """Pick the best download URL for a venue_paper row.
+
+    Priority:
+      1. OpenReview PDF (most reliable for conference papers)
+      2. arXiv PDF (fast via proxy)
+      3. Original pdf_url (various sources)
+    """
+    # Prefer OpenReview direct PDF
+    if openreview_forum_id:
+        return f"https://openreview.net/pdf?id={openreview_forum_id}"
+    # Prefer arXiv
+    if arxiv_id:
+        base_id = re.sub(r"v\d+$", "", arxiv_id)
+        return f"https://arxiv.org/pdf/{base_id}.pdf"
+    # Fallback to whatever pdf_url we have
+    return pdf_url
+
+
+async def download_venue_papers_pdfs(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+    *,
+    concurrency: int = 5,
+    batch_size: int = 100,
+    max_total: int = 0,
+) -> dict:
+    """Bulk-download PDFs for venue_papers → OSS.
+
+    Features:
+      - Resume from where we left off (WHERE pdf_object_key = '')
+      - Concurrent downloads (default 5 workers)
+      - Validates %PDF- magic + ≥50KB
+      - Stores OSS key, size, checksum, timestamp back to DB
+      - Never stores PDFs locally (OSS-primary)
+
+    Returns download stats dict.
+    """
+    from backend.services.object_storage import get_storage, compute_checksum
+
+    where_clause = "pdf_url != '' AND (pdf_object_key IS NULL OR pdf_object_key = '')"
+    params: dict = {}
+    if conf_years:
+        where_clause += " AND conf_year = ANY(:conf_years)"
+        params["conf_years"] = conf_years
+
+    total = (await session.execute(
+        text(f"SELECT count(*) FROM venue_papers WHERE {where_clause}"), params
+    )).scalar()
+    logger.info(f"[vp-pdf] {total} venue_papers pending PDF download")
+
+    if max_total > 0:
+        total = min(total, max_total)
+
+    storage = get_storage()
+    stats = {"total": total, "downloaded": 0, "failed": 0, "skipped": 0}
+    sem = asyncio.Semaphore(concurrency)
+    offset = 0
+
+    async def _download_one(
+        client: httpx.AsyncClient,
+        vp_id: int,
+        pdf_url: str,
+        arxiv_id: str,
+        orf_id: str,
+        conf_year: str,
+        title: str,
+    ):
+        async with sem:
+            url = _resolve_vp_pdf_url(pdf_url, arxiv_id, orf_id)
+            if not url:
+                stats["skipped"] += 1
+                return
+
+            data = await _download_with_retry(client, url)
+            if not data:
+                # Try fallback: if we used OR/arXiv, try original pdf_url
+                if url != pdf_url and pdf_url:
+                    data = await _download_with_retry(client, pdf_url)
+
+            if not data:
+                stats["failed"] += 1
+                # Mark error in extra_data to avoid re-trying
+                await session.execute(
+                    text("""
+                        UPDATE venue_papers
+                        SET extra_data = coalesce(extra_data, '{}')::jsonb
+                            || jsonb_build_object('pdf_error', :err),
+                            updated_at = now()
+                        WHERE id = :id
+                    """),
+                    {"err": f"download_failed:{url[:200]}", "id": vp_id},
+                )
+                return
+
+            if not _validate_pdf(data, url):
+                stats["failed"] += 1
+                await session.execute(
+                    text("""
+                        UPDATE venue_papers
+                        SET extra_data = coalesce(extra_data, '{}')::jsonb
+                            || jsonb_build_object('pdf_error', 'validation_failed'),
+                            updated_at = now()
+                        WHERE id = :id
+                    """),
+                    {"id": vp_id},
+                )
+                return
+
+            # Upload to OSS
+            object_key = _vp_object_key(conf_year, arxiv_id, title, vp_id)
+            try:
+                await storage.put(object_key, data)
+            except Exception as e:
+                logger.error(f"[vp-pdf] OSS upload failed for vp {vp_id}: {e}")
+                stats["failed"] += 1
+                return
+
+            checksum = compute_checksum(data)
+            await session.execute(
+                text("""
+                    UPDATE venue_papers
+                    SET pdf_object_key = :key,
+                        pdf_size_bytes = :sz,
+                        pdf_checksum = :ck,
+                        pdf_downloaded_at = now(),
+                        updated_at = now()
+                    WHERE id = :id
+                """),
+                {"key": object_key, "sz": len(data), "ck": checksum, "id": vp_id},
+            )
+            stats["downloaded"] += 1
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=180) as client:
+        while offset < total:
+            rows = (await session.execute(text(f"""
+                SELECT id, pdf_url, arxiv_id, openreview_forum_id, conf_year, title
+                FROM venue_papers
+                WHERE {where_clause}
+                ORDER BY id
+                LIMIT :limit OFFSET :offset
+            """), {**params, "limit": batch_size, "offset": offset})).fetchall()
+
+            if not rows:
+                break
+
+            tasks = [
+                _download_one(client, r[0], r[1] or "", r[2] or "", r[3] or "", r[4] or "", r[5] or "")
+                for r in rows
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Commit after each batch
+            await session.commit()
+            offset += len(rows)
+
+            logger.info(
+                f"[vp-pdf] progress: {offset}/{total} "
+                f"(ok={stats['downloaded']} fail={stats['failed']} skip={stats['skipped']})"
+            )
+
+    logger.info(f"[vp-pdf] done: {stats}")
+    return stats

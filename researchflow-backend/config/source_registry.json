@@ -254,6 +254,21 @@
       "notes": "ACL Anthology. title/authors/abstract."
     },
     {
+      "venue": "EMNLP",
+      "year": 2025,
+      "conf_year": "EMNLP_2025",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "acl_anthology_html",
+        "url": "https://aclanthology.org/events/emnlp-2025/",
+        "parser": "acl_anthology_html",
+        "expected_count": null
+      },
+      "auxiliary_sources": [],
+      "notes": "ACL Anthology. title/authors/abstract. EMNLP 2025 (Nov 2025)."
+    },
+    {
       "venue": "AAAI",
       "year": 2024,
       "conf_year": "AAAI_2024",
@@ -314,6 +329,21 @@
       },
       "auxiliary_sources": [],
       "notes": "KDD official site. title/authors. No abstract."
+    },
+    {
+      "venue": "SIGGRAPH",
+      "year": 2024,
+      "conf_year": "SIGGRAPH_2024",
+      "status": "active",
+      "skip_reason": "",
+      "primary_source": {
+        "kind": "kesen_siggraph_html",
+        "url": "https://kesen.realtimerendering.com/sig2024.html",
+        "parser": "kesen_siggraph_html",
+        "expected_count": null
+      },
+      "auxiliary_sources": [],
+      "notes": "Ke-Sen Huang paper list. SIGGRAPH 2024 (Jul 2024, Denver)."
     },
     {
       "venue": "SIGGRAPH",

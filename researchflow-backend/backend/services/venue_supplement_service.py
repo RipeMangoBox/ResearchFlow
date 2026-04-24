@@ -453,6 +453,287 @@ async def supplement_iccv_cvf_pdf_urls(session: AsyncSession) -> dict:
     return {"strategy": "iccv_cvf", "parsed": len(cvf_papers), "updated": updated}
 
 
+# ── Strategy 6: PWC dump → code_url ─────────────────────────────
+
+async def supplement_via_pwc_dump(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+    batch_size: int = 1000,
+) -> dict:
+    """Fill code_url from Papers With Code local dump (zero API cost).
+
+    Matches by arxiv_id first, then by normalized title.
+    """
+    from backend.utils.metadata_helpers import load_pwc_dump
+    from backend.services.venue_index.normalize import normalize_title
+
+    pwc_path = settings.pwc_dump_path
+    if not pwc_path:
+        logger.info("[supplement] PWC dump path not configured, skipping")
+        return {"strategy": "pwc_dump", "skipped": True}
+
+    links, arxiv_to_url, title_to_url = load_pwc_dump(pwc_path)
+    if not links:
+        logger.info("[supplement] PWC dump empty or not found")
+        return {"strategy": "pwc_dump", "loaded": 0}
+
+    where_clause = "code_url = ''"
+    params: dict = {}
+    if conf_years:
+        where_clause += " AND conf_year = ANY(:conf_years)"
+        params["conf_years"] = conf_years
+
+    total = (await session.execute(
+        text(f"SELECT count(*) FROM venue_papers WHERE {where_clause}"), params
+    )).scalar()
+    logger.info(f"[supplement] PWC: {total} rows missing code_url")
+
+    updated = 0
+    offset = 0
+    while offset < total:
+        rows = (await session.execute(text(f"""
+            SELECT id, title, arxiv_id FROM venue_papers
+            WHERE {where_clause}
+            ORDER BY id LIMIT :limit OFFSET :offset
+        """), {**params, "limit": batch_size, "offset": offset})).fetchall()
+        if not rows:
+            break
+        offset += len(rows)
+
+        for vp_id, title, arxiv_id in rows:
+            paper_url = None
+            # Try arxiv_id first
+            if arxiv_id:
+                clean_id = re.sub(r"v\d+$", "", arxiv_id)
+                paper_url = arxiv_to_url.get(clean_id)
+            # Try normalized title
+            if not paper_url and title:
+                paper_url = title_to_url.get(normalize_title(title))
+            if not paper_url or paper_url not in links:
+                continue
+            repos = links[paper_url]
+            # Prefer github.com
+            code_url = next((r for r in repos if "github.com" in r), repos[0])
+            await session.execute(
+                text("UPDATE venue_papers SET code_url = :url, updated_at = now() WHERE id = :id"),
+                {"url": code_url[:500], "id": vp_id},
+            )
+            updated += 1
+
+        await session.flush()
+
+    logger.info(f"[supplement] PWC: updated {updated}/{total} rows with code_url")
+    return {"strategy": "pwc_dump", "total_missing": total, "updated": updated}
+
+
+# ── Strategy 7: OpenReview API → keywords batch ─────────────────
+
+async def supplement_openreview_keywords(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+) -> dict:
+    """Batch-fill keywords from OpenReview API for papers that have forum_id but no keywords.
+
+    Uses the same _OPENREVIEW_GROUPS mapping. Queries bulk OR notes.
+    """
+    from backend.services.venue_index.normalize import normalize_title
+
+    targets = conf_years or list(_OPENREVIEW_GROUPS.keys())
+    total_updated = 0
+    stats_per_venue: dict[str, int] = {}
+
+    for conf_year in targets:
+        if conf_year not in _OPENREVIEW_GROUPS:
+            continue
+
+        missing = (await session.execute(text("""
+            SELECT count(*) FROM venue_papers
+            WHERE conf_year = :cy AND (keywords = '' OR keywords IS NULL)
+              AND openreview_forum_id != ''
+        """), {"cy": conf_year})).scalar()
+
+        if not missing:
+            logger.info(f"[supplement] OR keywords: {conf_year} — none missing, skip")
+            continue
+
+        group, venue_prefixes = _OPENREVIEW_GROUPS[conf_year]
+        logger.info(f"[supplement] OR keywords: crawling {conf_year} ({missing} missing)")
+
+        # Fetch from OR API with keywords field
+        or_keywords: dict[str, str] = {}  # forum_id → keywords string
+        offset = 0
+        page_size = 1000
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                try:
+                    resp = await client.get(
+                        "https://api2.openreview.net/notes/search",
+                        params={"query": "*", "group": group, "limit": page_size, "offset": offset},
+                        headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
+                    )
+                    if resp.status_code != 200:
+                        logger.warning(f"[supplement] OR keywords {resp.status_code} for {group}")
+                        break
+
+                    data = resp.json()
+                    notes = data.get("notes", [])
+                    total_count = data.get("count", 0)
+
+                    for note in notes:
+                        content = note.get("content", {})
+                        forum_id = note.get("forum", "") or note.get("id", "")
+                        kw_raw = content.get("keywords", {}).get("value", [])
+                        if isinstance(kw_raw, list) and kw_raw and forum_id:
+                            or_keywords[forum_id] = "; ".join(str(k) for k in kw_raw)
+
+                    offset += len(notes)
+                    if not notes or offset >= total_count:
+                        break
+                    await asyncio.sleep(0.5)
+
+                except Exception as e:
+                    logger.warning(f"[supplement] OR keywords error: {e}")
+                    break
+
+        logger.info(f"[supplement] OR keywords: fetched {len(or_keywords)} papers with keywords from {conf_year}")
+
+        if not or_keywords:
+            continue
+
+        # Update venue_papers by forum_id match
+        rows = (await session.execute(text("""
+            SELECT id, openreview_forum_id FROM venue_papers
+            WHERE conf_year = :cy AND (keywords = '' OR keywords IS NULL)
+              AND openreview_forum_id != ''
+        """), {"cy": conf_year})).fetchall()
+
+        updated = 0
+        for vp_id, forum_id in rows:
+            kw = or_keywords.get(forum_id)
+            if not kw:
+                continue
+            await session.execute(
+                text("UPDATE venue_papers SET keywords = :kw, updated_at = now() WHERE id = :id"),
+                {"kw": kw[:5000], "id": vp_id},
+            )
+            updated += 1
+
+        stats_per_venue[conf_year] = updated
+        total_updated += updated
+        await session.flush()
+
+    logger.info(f"[supplement] OR keywords: total updated {total_updated}")
+    return {"strategy": "openreview_keywords", "total_updated": total_updated, "per_venue": stats_per_venue}
+
+
+# ── Strategy 8: OpenAlex → citation_count ────────────────────────
+
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+
+
+async def supplement_via_openalex_citations(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+    batch_size: int = 200,
+    max_pages: int = 500,
+) -> dict:
+    """Batch-fill citation_count into extra_data via OpenAlex DOI lookup.
+
+    Uses filter=doi:DOI1|DOI2|... with up to 50 DOIs per request.
+    Only targets rows that have a DOI and no citation_count in extra_data.
+    """
+    where_clause = "doi != ''"
+    params: dict = {}
+    if conf_years:
+        where_clause += " AND conf_year = ANY(:conf_years)"
+        params["conf_years"] = conf_years
+
+    total = (await session.execute(
+        text(f"SELECT count(*) FROM venue_papers WHERE {where_clause}"), params
+    )).scalar()
+    logger.info(f"[supplement] OpenAlex citations: {total} rows with DOI")
+
+    updated = 0
+    offset = 0
+    oa_batch_size = 50  # OpenAlex supports ~50 DOIs per filter
+
+    # Read OpenAlex key if available
+    oa_headers: dict[str, str] = {"User-Agent": "ResearchFlow/0.1 (mailto:researchflow@example.com)"}
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        page = 0
+        while offset < total and page < max_pages:
+            rows = (await session.execute(text(f"""
+                SELECT id, doi, extra_data FROM venue_papers
+                WHERE {where_clause}
+                ORDER BY id LIMIT :limit OFFSET :offset
+            """), {**params, "limit": oa_batch_size, "offset": offset})).fetchall()
+
+            if not rows:
+                break
+            offset += len(rows)
+            page += 1
+
+            # Filter out rows that already have citation_count
+            need_rows = []
+            for vp_id, doi, extra_data in rows:
+                ed = extra_data or {}
+                if "citation_count" not in ed:
+                    need_rows.append((vp_id, doi))
+
+            if not need_rows:
+                continue
+
+            # Build DOI filter
+            doi_filter = "|".join(f"https://doi.org/{doi}" for _, doi in need_rows)
+
+            try:
+                resp = await client.get(
+                    OPENALEX_WORKS_URL,
+                    params={
+                        "filter": f"doi:{doi_filter}",
+                        "select": "doi,cited_by_count",
+                        "per_page": oa_batch_size,
+                    },
+                    headers=oa_headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"[supplement] OpenAlex HTTP {resp.status_code}")
+                    await asyncio.sleep(1)
+                    continue
+
+                results = resp.json().get("results", [])
+                doi_to_count: dict[str, int] = {}
+                for w in results:
+                    raw_doi = (w.get("doi") or "").replace("https://doi.org/", "")
+                    if raw_doi:
+                        doi_to_count[raw_doi.lower()] = w.get("cited_by_count", 0)
+
+                for vp_id, doi in need_rows:
+                    count = doi_to_count.get(doi.lower())
+                    if count is not None:
+                        await session.execute(
+                            text("""
+                                UPDATE venue_papers
+                                SET extra_data = coalesce(extra_data, '{}')::jsonb || jsonb_build_object('citation_count', :cc),
+                                    updated_at = now()
+                                WHERE id = :id
+                            """),
+                            {"cc": count, "id": vp_id},
+                        )
+                        updated += 1
+
+            except Exception as e:
+                logger.warning(f"[supplement] OpenAlex error: {e}")
+
+            await session.flush()
+            await asyncio.sleep(0.2)  # polite rate
+
+    logger.info(f"[supplement] OpenAlex citations: updated {updated}/{total}")
+    return {"strategy": "openalex_citations", "total_with_doi": total, "updated": updated}
+
+
 # ── Orchestrator ─────────────────────────────────────────────────
 
 async def run_full_supplement(
@@ -484,6 +765,18 @@ async def run_full_supplement(
 
     # Step 5: S2 batch (arxiv_id + doi + fallback pdf_url)
     results["s2_batch"] = await supplement_via_s2_batch(session, conf_years)
+    await session.flush()
+
+    # Step 6: Papers With Code dump → code_url (zero API)
+    results["pwc_dump"] = await supplement_via_pwc_dump(session, conf_years)
+    await session.flush()
+
+    # Step 7: OpenReview keywords batch
+    results["openreview_keywords"] = await supplement_openreview_keywords(session, conf_years)
+    await session.flush()
+
+    # Step 8: OpenAlex → citation_count
+    results["openalex_citations"] = await supplement_via_openalex_citations(session, conf_years)
     await session.flush()
 
     return results
