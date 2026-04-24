@@ -598,7 +598,6 @@ class IngestWorkflow:
         )
 
         dc = result.get("delta_card")
-        idea = result.get("delta_card")
 
         # Post-delta steps (each wrapped to not block on failure)
         if dc and dc.id:
@@ -617,12 +616,106 @@ class IngestWorkflow:
         except Exception as e:
             logger.warning("reconcile_neighbors failed: %s", e)
 
+        # ── Write taxonomy facets (Layer A activation) ──
+        try:
+            await self._write_taxonomy_facets(paper, paper_essence, method_delta_lite, experiment)
+        except Exception as e:
+            logger.warning("taxonomy facet write failed: %s", e)
+
         return {
             "delta_card_id": str(dc.id) if dc else None,
-            "delta_card_id": str(idea.id) if idea else None,
             "evidence_count": len(result.get("evidence_units", [])),
             "assertion_count": len(result.get("assertions", [])),
         }
+
+    async def _write_taxonomy_facets(
+        self, paper, paper_essence: dict, method_delta: dict, experiment: dict,
+    ) -> None:
+        """Auto-create TaxonomyNodes and PaperFacets from agent outputs.
+
+        Activates Layer A of the 4-layer architecture:
+          1. paper.category → TaxonomyNode(dimension='domain')
+          2. target_tasks → TaxonomyNode(dimension='task') + PaperFacet(primary_task)
+          3. proposed_method_name → PaperFacet(primary_method)
+          4. experiment benchmarks → TaxonomyNode(dimension='dataset') + PaperFacet(dataset)
+        """
+        from sqlalchemy import func, select
+        from backend.models.taxonomy import TaxonomyNode, PaperFacet
+
+        async def get_or_create_taxnode(name: str, dimension: str) -> TaxonomyNode:
+            """Find or create a taxonomy node by name + dimension."""
+            result = await self.session.execute(
+                select(TaxonomyNode).where(
+                    func.lower(TaxonomyNode.name) == name.lower(),
+                    TaxonomyNode.dimension == dimension,
+                ).limit(1)
+            )
+            node = result.scalar_one_or_none()
+            if node:
+                return node
+            node = TaxonomyNode(
+                name=name,
+                dimension=dimension,
+                status="candidate",
+            )
+            self.session.add(node)
+            await self.session.flush()
+            return node
+
+        async def add_facet(paper_id, node_id, role: str, source: str = "auto_agent"):
+            """Add a PaperFacet if not exists."""
+            existing = await self.session.execute(
+                select(PaperFacet.id).where(
+                    PaperFacet.paper_id == paper_id,
+                    PaperFacet.node_id == node_id,
+                    PaperFacet.facet_role == role,
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none():
+                return
+            self.session.add(PaperFacet(
+                paper_id=paper_id,
+                node_id=node_id,
+                facet_role=role,
+                source=source,
+            ))
+
+        # 1. Domain from paper.category
+        if paper.category:
+            domain_node = await get_or_create_taxnode(paper.category, "domain")
+            await add_facet(paper.id, domain_node.id, "domain")
+
+        # 2. Tasks from paper_essence.target_tasks
+        target_tasks = paper_essence.get("target_tasks", [])
+        for i, task_name in enumerate(target_tasks[:3]):
+            if task_name:
+                task_node = await get_or_create_taxnode(task_name, "task")
+                role = "primary_task" if i == 0 else "secondary_task"
+                await add_facet(paper.id, task_node.id, role)
+
+        # 3. Modalities from paper_essence.target_modalities
+        for mod in paper_essence.get("target_modalities", [])[:3]:
+            if mod:
+                mod_node = await get_or_create_taxnode(mod, "modality")
+                await add_facet(paper.id, mod_node.id, "modality")
+
+        # 4. Training paradigm
+        paradigm = paper_essence.get("training_paradigm")
+        if paradigm and paradigm != "unknown":
+            para_node = await get_or_create_taxnode(paradigm, "learning_paradigm")
+            await add_facet(paper.id, para_node.id, "paradigm")
+
+        # 5. Datasets from experiment benchmarks
+        main_results = experiment.get("main_results", [])
+        seen_datasets = set()
+        for result in main_results[:5]:
+            benchmark = result.get("benchmark", "")
+            if benchmark and benchmark not in seen_datasets:
+                seen_datasets.add(benchmark)
+                ds_node = await get_or_create_taxnode(benchmark, "dataset")
+                await add_facet(paper.id, ds_node.id, "dataset")
+
+        await self.session.flush()
 
     # ── Phase 4: Neighborhood Discovery ───────────────────────────────
 
