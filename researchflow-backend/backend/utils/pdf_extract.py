@@ -364,7 +364,7 @@ _KNOWN_DATASETS = {
     "activitynet", "ucf101", "hmdb51", "charades",
     "msrvtt", "msvd", "didemo", "youcook2", "vatex",
     # Generation benchmarks
-    "fid", "is", "clip-score", "fvd",
+    "clip-score", "inception score",
 }
 
 # URL patterns for datasets
@@ -430,6 +430,8 @@ def _extract_dataset_mentions(
         search_text = full_text
 
     for name in _KNOWN_DATASETS:
+        if len(name) < 3:  # skip too-short names (fid, is, etc.)
+            continue
         pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
         m = pattern.search(search_text)
         if m:
