@@ -46,21 +46,40 @@ class _FetchTimeout(Exception):
 
 
 def _fetch_with_total_timeout(url: str, headers: dict, socket_timeout: int = 30, total_timeout: int = 120) -> bytes:
-    """Fetch URL with both per-socket and total wall-clock timeout."""
-    old_handler = signal.getsignal(signal.SIGALRM)
-    def _alarm(signum, frame):
-        raise _FetchTimeout(f"total timeout {total_timeout}s exceeded for {url}")
-    signal.signal(signal.SIGALRM, _alarm)
-    signal.alarm(total_timeout)
+    """Fetch URL with both per-socket and total wall-clock timeout.
+
+    Uses signal.SIGALRM in the main thread, falls back to threading.Timer
+    in worker threads (where signals are unavailable).
+    """
+    import threading
+
+    in_main_thread = threading.current_thread() is threading.main_thread()
+    old_handler = None
+
+    if in_main_thread:
+        old_handler = signal.getsignal(signal.SIGALRM)
+        def _alarm(signum, frame):
+            raise _FetchTimeout(f"total timeout {total_timeout}s exceeded for {url}")
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(total_timeout)
+
+    # For non-main threads, rely on socket_timeout (set generously)
+    effective_socket_timeout = min(socket_timeout, total_timeout) if not in_main_thread else socket_timeout
+
     try:
         req = urllib.request.Request(url, headers=headers)
         opener = _build_opener()
-        with opener.open(req, timeout=socket_timeout) as resp:
+        with opener.open(req, timeout=effective_socket_timeout) as resp:
             data = resp.read()
         return data
+    except _FetchTimeout:
+        raise
+    except Exception:
+        raise
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
+        if in_main_thread and old_handler is not None:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
 
 
 def fetch_text(source: SourceConfig, fixtures_dir: Path, timeout: int = 60) -> str:

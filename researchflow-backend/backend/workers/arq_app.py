@@ -478,6 +478,54 @@ async def shutdown(ctx: dict):
 
 # ── Worker settings ─────────────────────────────────────────────
 
+async def task_supplement_venue_papers(ctx: dict, conf_years: list[str] | None = None):
+    """Batch supplement venue_papers metadata (pdf_url, arxiv_id, doi)."""
+    from backend.database import async_session
+    from backend.services.venue_supplement_service import run_full_supplement
+
+    async with async_session() as session:
+        result = await run_full_supplement(session, conf_years)
+        await session.commit()
+    return result
+
+
+async def task_download_paper_pdf(ctx: dict, paper_id: str):
+    """Download PDF for a single paper to OSS."""
+    from uuid import UUID
+    from backend.database import async_session
+    from backend.services.pdf_download_service import download_pdf_to_oss
+
+    async with async_session() as session:
+        ok = await download_pdf_to_oss(session, UUID(paper_id))
+        await session.commit()
+    return {"paper_id": paper_id, "success": ok}
+
+
+async def task_download_pdfs_batch(ctx: dict, limit: int = 20):
+    """Download PDFs for papers that have been promoted but lack PDF."""
+    from backend.database import async_session
+    from backend.models.paper import Paper
+    from backend.services.pdf_download_service import download_pdf_to_oss
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        papers = (await session.execute(
+            select(Paper.id).where(
+                Paper.pdf_object_key.is_(None),
+                Paper.pdf_path_local.is_(None),
+                Paper.state.notin_(["skip", "archived_or_expired"]),
+            ).order_by(Paper.analysis_priority.desc().nullsfirst())
+            .limit(limit)
+        )).scalars().all()
+
+        results = []
+        for pid in papers:
+            ok = await download_pdf_to_oss(session, pid)
+            results.append({"paper_id": str(pid), "success": ok})
+            await session.commit()
+    return {"processed": len(results), "success": sum(1 for r in results if r["success"])}
+
+
 def _parse_redis_url(url: str) -> RedisSettings:
     """Parse redis://host:port/db into RedisSettings."""
     from urllib.parse import urlparse
@@ -504,6 +552,10 @@ class WorkerSettings:
         task_parse_batch,
         task_pipeline_run,
         task_pipeline_recover,
+        # Venue supplement + PDF download
+        task_supplement_venue_papers,
+        task_download_paper_pdf,
+        task_download_pdfs_batch,
         # V6
         task_score_candidates_v6,
         task_auto_promote_v6,

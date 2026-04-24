@@ -8,6 +8,7 @@ Flow:
 Ported from resmax's accepted_index_builder, adapted for PostgreSQL storage.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -117,20 +118,34 @@ def _fetch_source(source: dict, venue: str, year: int) -> str | list | dict:
 
 # ── Parser dispatch ─────────────────────────────────────────────
 
-def _parse_source(parser_name: str, raw_data, venue: str, year: int, url: str) -> list[dict]:
+def _parse_source(parser_name: str, raw_data, venue: str, year: int,
+                   source_dict: dict, entry: dict) -> list[dict]:
     """Parse raw data into list of paper records."""
     from . import parsers
+    from .models import AcceptedPaperRecord, ConferenceYearConfig, SourceConfig
 
-    conf_year = f"{venue}_{year}"
+    conf_year = entry.get("conf_year", f"{venue}_{year}")
     parser_func = getattr(parsers, f"parse_{parser_name}", None)
     if not parser_func:
         logger.warning(f"Unknown parser: {parser_name}")
         return []
 
+    # Build model objects that parsers expect
+    sc = SourceConfig(
+        kind=source_dict.get("kind", ""),
+        url=source_dict.get("url", ""),
+        parser=source_dict.get("parser", ""),
+        parser_args=source_dict.get("parser_args"),
+    )
+    conf = ConferenceYearConfig(
+        venue=venue, year=year, conf_year=conf_year,
+        status=entry.get("status", "active"),
+        skip_reason="",
+        primary_source=sc,
+    )
+
     try:
-        from .models import AcceptedPaperRecord
-        records = parser_func(raw_data, venue=venue, year=year, conf_year=conf_year)
-        # Convert AcceptedPaperRecord to dicts
+        records = parser_func(raw_data, conf, sc)
         result = []
         for r in records:
             if isinstance(r, AcceptedPaperRecord):
@@ -147,12 +162,52 @@ def _parse_source(parser_name: str, raw_data, venue: str, year: int, url: str) -
 
 # ── Build index ─────────────────────────────────────────────────
 
+def _fetch_and_parse_entry(entry: dict) -> tuple[str, list[dict] | None, str]:
+    """Fetch + parse a single registry entry (runs in thread pool).
+
+    Returns (conf_year, records_or_None, error_msg).
+    """
+    venue = entry["venue"]
+    year = entry["year"]
+    conf_year = entry.get("conf_year", f"{venue}_{year}")
+    primary = entry.get("primary_source", {})
+
+    try:
+        raw_data = _fetch_source(primary, venue, year)
+        parser_name = primary.get("parser", primary.get("kind", ""))
+        records = _parse_source(parser_name, raw_data, venue, year, primary, entry)
+
+        if not records:
+            return conf_year, None, f"{conf_year}: 0 records parsed"
+
+        for aux in entry.get("auxiliary_sources", []):
+            try:
+                aux_data = _fetch_source(aux, venue, year)
+                aux_parser = aux.get("parser", aux.get("kind", ""))
+                aux_records = _parse_source(aux_parser, aux_data, venue, year, aux, entry)
+                if aux_records:
+                    records = _merge_records(records, aux_records)
+            except Exception as e:
+                logger.warning(f"Auxiliary source failed for {conf_year}: {e}")
+
+        logger.info(f"  {conf_year}: fetched+parsed {len(records)} records")
+        return conf_year, records, ""
+
+    except Exception as e:
+        logger.error(f"Failed to fetch/parse {conf_year}: {e}")
+        return conf_year, None, f"{conf_year}: {str(e)[:100]}"
+
+
 async def build_venue_index(
     session: AsyncSession,
     venues: list[str] | None = None,
     years: list[int] | None = None,
+    max_concurrent: int = 5,
 ) -> dict:
     """Fetch + parse + store venue papers to DB.
+
+    Fetches are parallelized across venues (up to max_concurrent) via thread
+    pool. DB writes remain sequential to avoid transaction conflicts.
 
     Returns summary: {venue_year: count, total: N, errors: [...]}
     """
@@ -162,46 +217,38 @@ async def build_venue_index(
 
     summary = {"total": 0, "errors": [], "details": {}}
 
-    for entry in registry:
-        venue = entry["venue"]
-        year = entry["year"]
-        conf_year = entry.get("conf_year", f"{venue}_{year}")
-        primary = entry.get("primary_source", {})
+    # Phase 1: concurrent fetch + parse (I/O bound, benefits from parallelism)
+    sem = asyncio.Semaphore(max_concurrent)
 
-        logger.info(f"Building index for {conf_year} from {primary.get('kind')}")
+    async def _guarded_fetch(entry: dict):
+        async with sem:
+            logger.info(f"Fetching {entry.get('conf_year', entry['venue']+'_'+str(entry['year']))} ...")
+            return await asyncio.to_thread(_fetch_and_parse_entry, entry)
+
+    tasks = [_guarded_fetch(e) for e in registry]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Phase 2: sequential DB store
+    for res in results:
+        if isinstance(res, Exception):
+            summary["errors"].append(str(res)[:100])
+            continue
+
+        conf_year, records, error = res
+        if error:
+            summary["errors"].append(error)
+            continue
+        if not records:
+            continue
 
         try:
-            # Fetch
-            raw_data = _fetch_source(primary, venue, year)
-
-            # Parse
-            parser_name = primary.get("parser", primary.get("kind", ""))
-            records = _parse_source(parser_name, raw_data, venue, year, primary.get("url", ""))
-
-            if not records:
-                summary["errors"].append(f"{conf_year}: 0 records parsed")
-                continue
-
-            # Also parse auxiliary sources and merge
-            for aux in entry.get("auxiliary_sources", []):
-                try:
-                    aux_data = _fetch_source(aux, venue, year)
-                    aux_parser = aux.get("parser", aux.get("kind", ""))
-                    aux_records = _parse_source(aux_parser, aux_data, venue, year, aux.get("url", ""))
-                    if aux_records:
-                        records = _merge_records(records, aux_records)
-                except Exception as e:
-                    logger.warning(f"Auxiliary source failed for {conf_year}: {e}")
-
-            # Store to DB
             stored = await _store_records(session, records, conf_year)
             summary["details"][conf_year] = stored
             summary["total"] += stored
             logger.info(f"  {conf_year}: stored {stored} papers")
-
         except Exception as e:
-            logger.error(f"Failed to build index for {conf_year}: {e}")
-            summary["errors"].append(f"{conf_year}: {str(e)[:100]}")
+            logger.error(f"Failed to store {conf_year}: {e}")
+            summary["errors"].append(f"{conf_year}: store error: {str(e)[:80]}")
 
     await session.flush()
     return summary

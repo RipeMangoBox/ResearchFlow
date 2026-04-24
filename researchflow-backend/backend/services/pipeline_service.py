@@ -28,75 +28,12 @@ logger = logging.getLogger(__name__)
 # ── PDF Download ──────────────────────────────────────────────────
 
 async def download_arxiv_pdf(session: AsyncSession, paper_id: UUID) -> bool:
-    """Download PDF from arxiv for a paper. Returns True on success."""
-    paper = await session.get(Paper, paper_id)
-    if not paper or not paper.arxiv_id:
-        return False
+    """Download PDF for a paper. Delegates to pdf_download_service.
 
-    # Already have PDF?
-    if paper.pdf_path_local or paper.pdf_object_key:
-        return True
-
-    # Build arxiv PDF URL
-    base_id = re.sub(r"v\d+$", "", paper.arxiv_id)
-    pdf_url = f"https://arxiv.org/pdf/{base_id}.pdf"
-
-    # Determine local path
-    category = paper.category or "Uncategorized"
-    venue_year = f"{paper.venue}_{paper.year}" if paper.venue and paper.year else "Unknown"
-    filename = f"{paper.title_sanitized or base_id}.pdf"
-    rel_path = f"{category}/{venue_year}/{filename}"
-
-    pdf_dir = Path(settings.paper_pdfs_dir)
-    local_path = pdf_dir / rel_path
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=180) as client:
-            resp = await client.get(pdf_url)
-            resp.raise_for_status()
-            if len(resp.content) < 1000:
-                logger.warning(f"PDF too small for {paper.arxiv_id}: {len(resp.content)} bytes")
-                return False
-            # Magic byte validation — reject HTML error pages disguised as 200 OK
-            from backend.utils.metadata_helpers import looks_like_pdf
-            if not looks_like_pdf(resp.content):
-                logger.warning(f"PDF magic byte check failed for {paper.arxiv_id}: got {resp.content[:20]!r}")
-                return False
-            local_path.write_bytes(resp.content)
-    except Exception as e:
-        logger.error(f"PDF download failed for {paper.arxiv_id}: {e}")
-        return False
-
-    # Update paper record — store relative path for portability across environments
-    paper.pdf_path_local = rel_path
-    paper.state = PaperState.DOWNLOADED
-
-    # Upload to object storage (if configured)
-    object_key = f"papers/raw-pdf/{rel_path}"
-    try:
-        from backend.services.object_storage import get_storage
-        storage = get_storage()
-        await storage.put(object_key, resp.content)
-        paper.pdf_object_key = object_key
-        logger.info(f"Uploaded PDF to object storage: {object_key}")
-    except Exception as e:
-        logger.warning(f"Object storage upload failed for {paper.arxiv_id}, local only: {e}")
-
-    # Create asset record
-    from backend.services.object_storage import compute_checksum
-    asset = PaperAsset(
-        paper_id=paper.id,
-        asset_type=AssetType.RAW_PDF,
-        object_key=object_key,
-        mime_type="application/pdf",
-        size_bytes=len(resp.content),
-        checksum=compute_checksum(resp.content),
-    )
-    session.add(asset)
-    await session.flush()
-    logger.info(f"Downloaded PDF for {paper.arxiv_id}: {local_path} ({len(resp.content)} bytes)")
-    return True
+    Handles arXiv, OpenReview, CVF, and generic OA URLs.
+    """
+    from backend.services.pdf_download_service import download_pdf_to_oss
+    return await download_pdf_to_oss(session, paper_id)
 
 
 # ── Full pipeline ─────────────────────────────────────────────────
