@@ -58,6 +58,11 @@ async def download_arxiv_pdf(session: AsyncSession, paper_id: UUID) -> bool:
             if len(resp.content) < 1000:
                 logger.warning(f"PDF too small for {paper.arxiv_id}: {len(resp.content)} bytes")
                 return False
+            # Magic byte validation — reject HTML error pages disguised as 200 OK
+            from backend.utils.metadata_helpers import looks_like_pdf
+            if not looks_like_pdf(resp.content):
+                logger.warning(f"PDF magic byte check failed for {paper.arxiv_id}: got {resp.content[:20]!r}")
+                return False
             local_path.write_bytes(resp.content)
     except Exception as e:
         logger.error(f"PDF download failed for {paper.arxiv_id}: {e}")

@@ -31,6 +31,12 @@ from backend.config import settings
 from backend.models.enums import PaperState
 from backend.models.paper import Paper
 from backend.utils.api_clients import limiters, _github_headers
+from backend.utils.metadata_helpers import (
+    is_title_match, is_valid_abstract, looks_like_pdf, normalize_repo_url,
+    lookup_pwc_code_url, fetch_cvf_abstract, fetch_aaai_abstract,
+    fetch_acm_abstract, search_openalex_abstract, search_crossref_abstract,
+    search_s2_abstract, search_arxiv_abstract, fetch_openreview_reviews,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,15 +189,12 @@ async def _fetch_crossref(client: httpx.AsyncClient, title: str) -> dict | None:
 
 
 def _titles_similar(a: str, b: str) -> bool:
-    """Check if two titles are roughly the same paper."""
-    def normalize(s):
-        return re.sub(r"[^a-z0-9]", "", s.lower())
-    na, nb = normalize(a), normalize(b)
-    if not na or not nb:
-        return False
-    # Check if shorter is mostly contained in longer
-    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
-    return shorter[:30] in longer or longer[:30] in shorter
+    """Check if two titles are roughly the same paper.
+
+    Delegates to is_title_match() — Jaccard ≥ 0.80 + substring fallback.
+    Kept as wrapper for backward compatibility with callers.
+    """
+    return is_title_match(a, b)
 
 
 # ── OpenAlex enrichment ────────────────────────────────────────
@@ -1029,6 +1032,94 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
                 source="unpaywall")
             updated["oa_pdf_url"] = True
 
+    # ── 4c. Extended abstract fallback (9-layer, venue-specific) ──
+    if not paper.abstract or not is_valid_abstract(paper.abstract):
+        abstract_found = None
+        abstract_source = None
+
+        # Layer: CVF OpenAccess (CVPR/ICCV)
+        if not abstract_found and paper.paper_link:
+            abstract_found = await fetch_cvf_abstract(client, paper.paper_link)
+            if abstract_found:
+                abstract_source = "cvf_openaccess"
+
+        # Layer: AAAI OJS
+        if not abstract_found and paper.paper_link:
+            abstract_found = await fetch_aaai_abstract(client, paper.paper_link)
+            if abstract_found:
+                abstract_source = "aaai_ojs"
+
+        # Layer: ACM DL (KDD/MM/SIGIR)
+        if not abstract_found and paper.doi:
+            abstract_found = await fetch_acm_abstract(client, paper.doi)
+            if abstract_found:
+                abstract_source = "acm_dl"
+
+        # Layer: OpenAlex title search
+        if not abstract_found and paper.title and not title_is_placeholder:
+            await limiters["openalex"].acquire()
+            oa_result = await search_openalex_abstract(client, paper.title)
+            if oa_result and oa_result.get("abstract"):
+                abstract_found = oa_result["abstract"]
+                abstract_source = "openalex_search"
+                if not paper.doi and oa_result.get("doi"):
+                    paper.doi = oa_result["doi"]
+                    updated["doi"] = True
+
+        # Layer: CrossRef title search
+        if not abstract_found and paper.title and not title_is_placeholder:
+            await limiters["crossref"].acquire()
+            cr_result = await search_crossref_abstract(client, paper.title)
+            if cr_result and cr_result.get("abstract"):
+                abstract_found = cr_result["abstract"]
+                abstract_source = "crossref_search"
+                if not paper.doi and cr_result.get("doi"):
+                    paper.doi = cr_result["doi"]
+                    updated["doi"] = True
+
+        # Layer: S2 title search
+        if not abstract_found and paper.title and not title_is_placeholder:
+            await limiters["s2"].acquire()
+            s2_result = await search_s2_abstract(client, paper.title, _s2_headers())
+            if s2_result and s2_result.get("abstract"):
+                abstract_found = s2_result["abstract"]
+                abstract_source = "s2_search"
+
+        # Layer: arXiv title search
+        if not abstract_found and paper.title and not title_is_placeholder:
+            await limiters["arxiv"].acquire()
+            arxiv_result = await search_arxiv_abstract(client, paper.title)
+            if arxiv_result and arxiv_result.get("abstract"):
+                abstract_found = arxiv_result["abstract"]
+                abstract_source = "arxiv_search"
+                if not paper.arxiv_id and arxiv_result.get("arxiv_id"):
+                    paper.arxiv_id = arxiv_result["arxiv_id"]
+                    updated["arxiv_id"] = True
+
+        if abstract_found and is_valid_abstract(abstract_found):
+            paper.abstract = abstract_found
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="abstract", value=abstract_found[:500],
+                source=abstract_source)
+            updated["abstract"] = True
+            logger.info(f"Abstract fallback hit via {abstract_source} for {paper.id}")
+
+    # ── 4d. PWC code_url (before GitHub search) ──────────────
+    if not paper.code_url:
+        pwc_url = lookup_pwc_code_url(
+            title=paper.title or "",
+            arxiv_id=paper.arxiv_id or "",
+            pwc_path=getattr(settings, "pwc_dump_path", ""),
+        )
+        if pwc_url:
+            paper.code_url = pwc_url
+            paper.open_code = True
+            updated["code_url"] = True
+            await record_observation(session, entity_type="paper", entity_id=paper.id,
+                field_name="code_url", value=pwc_url,
+                source="papers_with_code")
+            logger.info(f"PWC code_url hit for {paper.id}: {pwc_url}")
+
     # ── 5. GitHub code discovery ──────────────────────────────
     title_is_placeholder = bool(re.match(r'^\d{4}\.\d{4,5}(v\d+)?$', paper.title or ''))
     if not paper.code_url and paper.title and not title_is_placeholder:
@@ -1153,7 +1244,34 @@ async def enrich_paper(session: AsyncSession, paper: Paper, client: httpx.AsyncC
         except Exception as e:
             logger.debug(f"PDF acceptance detection failed for {paper.id}: {e}")
 
-    # ── 10. Update state ──────────────────────────────────────
+    # ── 10. OpenReview review data ────────────────────────────
+    # Extract review scores for papers with openreview_forum_id
+    forum_id = None
+    if paper.paper_link:
+        m = re.search(r'openreview\.net/(?:forum|pdf)\?id=([a-zA-Z0-9_-]+)', paper.paper_link)
+        if m:
+            forum_id = m.group(1)
+    if forum_id and not paper.review_scores:
+        try:
+            await limiters["openreview"].acquire()
+            review_data = await fetch_openreview_reviews(client, forum_id)
+            if review_data:
+                paper.review_scores = {
+                    "avg_score": review_data["review_score_mean"],
+                    "num_reviewers": review_data["review_num_reviewers"],
+                    "scores": review_data["review_scores"],
+                    "confidences": review_data["review_confidence_scores"],
+                    "avg_confidence": review_data["review_confidence_mean"],
+                }
+                await record_observation(session, entity_type="paper", entity_id=paper.id,
+                    field_name="review_scores", value=review_data["review_score_mean"],
+                    source="openreview", confidence=0.95)
+                updated["review_scores"] = True
+                logger.info(f"OpenReview reviews for {paper.id}: {review_data['review_num_reviewers']} reviewers, avg={review_data['review_score_mean']}")
+        except Exception as e:
+            logger.debug(f"OpenReview review fetch failed for {paper.id}: {e}")
+
+    # ── 11. Update state ──────────────────────────────────────
     if updated and paper.state == PaperState.CANONICALIZED:
         paper.state = PaperState.ENRICHED
 

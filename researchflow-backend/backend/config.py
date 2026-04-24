@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # GitHub
     github_token: str = ""  # Personal access token for 5000 req/hr (vs 10 req/min)
 
+    # Papers With Code
+    pwc_dump_path: str = ""  # Path to links-between-papers-and-code.json.gz (~50MB)
+
     # App
     debug: bool = False
     api_prefix: str = "/api/v1"
