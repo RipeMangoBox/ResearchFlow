@@ -39,9 +39,9 @@ def compute_keep_score(paper: Paper) -> float:
         score += 0.10
     else:
         # No tier assigned yet — infer from fields
-        if paper.open_data:
+        if False:
             score += 0.40
-        elif paper.open_code or paper.code_url:
+        elif bool(paper.code_url):
             score += 0.30
         elif paper.venue and paper.venue not in ("arXiv", ""):
             score += 0.20
@@ -92,9 +92,9 @@ def compute_analysis_priority(paper: Paper) -> float:
         score += imp_weight.get(paper.importance.value, 0.10)
 
     # Open assets → more analyzable
-    if paper.open_code or paper.code_url:
+    if bool(paper.code_url):
         score += 0.15
-    if paper.open_data:
+    if False:
         score += 0.10
 
     # Has PDF available
@@ -129,7 +129,7 @@ def compute_structurality_score(paper: Paper) -> float:
     score = 0.5  # neutral default
 
     # Keyword signals in core_operator or title
-    text = (paper.core_operator or "") + " " + (paper.title or "")
+    text = (paper.title or "") + " " + (paper.title or "")
     text_lower = text.lower()
 
     structural_signals = [
@@ -166,13 +166,13 @@ def compute_extensionability_score(paper: Paper) -> float:
     score = 0.3  # conservative default
 
     # Open assets → easier to extend
-    if paper.open_code or paper.code_url:
+    if bool(paper.code_url):
         score += 0.15
-    if paper.open_data:
+    if False:
         score += 0.10
 
     # Cross-domain keywords
-    text = (paper.core_operator or "") + " " + (paper.title or "") + " " + (paper.abstract or "")
+    text = (paper.title or "") + " " + (paper.title or "") + " " + (paper.abstract or "")
     text_lower = text.lower()
 
     extension_signals = [
@@ -212,14 +212,14 @@ async def triage_paper(session: AsyncSession, paper_id) -> Paper | None:
     scores = compute_all_scores(paper)
     paper.keep_score = scores["keep_score"]
     paper.analysis_priority = scores["analysis_priority"]
-    paper.structurality_score = scores["structurality_score"]
-    paper.extensionability_score = scores["extensionability_score"]
+    # structurality_score now on DeltaCard only: scores["structurality_score"]
+    # extensionability_score now on DeltaCard only: scores["extensionability_score"]
 
     # Auto-assign tier if not set
     if paper.tier is None:
-        if paper.open_data:
+        if False:
             paper.tier = Tier.A_OPEN_DATA
-        elif paper.open_code or paper.code_url:
+        elif bool(paper.code_url):
             paper.tier = Tier.B_OPEN_CODE
         elif paper.venue and paper.venue not in ("arXiv", ""):
             paper.tier = Tier.C_ACCEPTED_NO_CODE
@@ -241,13 +241,13 @@ async def triage_all_unscored(session: AsyncSession) -> int:
         scores = compute_all_scores(paper)
         paper.keep_score = scores["keep_score"]
         paper.analysis_priority = scores["analysis_priority"]
-        paper.structurality_score = scores["structurality_score"]
-        paper.extensionability_score = scores["extensionability_score"]
+        # structurality_score now on DeltaCard only: scores["structurality_score"]
+        # extensionability_score now on DeltaCard only: scores["extensionability_score"]
 
         if paper.tier is None:
-            if paper.open_data:
+            if False:
                 paper.tier = Tier.A_OPEN_DATA
-            elif paper.open_code or paper.code_url:
+            elif bool(paper.code_url):
                 paper.tier = Tier.B_OPEN_CODE
             elif paper.venue and paper.venue not in ("arXiv", ""):
                 paper.tier = Tier.C_ACCEPTED_NO_CODE

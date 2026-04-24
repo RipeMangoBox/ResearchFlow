@@ -449,7 +449,7 @@ async def run_full_pipeline(
         select(func.count()).select_from(DeltaCard).where(DeltaCard.paper_id == paper_id)
     )).scalar()
     idea_count = (await session.execute(
-        select(func.count()).select_from(IdeaDelta).where(DeltaCard.paper_id == paper_id)
+        select(func.count()).select_from(DeltaCard).where(DeltaCard.paper_id == paper_id)
     )).scalar()
     assertion_count = (await session.execute(text(
         "SELECT count(*) FROM graph_assertions ga "

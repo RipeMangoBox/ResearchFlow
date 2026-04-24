@@ -499,7 +499,7 @@ async def init_domain_multi_source(
 def _assign_ring(paper: Paper) -> str:
     """Assign a triage ring based on paper characteristics."""
     cited = paper.cited_by_count or 0
-    struct = paper.structurality_score or 0
+    struct = 0
 
     if cited >= 100:
         return "baseline"

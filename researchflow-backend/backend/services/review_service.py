@@ -272,7 +272,7 @@ async def _cascade_approval(
             return {"delta_card_status": "published"}
 
     elif target_type == "delta_card":
-        idea = await session.get(IdeaDelta, target_id)
+        idea = await session.get(DeltaCard, target_id)
         if idea:
             idea.publish_status = "human_verified"
             return {"idea_status": "human_verified"}
@@ -347,7 +347,7 @@ async def get_review_detail(session: AsyncSession, task: ReviewTask) -> dict:
                 "structurality_score": obj.structurality_score,
             }
     elif task.target_type == "delta_card":
-        obj = await session.get(IdeaDelta, task.target_id)
+        obj = await session.get(DeltaCard, task.target_id)
         if obj:
             target = {
                 "delta_statement": (obj.delta_statement or "")[:200],
@@ -387,7 +387,7 @@ _OVERRIDE_TARGETS = {
         "delta_statement", "structurality_score", "extensionability_score",
         "transferability_score", "status", "baseline_paradigm",
     }),
-    "delta_card": ("backend.models.graph", "IdeaDelta", {
+    "delta_card": ("backend.models.delta_card", "DeltaCard", {
         "delta_statement", "publish_status", "confidence",
         "structurality_score", "transferability_score",
     }),

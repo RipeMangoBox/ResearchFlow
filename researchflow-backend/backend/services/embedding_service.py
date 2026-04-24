@@ -110,8 +110,8 @@ def _build_paper_text(paper: Paper) -> str:
     parts = [paper.title]
     if paper.abstract:
         parts.append(paper.abstract)
-    if paper.core_operator:
-        parts.append(paper.core_operator)
+    if paper.method_family:
+        parts.append(paper.method_family)
     if paper.category:
         parts.append(paper.category)
     if paper.venue:

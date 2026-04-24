@@ -244,7 +244,7 @@ def _safe_name(raw: str, max_len: int = 80) -> str:
 def _paper_level(p) -> str:
     """Assign A/B/C/D level from ring or structurality_score.
 
-    Priority: ring field → dc.structurality_score → paper.structurality_score.
+    Priority: ring field → dc.structurality_score → None.
     """
     ring = getattr(p, "ring", None)
     if ring == "baseline":

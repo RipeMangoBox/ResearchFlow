@@ -506,30 +506,7 @@ async def query_evidence(
         for eu, paper in ev_result
     ]
 
-    # 2. Search implementation_units
-    impl_stmt = (
-        select(ImplementationUnit, Paper)
-        .join(Paper, ImplementationUnit.paper_id == Paper.id)
-        .where(
-            or_(
-                ImplementationUnit.description.ilike(f"%{query}%"),
-                ImplementationUnit.class_or_function.ilike(f"%{query}%"),
-            )
-        )
-        .limit(limit)
-    )
-    impl_result = await session.execute(impl_stmt)
-    impl_results = [
-        {
-            "source": "implementation_unit",
-            "paper_title": paper.title,
-            "repo_url": iu.repo_url,
-            "file_path": iu.file_path,
-            "class_or_function": iu.class_or_function,
-            "description": iu.description[:200] if iu.description else None,
-        }
-        for iu, paper in impl_result
-    ]
+    # implementation_units table removed — skip to delta cards
 
     # 3. Delta cards with evidence
     dc_stmt = (
@@ -556,7 +533,7 @@ async def query_evidence(
         "intent": "evidence",
         "query": query,
         "evidence_units": evidence_results,
-        "implementation_units": impl_results,
+        "implementation_units": [],  # table removed
         "delta_cards": dc_results[:limit],
     }
 
