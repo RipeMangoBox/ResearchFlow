@@ -133,23 +133,27 @@ class AliyunOSSStorage(StorageBackend):
         logger.info(f"Aliyun OSS initialized: bucket={settings.object_storage_bucket}, region={region}, endpoint={self._endpoint_type}")
 
     async def put(self, key: str, data: bytes) -> str:
-        self.bucket.put_object(key, data)
+        import asyncio
+        await asyncio.to_thread(self.bucket.put_object, key, data)
         return key
 
     async def put_file(self, key: str, local_path: str) -> str:
-        self.bucket.put_object_from_file(key, local_path)
+        import asyncio
+        await asyncio.to_thread(self.bucket.put_object_from_file, key, local_path)
         return key
 
     async def get(self, key: str) -> bytes | None:
+        import asyncio
         import oss2
         try:
-            result = self.bucket.get_object(key)
+            result = await asyncio.to_thread(self.bucket.get_object, key)
             return result.read()
         except oss2.exceptions.NoSuchKey:
             return None
 
     async def exists(self, key: str) -> bool:
-        return self.bucket.object_exists(key)
+        import asyncio
+        return await asyncio.to_thread(self.bucket.object_exists, key)
 
     async def delete(self, key: str) -> bool:
         try:
