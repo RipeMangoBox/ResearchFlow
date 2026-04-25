@@ -32,6 +32,10 @@ OAI_NS = {
     "arx": "http://arxiv.org/OAI/arXivRaw/",
 }
 
+# Also register without prefix for xpath matching
+ET.register_namespace("", "http://www.openarchives.org/OAI/2.0/")
+ET.register_namespace("arx", "http://arxiv.org/OAI/arXivRaw/")
+
 # arXiv categories relevant to ML/CV/NLP conferences
 ML_CATEGORIES = {
     "cs.CV", "cs.LG", "cs.CL", "cs.AI", "cs.RO", "cs.MM", "cs.SD",
@@ -106,6 +110,13 @@ async def harvest_oaipmh(
                 break
 
             root = ET.fromstring(resp.text)
+
+            # Check for OAI-PMH errors
+            error_el = root.find(".//oai:error", OAI_NS)
+            if error_el is not None:
+                code = error_el.get("code", "unknown")
+                logger.warning(f"[oaipmh] OAI-PMH error: {code} — {(error_el.text or '')[:200]}")
+                break
 
             # Parse records
             for record_el in root.findall(".//oai:record", OAI_NS):
@@ -193,6 +204,25 @@ def _text(parent, tag: str) -> str:
     return (el.text or "").strip() if el is not None else ""
 
 
+def _month_ranges(from_date: str, until_date: str) -> list[tuple[str, str]]:
+    """Split a date range into monthly chunks for OAI-PMH (which rejects large ranges)."""
+    from datetime import date, timedelta
+    start = date.fromisoformat(from_date)
+    end = date.fromisoformat(until_date)
+    ranges = []
+    cursor = start
+    while cursor <= end:
+        # End of month or end date, whichever is earlier
+        if cursor.month == 12:
+            month_end = date(cursor.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            month_end = date(cursor.year, cursor.month + 1, 1) - timedelta(days=1)
+        chunk_end = min(month_end, end)
+        ranges.append((cursor.isoformat(), chunk_end.isoformat()))
+        cursor = chunk_end + timedelta(days=1)
+    return ranges
+
+
 async def match_venue_papers_with_oaipmh(
     session,
     from_date: str,
@@ -202,6 +232,7 @@ async def match_venue_papers_with_oaipmh(
     """Harvest arXiv OAI-PMH records and match against venue_papers by title.
 
     Fills: arxiv_id, doi (if empty). Does NOT overwrite existing values.
+    Splits large date ranges into monthly chunks (OAI-PMH rejects >~6 months).
 
     Args:
         session: async SQLAlchemy session
@@ -215,13 +246,20 @@ async def match_venue_papers_with_oaipmh(
     from sqlalchemy import text as sa_text
     from backend.services.venue_index.normalize import normalize_title
 
-    # Step 1: Harvest from OAI-PMH
-    logger.info(f"[oaipmh-match] Harvesting arXiv records from {from_date} to {until_date}")
-    records = await harvest_oaipmh(
-        from_date=from_date,
-        until_date=until_date,
-        arxiv_set="cs",  # All CS papers (includes CV, LG, CL, AI)
-    )
+    # Step 1: Harvest from OAI-PMH in monthly chunks
+    chunks = _month_ranges(from_date, until_date)
+    logger.info(f"[oaipmh-match] Harvesting arXiv records: {len(chunks)} monthly chunks from {from_date} to {until_date}")
+
+    records: list[ArxivRecord] = []
+    for chunk_from, chunk_until in chunks:
+        logger.info(f"[oaipmh-match] Chunk {chunk_from} → {chunk_until}")
+        chunk_records = await harvest_oaipmh(
+            from_date=chunk_from,
+            until_date=chunk_until,
+            arxiv_set="cs",
+        )
+        records.extend(chunk_records)
+        logger.info(f"[oaipmh-match] Chunk done: +{len(chunk_records)}, total={len(records)}")
 
     if not records:
         return {"harvested": 0, "matched": 0, "updated_arxiv": 0, "updated_doi": 0}
