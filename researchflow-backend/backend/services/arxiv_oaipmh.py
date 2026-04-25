@@ -232,7 +232,8 @@ async def match_venue_papers_with_oaipmh(
     """Harvest arXiv OAI-PMH records and match against venue_papers by title.
 
     Fills: arxiv_id, doi (if empty). Does NOT overwrite existing values.
-    Splits large date ranges into monthly chunks (OAI-PMH rejects >~6 months).
+    Processes each monthly chunk independently to avoid memory buildup
+    (~15k records/month × ~1KB/record = ~15MB/month, not 500MB total).
 
     Args:
         session: async SQLAlchemy session
@@ -246,34 +247,10 @@ async def match_venue_papers_with_oaipmh(
     from sqlalchemy import text as sa_text
     from backend.services.venue_index.normalize import normalize_title
 
-    # Step 1: Harvest from OAI-PMH in monthly chunks
     chunks = _month_ranges(from_date, until_date)
-    logger.info(f"[oaipmh-match] Harvesting arXiv records: {len(chunks)} monthly chunks from {from_date} to {until_date}")
+    logger.info(f"[oaipmh-match] {len(chunks)} monthly chunks from {from_date} to {until_date}")
 
-    records: list[ArxivRecord] = []
-    for chunk_from, chunk_until in chunks:
-        logger.info(f"[oaipmh-match] Chunk {chunk_from} → {chunk_until}")
-        chunk_records = await harvest_oaipmh(
-            from_date=chunk_from,
-            until_date=chunk_until,
-            arxiv_set="cs",
-        )
-        records.extend(chunk_records)
-        logger.info(f"[oaipmh-match] Chunk done: +{len(chunk_records)}, total={len(records)}")
-
-    if not records:
-        return {"harvested": 0, "matched": 0, "updated_arxiv": 0, "updated_doi": 0}
-
-    # Step 2: Build title_norm → record index
-    arxiv_index: dict[str, ArxivRecord] = {}
-    for rec in records:
-        tn = normalize_title(rec.title)
-        if tn and len(tn) > 10:
-            arxiv_index[tn] = rec
-
-    logger.info(f"[oaipmh-match] Indexed {len(arxiv_index)} unique normalized titles from {len(records)} records")
-
-    # Step 3: Load venue_papers needing arxiv_id
+    # Pre-load venue_papers needing arxiv_id (title_norm → (id, doi))
     where_clause = "(arxiv_id = '' OR arxiv_id IS NULL)"
     params: dict = {}
     if conf_years:
@@ -285,36 +262,67 @@ async def match_venue_papers_with_oaipmh(
         WHERE {where_clause}
     """), params)).fetchall()
 
-    logger.info(f"[oaipmh-match] {len(rows)} venue_papers rows need arxiv_id")
+    vp_index: dict[str, tuple[int, str]] = {}  # title_norm → (vp_id, doi)
+    for vp_id, title_norm, doi in rows:
+        if title_norm and len(title_norm) > 10:
+            vp_index[title_norm] = (vp_id, doi or "")
 
-    # Step 4: Match by normalized title
+    logger.info(f"[oaipmh-match] {len(vp_index)} venue_papers need arxiv_id")
+
+    total_harvested = 0
     updated_arxiv = 0
     updated_doi = 0
-    for vp_id, title_norm, existing_doi in rows:
-        rec = arxiv_index.get(title_norm)
-        if not rec:
-            continue
 
-        updates = ["arxiv_id = :aid", "updated_at = now()"]
-        update_params: dict = {"aid": rec.arxiv_id[:30], "id": vp_id}
-
-        if not existing_doi and rec.doi:
-            updates.append("doi = :doi")
-            update_params["doi"] = rec.doi[:200]
-            updated_doi += 1
-
-        await session.execute(
-            sa_text(f"UPDATE venue_papers SET {', '.join(updates)} WHERE id = :id"),
-            update_params,
+    # Process each month: harvest → match → flush → release memory
+    for chunk_from, chunk_until in chunks:
+        chunk_records = await harvest_oaipmh(
+            from_date=chunk_from,
+            until_date=chunk_until,
+            arxiv_set="cs",
         )
-        updated_arxiv += 1
+        total_harvested += len(chunk_records)
 
-    await session.flush()
-    logger.info(f"[oaipmh-match] Done: matched {updated_arxiv}/{len(rows)}, doi+={updated_doi}")
+        # Build title index for this chunk only
+        chunk_matched = 0
+        for rec in chunk_records:
+            tn = normalize_title(rec.title)
+            if not tn or tn not in vp_index:
+                continue
+
+            vp_id, existing_doi = vp_index[tn]
+            updates = ["arxiv_id = :aid", "updated_at = now()"]
+            update_params: dict = {"aid": rec.arxiv_id[:30], "id": vp_id}
+
+            if not existing_doi and rec.doi:
+                updates.append("doi = :doi")
+                update_params["doi"] = rec.doi[:200]
+                updated_doi += 1
+
+            await session.execute(
+                sa_text(f"UPDATE venue_papers SET {', '.join(updates)} WHERE id = :id"),
+                update_params,
+            )
+            updated_arxiv += 1
+            chunk_matched += 1
+            # Remove matched entry so we don't re-match
+            del vp_index[tn]
+
+        await session.flush()
+        logger.info(
+            f"[oaipmh-match] {chunk_from}~{chunk_until}: "
+            f"+{len(chunk_records)} harvested, +{chunk_matched} matched, "
+            f"total={total_harvested}, remaining={len(vp_index)}"
+        )
+
+        # Early exit if all venue_papers matched
+        if not vp_index:
+            logger.info("[oaipmh-match] All venue_papers matched, stopping early")
+            break
+
+    logger.info(f"[oaipmh-match] Done: harvested={total_harvested}, arxiv+={updated_arxiv}, doi+={updated_doi}")
 
     return {
-        "harvested": len(records),
-        "indexed_titles": len(arxiv_index),
+        "harvested": total_harvested,
         "venue_papers_needing": len(rows),
         "updated_arxiv": updated_arxiv,
         "updated_doi": updated_doi,
