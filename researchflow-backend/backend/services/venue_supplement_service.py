@@ -455,6 +455,239 @@ async def supplement_iccv_cvf_pdf_urls(session: AsyncSession) -> dict:
     return {"strategy": "iccv_cvf", "parsed": len(cvf_papers), "updated": updated}
 
 
+# ── Strategy 5b: OpenReview API → arxiv_id extraction ────────────
+
+async def supplement_arxiv_id_from_openreview(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+) -> dict:
+    """Extract arxiv_id from OpenReview API notes for papers that have forum_id.
+
+    OpenReview notes contain arxiv references in multiple places:
+      - content.pdf.value may be an arxiv URL (/pdf/XXXX.XXXXX)
+      - content._bibtex.value may contain arxiv ID
+      - the forum page itself may link to arxiv
+
+    This strategy fetches all notes for each conf_year group, extracts
+    arxiv_id, and matches by forum_id (not title — avoids normalization issues).
+    """
+    from backend.services.venue_index.normalize import extract_arxiv_id
+
+    targets = conf_years or list(_OPENREVIEW_GROUPS.keys())
+    total_updated = 0
+    stats_per_venue: dict[str, int] = {}
+
+    for conf_year in targets:
+        if conf_year not in _OPENREVIEW_GROUPS:
+            continue
+
+        missing = (await session.execute(text("""
+            SELECT count(*) FROM venue_papers
+            WHERE conf_year = :cy AND (arxiv_id = '' OR arxiv_id IS NULL)
+              AND openreview_forum_id != ''
+        """), {"cy": conf_year})).scalar()
+
+        if not missing:
+            logger.info(f"[supplement] OR arxiv_id: {conf_year} — none missing, skip")
+            continue
+
+        group, venue_prefixes = _OPENREVIEW_GROUPS[conf_year]
+        logger.info(f"[supplement] OR arxiv_id: crawling {conf_year} ({missing} missing)")
+
+        # Fetch notes from OR API — collect forum_id → arxiv_id mapping
+        or_arxiv: dict[str, str] = {}  # forum_id → arxiv_id
+        offset = 0
+        page_size = 1000
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                try:
+                    resp = await client.get(
+                        "https://api2.openreview.net/notes/search",
+                        params={"query": "*", "group": group, "limit": page_size, "offset": offset},
+                        headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
+                    )
+                    if resp.status_code != 200:
+                        logger.warning(f"[supplement] OR arxiv_id {resp.status_code} for {group}")
+                        break
+
+                    data = resp.json()
+                    notes = data.get("notes", [])
+                    total_count = data.get("count", 0)
+
+                    for note in notes:
+                        content = note.get("content", {})
+                        forum_id = note.get("forum", "") or note.get("id", "")
+                        if not forum_id:
+                            continue
+
+                        # Try extracting arxiv_id from multiple fields
+                        arxiv_id = ""
+
+                        # 1. content.pdf.value — sometimes points to arxiv
+                        pdf_val = str(content.get("pdf", {}).get("value", ""))
+                        if "arxiv" in pdf_val.lower():
+                            arxiv_id = extract_arxiv_id(pdf_val)
+
+                        # 2. content._bibtex.value
+                        if not arxiv_id:
+                            bibtex = str(content.get("_bibtex", {}).get("value", ""))
+                            m = re.search(r"arxiv[.:]\s*(\d{4}\.\d{4,5})", bibtex, re.I)
+                            if m:
+                                arxiv_id = m.group(1)
+
+                        # 3. content.code.value — sometimes contains arxiv URL
+                        if not arxiv_id:
+                            code_val = str(content.get("code", {}).get("value", ""))
+                            arxiv_id = extract_arxiv_id(code_val)
+
+                        # 4. content.venue or paper URL — unlikely but check
+                        if not arxiv_id:
+                            paper_url = str(content.get("pdf", {}).get("value", ""))
+                            if paper_url.startswith("/pdf/"):
+                                # OR internal PDF, not arxiv — skip
+                                pass
+
+                        if arxiv_id and forum_id:
+                            # Strip version suffix
+                            arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
+                            or_arxiv[forum_id] = arxiv_id
+
+                    offset += len(notes)
+                    if not notes or offset >= total_count:
+                        break
+                    await asyncio.sleep(0.5)
+
+                except Exception as e:
+                    logger.warning(f"[supplement] OR arxiv_id error: {e}")
+                    break
+
+        logger.info(f"[supplement] OR arxiv_id: fetched {len(or_arxiv)} papers with arxiv from {conf_year}")
+
+        if not or_arxiv:
+            stats_per_venue[conf_year] = 0
+            continue
+
+        # Update venue_papers by forum_id match
+        rows = (await session.execute(text("""
+            SELECT id, openreview_forum_id FROM venue_papers
+            WHERE conf_year = :cy AND (arxiv_id = '' OR arxiv_id IS NULL)
+              AND openreview_forum_id != ''
+        """), {"cy": conf_year})).fetchall()
+
+        updated = 0
+        for vp_id, forum_id in rows:
+            aid = or_arxiv.get(forum_id)
+            if not aid:
+                continue
+            await session.execute(
+                text("UPDATE venue_papers SET arxiv_id = :aid, updated_at = now() WHERE id = :id"),
+                {"aid": aid[:30], "id": vp_id},
+            )
+            updated += 1
+
+        stats_per_venue[conf_year] = updated
+        total_updated += updated
+        await session.flush()
+        logger.info(f"[supplement] OR arxiv_id: {conf_year} updated {updated}/{len(rows)}")
+
+    logger.info(f"[supplement] OR arxiv_id: total updated {total_updated}")
+    return {"strategy": "or_arxiv_id", "total_updated": total_updated, "per_venue": stats_per_venue}
+
+
+# ── Strategy 5c: S2 single-paper search → arxiv_id for non-OR venues ─
+
+async def supplement_arxiv_id_from_s2_title_search(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+    max_papers: int = 5000,
+) -> dict:
+    """Fill arxiv_id for papers that have no forum_id/doi — use S2 title search.
+
+    Targets: CVPR, ICCV, ECCV rows where arxiv_id is empty and no OR forum_id.
+    Uses S2 single-paper search (slower but works for any paper).
+    Rate: ~1 req/s with API key.
+    """
+    from backend.services.venue_index.normalize import normalize_title
+
+    where_clause = "(arxiv_id = '' OR arxiv_id IS NULL) AND openreview_forum_id = '' AND doi = ''"
+    params: dict = {}
+    if conf_years:
+        where_clause += " AND conf_year = ANY(:conf_years)"
+        params["conf_years"] = conf_years
+
+    total = (await session.execute(
+        text(f"SELECT count(*) FROM venue_papers WHERE {where_clause}"), params
+    )).scalar()
+    if max_papers > 0:
+        total = min(total, max_papers)
+    logger.info(f"[supplement] S2 title search: {total} rows eligible")
+
+    updated = 0
+    offset = 0
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        while offset < total:
+            rows = (await session.execute(text(f"""
+                SELECT id, title FROM venue_papers
+                WHERE {where_clause}
+                ORDER BY id LIMIT 100 OFFSET :offset
+            """), {**params, "offset": offset})).fetchall()
+            if not rows:
+                break
+            offset += len(rows)
+
+            for vp_id, title in rows:
+                if not title:
+                    continue
+                await limiters["s2"].acquire()
+                try:
+                    resp = await client.get(
+                        "https://api.semanticscholar.org/graph/v1/paper/search/match",
+                        params={"query": title[:200], "fields": "externalIds"},
+                        headers=_s2_headers(),
+                    )
+                    if resp.status_code == 404:
+                        continue
+                    if resp.status_code == 429:
+                        await asyncio.sleep(30)
+                        continue
+                    if resp.status_code != 200:
+                        continue
+
+                    data = resp.json().get("data", [])
+                    if not data:
+                        continue
+
+                    ext = data[0].get("externalIds", {}) or {}
+                    arxiv_id = (ext.get("ArXiv") or "").strip()
+                    if arxiv_id:
+                        arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
+                        await session.execute(
+                            text("UPDATE venue_papers SET arxiv_id = :aid, updated_at = now() WHERE id = :id"),
+                            {"aid": arxiv_id[:30], "id": vp_id},
+                        )
+                        updated += 1
+
+                        # Also fill DOI if available
+                        doi = (ext.get("DOI") or "").strip()
+                        if doi:
+                            await session.execute(
+                                text("UPDATE venue_papers SET doi = CASE WHEN doi = '' THEN :doi ELSE doi END WHERE id = :id"),
+                                {"doi": doi[:200], "id": vp_id},
+                            )
+
+                except Exception as e:
+                    logger.warning(f"[supplement] S2 title search error: {e}")
+
+            await session.flush()
+            if offset % 500 == 0:
+                logger.info(f"[supplement] S2 title search: {offset}/{total}, updated {updated}")
+
+    logger.info(f"[supplement] S2 title search: done, updated {updated}/{total}")
+    return {"strategy": "s2_title_search", "total": total, "updated": updated}
+
+
 # ── Strategy 6: PWC dump → code_url ─────────────────────────────
 
 async def supplement_via_pwc_dump(
@@ -797,6 +1030,10 @@ async def run_full_supplement(
 
     # Step 5: S2 batch (arxiv_id + doi + fallback pdf_url)
     results["s2_batch"] = await supplement_via_s2_batch(session, conf_years)
+    await session.flush()
+
+    # Step 5b: OR API → arxiv_id (for papers with forum_id but no arxiv)
+    results["or_arxiv_id"] = await supplement_arxiv_id_from_openreview(session, conf_years)
     await session.flush()
 
     # Step 6: Papers With Code dump → code_url (zero API)
