@@ -307,7 +307,7 @@ async def match_venue_papers_with_oaipmh(
             # Remove matched entry so we don't re-match
             del vp_index[tn]
 
-        await session.flush()
+        await session.commit()  # commit per-month for crash safety
         logger.info(
             f"[oaipmh-match] {chunk_from}~{chunk_until}: "
             f"+{len(chunk_records)} harvested, +{chunk_matched} matched, "
