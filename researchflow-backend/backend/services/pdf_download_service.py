@@ -377,13 +377,26 @@ async def download_venue_papers_pdfs(
                 break
 
             tasks = [
-                _download_one(client, r[0], r[1] or "", r[2] or "", r[3] or "", r[4] or "", r[5] or "", r[6] or "")
+                asyncio.wait_for(
+                    _download_one(client, r[0], r[1] or "", r[2] or "", r[3] or "", r[4] or "", r[5] or "", r[6] or ""),
+                    timeout=300,  # 5 min per paper max
+                )
                 for r in rows
             ]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Log any unexpected exceptions (not TimeoutError)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception) and not isinstance(result, asyncio.TimeoutError):
+                    logger.warning(f"[vp-pdf] task exception: {result}")
+                elif isinstance(result, asyncio.TimeoutError):
+                    stats["failed"] += 1
 
             # Commit after each batch
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception as e:
+                logger.error(f"[vp-pdf] commit error: {e}")
+                await session.rollback()
             offset += len(rows)
 
             logger.info(
