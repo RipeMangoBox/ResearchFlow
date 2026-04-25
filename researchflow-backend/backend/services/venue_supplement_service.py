@@ -999,6 +999,172 @@ async def supplement_via_openalex_citations(
     return {"strategy": "openalex_citations", "total_with_doi": total, "updated": updated}
 
 
+# ── Strategy 9: S2 enriched batch → citations/references/tldr ────
+
+S2_ENRICHED_FIELDS = "externalIds,citationCount,referenceCount,tldr,fieldsOfStudy,citations.externalIds,citations.title,references.externalIds,references.title"
+
+
+async def supplement_via_s2_enriched_batch(
+    session: AsyncSession,
+    conf_years: list[str] | None = None,
+    batch_size: int = 100,
+    max_batches: int = 500,
+) -> dict:
+    """Batch-fetch enriched metadata from S2: citation/reference counts + lists, tldr, fields.
+
+    Uses arxiv_id or DOI to query S2 batch API with expanded fields.
+    Stores everything in venue_papers.extra_data JSONB.
+
+    Fields stored in extra_data:
+      - citation_count: int
+      - reference_count: int
+      - citations: [{arxiv_id, title}]  (top 50 citing papers)
+      - references: [{arxiv_id, title}]  (all referenced papers)
+      - tldr: str (one-line summary)
+      - fields_of_study: [str]
+    """
+    # Only process rows that have a usable S2 identifier AND lack enriched data
+    where_clause = """(arxiv_id != '' OR doi != '')
+        AND (extra_data IS NULL OR NOT (extra_data ? 'reference_count'))"""
+    params: dict = {}
+    if conf_years:
+        where_clause += " AND conf_year = ANY(:conf_years)"
+        params["conf_years"] = conf_years
+
+    total = (await session.execute(
+        text(f"SELECT count(*) FROM venue_papers WHERE {where_clause}"), params
+    )).scalar()
+    logger.info(f"[supplement] S2 enriched: {total} rows eligible")
+
+    stats = {"batches_sent": 0, "papers_enriched": 0}
+    offset = 0
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for batch_num in range(max_batches):
+            rows = (await session.execute(text(f"""
+                SELECT id, arxiv_id, doi FROM venue_papers
+                WHERE {where_clause}
+                ORDER BY id LIMIT :limit OFFSET :offset
+            """), {**params, "limit": batch_size, "offset": offset})).fetchall()
+
+            if not rows:
+                break
+            offset += len(rows)
+
+            # Build S2 IDs
+            s2_ids = []
+            id_map: dict[int, int] = {}
+            for row in rows:
+                vp_id, arxiv_id, doi = row[0], row[1] or "", row[2] or ""
+                if arxiv_id:
+                    s2_id = f"ARXIV:{re.sub(r'v[0-9]+$', '', arxiv_id)}"
+                elif doi:
+                    s2_id = f"DOI:{doi}"
+                else:
+                    continue
+                idx = len(s2_ids)
+                s2_ids.append(s2_id)
+                id_map[idx] = vp_id
+
+            if not s2_ids:
+                continue
+
+            await limiters["s2"].acquire()
+            try:
+                # S2 batch with expanded fields (smaller batch_size due to response size)
+                resp = await client.post(
+                    S2_BATCH_URL,
+                    json={"ids": s2_ids},
+                    params={"fields": S2_ENRICHED_FIELDS},
+                    headers=_s2_headers(),
+                    timeout=60,
+                )
+                if resp.status_code == 429:
+                    logger.warning("[supplement] S2 enriched rate limited, waiting 30s")
+                    await asyncio.sleep(30)
+                    continue
+                if resp.status_code != 200:
+                    logger.warning(f"[supplement] S2 enriched HTTP {resp.status_code}")
+                    continue
+
+                items = resp.json()
+                stats["batches_sent"] += 1
+
+                for idx, item in enumerate(items):
+                    if item is None:
+                        continue
+                    vp_id = id_map.get(idx)
+                    if vp_id is None:
+                        continue
+
+                    enrichment: dict = {}
+
+                    # Citation/reference counts
+                    cc = item.get("citationCount")
+                    if cc is not None:
+                        enrichment["citation_count"] = cc
+                    rc = item.get("referenceCount")
+                    if rc is not None:
+                        enrichment["reference_count"] = rc
+
+                    # TLDR
+                    tldr = item.get("tldr")
+                    if tldr and isinstance(tldr, dict):
+                        enrichment["tldr"] = tldr.get("text", "")
+
+                    # Fields of study
+                    fos = item.get("fieldsOfStudy")
+                    if fos:
+                        enrichment["fields_of_study"] = fos
+
+                    # Citations list (top citing papers with arxiv_id)
+                    citations_raw = item.get("citations") or []
+                    if citations_raw:
+                        cites = []
+                        for c in citations_raw[:100]:  # cap at 100
+                            ext = c.get("externalIds") or {}
+                            cites.append({
+                                "arxiv_id": ext.get("ArXiv", ""),
+                                "title": (c.get("title") or "")[:200],
+                            })
+                        enrichment["citations"] = cites
+
+                    # References list
+                    refs_raw = item.get("references") or []
+                    if refs_raw:
+                        refs = []
+                        for r in refs_raw:
+                            ext = r.get("externalIds") or {}
+                            refs.append({
+                                "arxiv_id": ext.get("ArXiv", ""),
+                                "title": (r.get("title") or "")[:200],
+                            })
+                        enrichment["references"] = refs
+
+                    if enrichment:
+                        import json as _json
+                        await session.execute(
+                            text("""
+                                UPDATE venue_papers
+                                SET extra_data = coalesce(extra_data, '{}'::jsonb) || CAST(:enrich AS jsonb),
+                                    updated_at = now()
+                                WHERE id = :id
+                            """),
+                            {"enrich": _json.dumps(enrichment), "id": vp_id},
+                        )
+                        stats["papers_enriched"] += 1
+
+            except Exception as e:
+                logger.warning(f"[supplement] S2 enriched error: {e}")
+
+            await session.flush()
+            if batch_num % 10 == 0:
+                logger.info(f"[supplement] S2 enriched: batch {batch_num + 1}, enriched {stats['papers_enriched']}")
+
+    logger.info(f"[supplement] S2 enriched: done {stats}")
+    return {"strategy": "s2_enriched_batch", **stats}
+
+
 # ── Orchestrator ─────────────────────────────────────────────────
 
 async def run_full_supplement(
@@ -1046,6 +1212,10 @@ async def run_full_supplement(
 
     # Step 8: OpenAlex → citation_count
     results["openalex_citations"] = await supplement_via_openalex_citations(session, conf_years)
+    await session.flush()
+
+    # Step 9: S2 enriched batch → citations/references/tldr/fields_of_study
+    results["s2_enriched"] = await supplement_via_s2_enriched_batch(session, conf_years)
     await session.flush()
 
     return results
