@@ -235,19 +235,26 @@ def _resolve_vp_pdf_urls(pdf_url: str, arxiv_id: str, openreview_forum_id: str, 
     """Build a prioritized list of PDF download URLs for a venue_paper row.
 
     Returns multiple URLs for fallback — caller tries each in order.
-    Priority:
-      1. OpenReview PDF (most reliable for conference papers)
-      2. arXiv PDF (fast via proxy)
-      3. Original pdf_url (various sources — CVF, S2, etc.)
-      4. Unpaywall via DOI (OA papers)
+    Priority (arXiv first — more generous rate limits than OpenReview):
+      1. arXiv PDF (fast, tolerant rate limits)
+      2. Original pdf_url if it's a CVF/direct link (not OR)
+      3. OpenReview PDF (strict rate limits, use as fallback)
     """
     urls: list[str] = []
 
-    if openreview_forum_id:
-        urls.append(f"https://openreview.net/pdf?id={openreview_forum_id}")
+    # arXiv first — generous rate limit (~3 req/s)
     if arxiv_id:
         base_id = re.sub(r"v\d+$", "", arxiv_id)
         urls.append(f"https://arxiv.org/pdf/{base_id}.pdf")
+    # CVF/direct links second (also generous)
+    if pdf_url and pdf_url not in urls and "openreview.net" not in pdf_url:
+        urls.append(pdf_url)
+    # OpenReview last — strict 429 limits, avoid hammering
+    if openreview_forum_id:
+        or_url = f"https://openreview.net/pdf?id={openreview_forum_id}"
+        if or_url not in urls:
+            urls.append(or_url)
+    # OR pdf_url as final fallback
     if pdf_url and pdf_url not in urls:
         urls.append(pdf_url)
 
