@@ -10,6 +10,7 @@ from backend.services.venue_index.normalize import (
     normalize_title,
     normalize_whitespace,
     slugify_short_title,
+    strip_latex,
 )
 
 
@@ -27,17 +28,46 @@ class TestNormalizeWhitespace:
         assert normalize_whitespace(None) == ""
 
 
+class TestStripLatex:
+    def test_inline_math(self):
+        assert strip_latex("$O(n)$ Attention") == "O(n) Attention"
+
+    def test_mathcal(self):
+        assert "F" in strip_latex("\\mathcal{F}-divergence")
+
+    def test_greek_letters(self):
+        result = strip_latex("\\alpha-blending with \\beta")
+        assert "alpha" not in result.lower()
+        assert "blending" in result
+
+    def test_braces(self):
+        result = strip_latex("{x}^{2}")
+        assert "x" in result and "2" in result
+
+    def test_no_latex(self):
+        assert strip_latex("Plain Title") == "Plain Title"
+
+
 class TestNormalizeTitle:
     def test_lowercase_alphanum_only(self):
         assert normalize_title("Hello, World! 2025") == "hello world 2025"
 
     def test_strips_articles(self):
-        # normalize_title drops non-alphanum but doesn't strip a/the explicitly
         result = normalize_title("The Transformer Architecture")
         assert "transformer" in result
 
     def test_latex_in_title(self):
-        assert normalize_title("$O(n\\log n)$ Attention") == "o n log n attention"
+        # \log is stripped, both n's remain
+        assert normalize_title("$O(n\\log n)$ Attention") == "o n n attention"
+
+    def test_latex_mathcal(self):
+        assert normalize_title("Learning $\\mathcal{F}$-Divergence") == "learning f divergence"
+
+    def test_latex_and_plain_match(self):
+        # A latex title and its plain equivalent should normalize the same
+        latex = normalize_title("$O(n)$ Complexity for Transformers")
+        plain = normalize_title("O(n) Complexity for Transformers")
+        assert latex == plain
 
 
 class TestNormalizeAuthors:

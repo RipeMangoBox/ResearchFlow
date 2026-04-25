@@ -117,13 +117,15 @@ async def supplement_via_s2_batch(
                 pdf_url = row[4] or ""
                 row_map[vp_id] = {"arxiv_id": arxiv_id, "doi": doi, "pdf_url": pdf_url}
 
-                # Build S2 identifier
+                # Build S2 identifier — only ARXIV: and DOI: are reliably
+                # supported by the S2 batch API. URL: format returns null
+                # for most papers, causing 400 "No valid paper ids" errors.
                 if arxiv_id:
                     s2_id = f"ARXIV:{re.sub(r'v[0-9]+$', '', arxiv_id)}"
-                elif orf_id:
-                    s2_id = f"URL:https://openreview.net/forum?id={orf_id}"
+                elif doi:
+                    s2_id = f"DOI:{doi}"
                 else:
-                    continue  # Can't build S2 ID without arxiv or openreview
+                    continue  # forum_id alone can't be used with S2 batch
 
                 idx = len(s2_ids)
                 s2_ids.append(s2_id)
@@ -609,15 +611,45 @@ async def supplement_openreview_keywords(
         """), {"cy": conf_year})).fetchall()
 
         updated = 0
+        still_missing: list[tuple[int, str]] = []
         for vp_id, forum_id in rows:
             kw = or_keywords.get(forum_id)
             if not kw:
+                still_missing.append((vp_id, forum_id))
                 continue
             await session.execute(
                 text("UPDATE venue_papers SET keywords = :kw, updated_at = now() WHERE id = :id"),
                 {"kw": kw[:5000], "id": vp_id},
             )
             updated += 1
+
+        # Fallback: direct per-note fetch for remaining rows (handles venues
+        # where group search didn't return keywords, e.g. ICML_2024)
+        if still_missing and len(still_missing) <= 5000:
+            logger.info(f"[supplement] OR keywords: {conf_year} direct fetch for {len(still_missing)} remaining")
+            async with httpx.AsyncClient(timeout=15) as client:
+                for vp_id, forum_id in still_missing:
+                    try:
+                        resp = await client.get(
+                            f"https://api2.openreview.net/notes?id={forum_id}",
+                            headers={"User-Agent": "ResearchFlow/0.1"},
+                        )
+                        if resp.status_code != 200:
+                            continue
+                        notes = resp.json().get("notes", [])
+                        if not notes:
+                            continue
+                        kw_raw = notes[0].get("content", {}).get("keywords", {}).get("value", [])
+                        if isinstance(kw_raw, list) and kw_raw:
+                            kw = "; ".join(str(k) for k in kw_raw)
+                            await session.execute(
+                                text("UPDATE venue_papers SET keywords = :kw, updated_at = now() WHERE id = :id"),
+                                {"kw": kw[:5000], "id": vp_id},
+                            )
+                            updated += 1
+                        await asyncio.sleep(0.3)  # polite rate for per-note
+                    except Exception as e:
+                        logger.warning(f"[supplement] OR keywords direct fetch error for {forum_id}: {e}")
 
         stats_per_venue[conf_year] = updated
         total_updated += updated

@@ -8,8 +8,21 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
+def strip_latex(text: str) -> str:
+    """Remove LaTeX math and commands from a title string.
+
+    Handles: $O(n)$, \\mathcal{F}, \\textbf{x}, \\alpha, etc.
+    """
+    text = re.sub(r"\$([^$]*)\$", r"\1", text)  # $..$ → content
+    text = re.sub(r"\\(?:mathcal|mathbb|mathrm|textbf|textit|text|operatorname)\s*\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\(?:alpha|beta|gamma|delta|epsilon|lambda|mu|sigma|theta|pi|omega|phi|psi|rho|tau|eta|zeta|kappa|nu|xi|chi)\b", "", text)
+    text = re.sub(r"\\[a-zA-Z]+", "", text)  # remaining \commands
+    text = re.sub(r"[{}^_~]", " ", text)  # braces and special TeX chars
+    return text
+
+
 def normalize_title(text: str) -> str:
-    text = normalize_whitespace(text).lower()
+    text = strip_latex(normalize_whitespace(text)).lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
