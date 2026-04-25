@@ -716,7 +716,7 @@ async def supplement_via_openalex_citations(
                         await session.execute(
                             text("""
                                 UPDATE venue_papers
-                                SET extra_data = coalesce(extra_data, '{}')::jsonb || jsonb_build_object('citation_count', :cc),
+                                SET extra_data = coalesce(extra_data, '{}'::jsonb) || jsonb_build_object('citation_count', CAST(:cc AS int)),
                                     updated_at = now()
                                 WHERE id = :id
                             """),
