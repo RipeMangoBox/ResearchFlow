@@ -231,6 +231,49 @@ async def supplement_cvf_pdf_urls(session: AsyncSession) -> dict:
 
 # ── Strategy 4: OpenReview API v2 → forum_id + pdf_url ───────────
 
+# ── Shared OpenReview note cache ─────────────────────────────────
+# Avoids fetching the same group 3× (for forum_id, arxiv_id, keywords)
+
+_or_note_cache: dict[str, list[dict]] = {}  # conf_year → [note_dict]
+
+
+async def _fetch_or_notes_cached(conf_year: str, group: str) -> list[dict]:
+    """Fetch all OR notes for a conf_year, cached in memory."""
+    if conf_year in _or_note_cache:
+        return _or_note_cache[conf_year]
+
+    all_notes: list[dict] = []
+    offset = 0
+    page_size = 1000
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            try:
+                resp = await client.get(
+                    "https://api2.openreview.net/notes/search",
+                    params={"query": "*", "group": group, "limit": page_size, "offset": offset},
+                    headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"[or-cache] HTTP {resp.status_code} for {group}")
+                    break
+                data = resp.json()
+                notes = data.get("notes", [])
+                total_count = data.get("count", 0)
+                all_notes.extend(notes)
+                offset += len(notes)
+                if not notes or offset >= total_count:
+                    break
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"[or-cache] Error fetching {group}: {e}")
+                break
+
+    logger.info(f"[or-cache] {conf_year}: fetched {len(all_notes)} notes")
+    _or_note_cache[conf_year] = all_notes
+    return all_notes
+
+
 # Venues whose accepted papers live on OpenReview
 _OPENREVIEW_GROUPS = {
     "NeurIPS_2024": ("NeurIPS.cc/2024/Conference", ["NeurIPS 2024"]),
@@ -277,58 +320,26 @@ async def supplement_via_openreview_api(
             continue
 
         group, venue_prefixes = _OPENREVIEW_GROUPS[conf_year]
-        logger.info(f"[supplement] OR API: crawling {conf_year} (group={group}, {missing} rows missing)")
+        logger.info(f"[supplement] OR API: {conf_year} (group={group}, {missing} rows missing)")
 
-        # Paginate through OpenReview API
+        # Use cached OR notes
+        notes = await _fetch_or_notes_cached(conf_year, group)
+
         or_papers: dict[str, dict] = {}  # title_normalized → {forum_id, pdf_url}
-        offset = 0
-        page_size = 1000
+        for note in notes:
+            content = note.get("content", {})
+            venue_val = content.get("venue", {}).get("value", "")
+            if not any(venue_val.lower().startswith(p.lower()) for p in venue_prefixes):
+                continue
+            title_raw = content.get("title", {}).get("value", "")
+            forum_id = note.get("forum", "") or note.get("id", "")
+            pdf_path = content.get("pdf", {}).get("value", "")
+            pdf_url = f"https://openreview.net{pdf_path}" if pdf_path else ""
+            tn = normalize_title(title_raw)
+            if tn and forum_id:
+                or_papers[tn] = {"forum_id": forum_id, "pdf_url": pdf_url}
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            while True:
-                try:
-                    resp = await client.get(
-                        "https://api2.openreview.net/notes/search",
-                        params={"query": "*", "group": group, "limit": page_size, "offset": offset},
-                        headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
-                    )
-                    if resp.status_code != 200:
-                        logger.warning(f"[supplement] OR API {resp.status_code} for {group}")
-                        break
-
-                    data = resp.json()
-                    notes = data.get("notes", [])
-                    total_count = data.get("count", 0)
-
-                    if offset == 0:
-                        logger.info(f"[supplement] OR API: {conf_year} total={total_count}")
-
-                    for note in notes:
-                        content = note.get("content", {})
-                        venue_val = content.get("venue", {}).get("value", "")
-                        # Filter accepted papers
-                        if not any(venue_val.lower().startswith(p.lower()) for p in venue_prefixes):
-                            continue
-
-                        title_raw = content.get("title", {}).get("value", "")
-                        forum_id = note.get("forum", "") or note.get("id", "")
-                        pdf_path = content.get("pdf", {}).get("value", "")
-                        pdf_url = f"https://openreview.net{pdf_path}" if pdf_path else ""
-
-                        tn = normalize_title(title_raw)
-                        if tn and forum_id:
-                            or_papers[tn] = {"forum_id": forum_id, "pdf_url": pdf_url}
-
-                    offset += len(notes)
-                    if not notes or offset >= total_count:
-                        break
-                    await asyncio.sleep(0.5)
-
-                except Exception as e:
-                    logger.warning(f"[supplement] OR API error for {conf_year}: {e}")
-                    break
-
-        logger.info(f"[supplement] OR API: {conf_year} fetched {len(or_papers)} accepted papers from OpenReview")
+        logger.info(f"[supplement] OR API: {conf_year} fetched {len(or_papers)} accepted papers")
 
         if not or_papers:
             continue
@@ -492,75 +503,37 @@ async def supplement_arxiv_id_from_openreview(
             continue
 
         group, venue_prefixes = _OPENREVIEW_GROUPS[conf_year]
-        logger.info(f"[supplement] OR arxiv_id: crawling {conf_year} ({missing} missing)")
+        logger.info(f"[supplement] OR arxiv_id: {conf_year} ({missing} missing)")
 
-        # Fetch notes from OR API — collect forum_id → arxiv_id mapping
+        # Use cached OR notes
+        notes = await _fetch_or_notes_cached(conf_year, group)
+
         or_arxiv: dict[str, str] = {}  # forum_id → arxiv_id
-        offset = 0
-        page_size = 1000
+        for note in notes:
+            content = note.get("content", {})
+            forum_id = note.get("forum", "") or note.get("id", "")
+            if not forum_id:
+                continue
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            while True:
-                try:
-                    resp = await client.get(
-                        "https://api2.openreview.net/notes/search",
-                        params={"query": "*", "group": group, "limit": page_size, "offset": offset},
-                        headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
-                    )
-                    if resp.status_code != 200:
-                        logger.warning(f"[supplement] OR arxiv_id {resp.status_code} for {group}")
-                        break
+            arxiv_id = ""
+            # 1. content.pdf.value — sometimes points to arxiv
+            pdf_val = str(content.get("pdf", {}).get("value", ""))
+            if "arxiv" in pdf_val.lower():
+                arxiv_id = extract_arxiv_id(pdf_val)
+            # 2. content._bibtex.value
+            if not arxiv_id:
+                bibtex = str(content.get("_bibtex", {}).get("value", ""))
+                m = re.search(r"arxiv[.:]\s*(\d{4}\.\d{4,5})", bibtex, re.I)
+                if m:
+                    arxiv_id = m.group(1)
+            # 3. content.code.value
+            if not arxiv_id:
+                code_val = str(content.get("code", {}).get("value", ""))
+                arxiv_id = extract_arxiv_id(code_val)
 
-                    data = resp.json()
-                    notes = data.get("notes", [])
-                    total_count = data.get("count", 0)
-
-                    for note in notes:
-                        content = note.get("content", {})
-                        forum_id = note.get("forum", "") or note.get("id", "")
-                        if not forum_id:
-                            continue
-
-                        # Try extracting arxiv_id from multiple fields
-                        arxiv_id = ""
-
-                        # 1. content.pdf.value — sometimes points to arxiv
-                        pdf_val = str(content.get("pdf", {}).get("value", ""))
-                        if "arxiv" in pdf_val.lower():
-                            arxiv_id = extract_arxiv_id(pdf_val)
-
-                        # 2. content._bibtex.value
-                        if not arxiv_id:
-                            bibtex = str(content.get("_bibtex", {}).get("value", ""))
-                            m = re.search(r"arxiv[.:]\s*(\d{4}\.\d{4,5})", bibtex, re.I)
-                            if m:
-                                arxiv_id = m.group(1)
-
-                        # 3. content.code.value — sometimes contains arxiv URL
-                        if not arxiv_id:
-                            code_val = str(content.get("code", {}).get("value", ""))
-                            arxiv_id = extract_arxiv_id(code_val)
-
-                        # 4. content.venue or paper URL — unlikely but check
-                        if not arxiv_id:
-                            paper_url = str(content.get("pdf", {}).get("value", ""))
-                            if paper_url.startswith("/pdf/"):
-                                # OR internal PDF, not arxiv — skip
-                                pass
-
-                        if arxiv_id and forum_id:
-                            # Strip version suffix
-                            arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
-                            or_arxiv[forum_id] = arxiv_id
-
-                    offset += len(notes)
-                    if not notes or offset >= total_count:
-                        break
-                    await asyncio.sleep(0.5)
-
-                except Exception as e:
-                    logger.warning(f"[supplement] OR arxiv_id error: {e}")
-                    break
+            if arxiv_id and forum_id:
+                arxiv_id = re.sub(r"v\d+$", "", arxiv_id)
+                or_arxiv[forum_id] = arxiv_id
 
         logger.info(f"[supplement] OR arxiv_id: fetched {len(or_arxiv)} papers with arxiv from {conf_year}")
 
@@ -792,46 +765,20 @@ async def supplement_openreview_keywords(
             continue
 
         group, venue_prefixes = _OPENREVIEW_GROUPS[conf_year]
-        logger.info(f"[supplement] OR keywords: crawling {conf_year} ({missing} missing)")
+        logger.info(f"[supplement] OR keywords: {conf_year} ({missing} missing)")
 
-        # Fetch from OR API with keywords field
+        # Use cached OR notes
+        notes = await _fetch_or_notes_cached(conf_year, group)
+
         or_keywords: dict[str, str] = {}  # forum_id → keywords string
-        offset = 0
-        page_size = 1000
+        for note in notes:
+            content = note.get("content", {})
+            forum_id = note.get("forum", "") or note.get("id", "")
+            kw_raw = content.get("keywords", {}).get("value", [])
+            if isinstance(kw_raw, list) and kw_raw and forum_id:
+                or_keywords[forum_id] = "; ".join(str(k) for k in kw_raw)
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            while True:
-                try:
-                    resp = await client.get(
-                        "https://api2.openreview.net/notes/search",
-                        params={"query": "*", "group": group, "limit": page_size, "offset": offset},
-                        headers={"User-Agent": "ResearchFlow/0.1", "Accept": "application/json"},
-                    )
-                    if resp.status_code != 200:
-                        logger.warning(f"[supplement] OR keywords {resp.status_code} for {group}")
-                        break
-
-                    data = resp.json()
-                    notes = data.get("notes", [])
-                    total_count = data.get("count", 0)
-
-                    for note in notes:
-                        content = note.get("content", {})
-                        forum_id = note.get("forum", "") or note.get("id", "")
-                        kw_raw = content.get("keywords", {}).get("value", [])
-                        if isinstance(kw_raw, list) and kw_raw and forum_id:
-                            or_keywords[forum_id] = "; ".join(str(k) for k in kw_raw)
-
-                    offset += len(notes)
-                    if not notes or offset >= total_count:
-                        break
-                    await asyncio.sleep(0.5)
-
-                except Exception as e:
-                    logger.warning(f"[supplement] OR keywords error: {e}")
-                    break
-
-        logger.info(f"[supplement] OR keywords: fetched {len(or_keywords)} papers with keywords from {conf_year}")
+        logger.info(f"[supplement] OR keywords: {len(or_keywords)} papers with keywords from {conf_year}")
 
         if not or_keywords:
             continue

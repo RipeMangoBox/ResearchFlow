@@ -27,6 +27,7 @@ from backend.models.paper import Paper, PaperAsset
 logger = logging.getLogger(__name__)
 
 MIN_PDF_SIZE = 50 * 1024  # 50 KB — smaller is likely an error page
+MAX_PDF_SIZE = 50 * 1024 * 1024  # 50 MB — larger is likely a wrong file
 MAX_RETRIES = 3
 
 
@@ -100,6 +101,9 @@ def _validate_pdf(data: bytes, url: str) -> bool:
     """Check that downloaded content is a valid PDF."""
     if len(data) < MIN_PDF_SIZE:
         logger.warning(f"PDF too small ({len(data)} bytes): {url}")
+        return False
+    if len(data) > MAX_PDF_SIZE:
+        logger.warning(f"PDF too large ({len(data)} bytes): {url}")
         return False
     if data[:5] != b"%PDF-":
         logger.warning(f"PDF magic check failed: {url} (got {data[:20]!r})")
@@ -227,23 +231,27 @@ def _vp_object_key(conf_year: str, arxiv_id: str, title: str, vp_id: int) -> str
     return f"venue-papers/pdf/{conf_year}/{ident}.pdf"
 
 
-def _resolve_vp_pdf_url(pdf_url: str, arxiv_id: str, openreview_forum_id: str) -> str:
-    """Pick the best download URL for a venue_paper row.
+def _resolve_vp_pdf_urls(pdf_url: str, arxiv_id: str, openreview_forum_id: str, doi: str = "") -> list[str]:
+    """Build a prioritized list of PDF download URLs for a venue_paper row.
 
+    Returns multiple URLs for fallback — caller tries each in order.
     Priority:
       1. OpenReview PDF (most reliable for conference papers)
       2. arXiv PDF (fast via proxy)
-      3. Original pdf_url (various sources)
+      3. Original pdf_url (various sources — CVF, S2, etc.)
+      4. Unpaywall via DOI (OA papers)
     """
-    # Prefer OpenReview direct PDF
+    urls: list[str] = []
+
     if openreview_forum_id:
-        return f"https://openreview.net/pdf?id={openreview_forum_id}"
-    # Prefer arXiv
+        urls.append(f"https://openreview.net/pdf?id={openreview_forum_id}")
     if arxiv_id:
         base_id = re.sub(r"v\d+$", "", arxiv_id)
-        return f"https://arxiv.org/pdf/{base_id}.pdf"
-    # Fallback to whatever pdf_url we have
-    return pdf_url
+        urls.append(f"https://arxiv.org/pdf/{base_id}.pdf")
+    if pdf_url and pdf_url not in urls:
+        urls.append(pdf_url)
+
+    return urls
 
 
 async def download_venue_papers_pdfs(
@@ -294,22 +302,24 @@ async def download_venue_papers_pdfs(
         orf_id: str,
         conf_year: str,
         title: str,
+        doi: str = "",
     ):
         async with sem:
-            url = _resolve_vp_pdf_url(pdf_url, arxiv_id, orf_id)
-            if not url:
+            urls = _resolve_vp_pdf_urls(pdf_url, arxiv_id, orf_id, doi)
+            if not urls:
                 stats["skipped"] += 1
                 return
 
-            data = await _download_with_retry(client, url)
-            if not data:
-                # Try fallback: if we used OR/arXiv, try original pdf_url
-                if url != pdf_url and pdf_url:
-                    data = await _download_with_retry(client, pdf_url)
+            # Try each URL in priority order until one succeeds
+            data = None
+            for url in urls:
+                data = await _download_with_retry(client, url)
+                if data and _validate_pdf(data, url):
+                    break
+                data = None  # invalid, try next
 
             if not data:
                 stats["failed"] += 1
-                # Mark error in extra_data to avoid re-trying
                 await session.execute(
                     text("""
                         UPDATE venue_papers
@@ -318,21 +328,7 @@ async def download_venue_papers_pdfs(
                             updated_at = now()
                         WHERE id = :id
                     """),
-                    {"err": f"download_failed:{url[:200]}", "id": vp_id},
-                )
-                return
-
-            if not _validate_pdf(data, url):
-                stats["failed"] += 1
-                await session.execute(
-                    text("""
-                        UPDATE venue_papers
-                        SET extra_data = coalesce(extra_data, '{}')::jsonb
-                            || jsonb_build_object('pdf_error', 'validation_failed'),
-                            updated_at = now()
-                        WHERE id = :id
-                    """),
-                    {"id": vp_id},
+                    {"err": f"download_failed:{','.join(u[:60] for u in urls)}", "id": vp_id},
                 )
                 return
 
@@ -363,7 +359,7 @@ async def download_venue_papers_pdfs(
     async with httpx.AsyncClient(follow_redirects=True, timeout=180) as client:
         while offset < total:
             rows = (await session.execute(text(f"""
-                SELECT id, pdf_url, arxiv_id, openreview_forum_id, conf_year, title
+                SELECT id, pdf_url, arxiv_id, openreview_forum_id, conf_year, title, doi
                 FROM venue_papers
                 WHERE {where_clause}
                 ORDER BY id
@@ -374,7 +370,7 @@ async def download_venue_papers_pdfs(
                 break
 
             tasks = [
-                _download_one(client, r[0], r[1] or "", r[2] or "", r[3] or "", r[4] or "", r[5] or "")
+                _download_one(client, r[0], r[1] or "", r[2] or "", r[3] or "", r[4] or "", r[5] or "", r[6] or "")
                 for r in rows
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
