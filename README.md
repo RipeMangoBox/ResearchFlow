@@ -22,8 +22,6 @@
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-111827?style=flat-square"/>
 </p>
 
-> 🔥 **ResearchFlow Community** | **[💬 WeChat / ResearchFlow WeChat Group](./WECHAT.md)**
-
 ---
 
 > **Knowledge first, not execution first.** Most AI research tools focus on "help me run experiments" or "help me write the paper." ResearchFlow focuses one layer earlier: **when your agent makes a decision, does it already have enough structured, retrievable paper evidence?** Without that layer, ideas stay vague, code changes lack grounding, and reviewer concerns are harder to answer.
