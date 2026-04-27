@@ -202,8 +202,8 @@ async def export_obsidian_vault_v6(
     session: AsyncSession = Depends(get_session),
 ):
     """Export v6 vault: v5 base + node/edge profiles + Lab pages."""
-    from backend.services.vault_export_v6 import export_vault_v6
-    result = await export_vault_v6(session)
+    from backend.services.vault_export_v6 import export_vault
+    result = await export_vault(session)
     return result
 
 

@@ -7,7 +7,6 @@ import pytest_asyncio
 from backend.services import review_service
 from backend.models.assertion import GraphAssertion, GraphNode
 from backend.models.delta_card import DeltaCard
-from backend.models.graph import IdeaDelta
 
 
 @pytest_asyncio.fixture

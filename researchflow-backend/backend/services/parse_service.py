@@ -180,6 +180,21 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         """Remove null bytes that PostgreSQL text columns cannot store."""
         return text.replace("\x00", "") if text else text
 
+    def _deep_clean_nulls(obj):
+        """Recursively strip \\x00 from every string in a nested dict/list.
+        PostgreSQL JSONB rejects \\u0000; some PDFs leak NULL bytes into
+        extracted text. Apply to evidence_spans / extracted_figure_images /
+        figure_captions before INSERT."""
+        if obj is None:
+            return None
+        if isinstance(obj, str):
+            return obj.replace("\x00", "")
+        if isinstance(obj, list):
+            return [_deep_clean_nulls(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _deep_clean_nulls(v) for k, v in obj.items()}
+        return obj
+
     merged_sections = {}
     if grobid_result and grobid_result.sections:
         merged_sections = {k: _clean_text(v[:5000]) for k, v in grobid_result.sections.items()}
@@ -343,6 +358,9 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         parse_metadata["parsers_used"].append("grobid")
 
     # ── Create L2 analysis ───────────────────────────────────────
+    # Apply NULL-byte scrubber to ALL JSONB fields and the formulas array,
+    # in addition to the section-level _clean_text. Some PDFs leak \x00
+    # which PostgreSQL JSONB outright rejects.
     analysis = PaperAnalysis(
         paper_id=paper_id,
         level=AnalysisLevel.L2_PARSE,
@@ -351,13 +369,13 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
         prompt_version="v2",
         schema_version="v2",
         confidence=1.0,
-        extracted_sections=merged_sections,
+        extracted_sections=_deep_clean_nulls(merged_sections),
         extracted_formulas=[_clean_text(f) for f in extracted_formulas] if extracted_formulas else extracted_formulas,
-        extracted_tables=table_captions,
-        figure_captions=figure_captions,
-        extracted_figure_images=figure_image_records if figure_image_records else None,
+        extracted_tables=_deep_clean_nulls(table_captions),
+        figure_captions=_deep_clean_nulls(figure_captions),
+        extracted_figure_images=_deep_clean_nulls(figure_image_records) if figure_image_records else None,
         # Store GROBID-specific results in evidence_spans (repurposed for L2)
-        evidence_spans={
+        evidence_spans=_deep_clean_nulls({
             "grobid_references": grobid_refs,
             "grobid_authors": grobid_authors,
             "grobid_abstract": grobid_result.abstract if grobid_result else None,
@@ -374,7 +392,7 @@ async def parse_paper_pdf(session: AsyncSession, paper_id: UUID) -> PaperAnalysi
             "section_hierarchy": pymupdf_result.sections_hierarchy if pymupdf_result else [],
             "citation_contexts": pymupdf_result.citation_contexts[:100] if pymupdf_result else [],
             "dataset_mentions": pymupdf_result.dataset_mentions if pymupdf_result else [],
-        },
+        }),
         is_current=True,
     )
     session.add(analysis)

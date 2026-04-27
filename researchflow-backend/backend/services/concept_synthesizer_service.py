@@ -7,6 +7,7 @@ Produces cross-paper concept synthesis, not per-paper isolated concepts.
 """
 
 import logging
+import re
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -18,6 +19,48 @@ from backend.models.delta_card import DeltaCard
 from backend.models.paper import Paper
 
 logger = logging.getLogger(__name__)
+
+
+# ── Title-based method name fallback ────────────────────────────────────
+# When the agent fails to extract `proposed_method_name` (LLM JSON parse
+# failure, context build failure, etc.), most ML papers still leak the
+# method acronym in their title via the canonical "MethodName: Description"
+# pattern. Extract it as a last resort so structural papers don't end up
+# with method_family=NULL.
+
+_METHOD_TITLE_RE = re.compile(
+    r"^\s*([A-Z][A-Za-z0-9][A-Za-z0-9\-\+\.]{0,30})"   # acronym/CamelCase
+    r"(?:\s+[Vv]?\d+(?:\.\d+)?)?"                       # optional version
+    r"\s*:\s+\S"                                        # colon + non-empty desc
+)
+# Common non-method words that masquerade as titles before colon.
+_TITLE_BLACKLIST = {
+    "abstract", "note", "preprint", "appendix", "supplementary",
+    "preface", "introduction", "the", "this", "a", "an", "what",
+    "how", "why", "when", "is", "are", "we", "our",
+}
+
+
+def extract_method_from_title(title: str | None) -> str | None:
+    """Best-effort method-name extraction from paper title.
+
+    Matches the canonical "AcronymOrCamelCase: Description" pattern. Returns
+    the acronym, or None if no clean match. Use only as a fallback when the
+    structured agent output is empty.
+    """
+    if not title:
+        return None
+    m = _METHOD_TITLE_RE.match(title)
+    if not m:
+        return None
+    candidate = m.group(0).rsplit(":", 1)[0].strip()
+    if not candidate or candidate.lower() in _TITLE_BLACKLIST:
+        return None
+    # Reject if candidate contains spaces but no version suffix — likely a
+    # phrase ("This paper:") rather than a method name.
+    if " " in candidate and not re.search(r"[Vv]?\d", candidate):
+        return None
+    return candidate
 
 
 async def synthesize_concepts(
@@ -43,6 +86,17 @@ async def synthesize_concepts(
 
     # ── 1. Resolve MethodNode ────────────────────────────────
     family_name = analysis_data.get("same_family_method")
+    # Fallback when the agent failed silently (empty deep_analysis output for
+    # structural papers — see ingest_workflow.py:899). Most ML papers leak
+    # the method acronym in their title; without this fallback ~70% of
+    # analyzed papers stay with method_family=NULL → method graph collapses.
+    if not family_name:
+        family_name = extract_method_from_title(paper.title)
+        if family_name:
+            logger.info(
+                "method_family fallback from title for %s: %s",
+                paper_id, family_name,
+            )
     mf = None
 
     if family_name:
@@ -67,6 +121,7 @@ async def synthesize_concepts(
             # Create new MethodNode
             mf = MethodNode(
                 name=family_name,
+                type="mechanism_family",
                 domain=paper.category,
                 description=analysis_data.get("core_intuition", "")[:500],
             )
@@ -161,7 +216,6 @@ async def synthesize_concepts(
             contrib_type = "instance"
 
         # Get delta_card if exists
-        from backend.models.delta_card import DeltaCard
         delta_card_result = await session.execute(
             select(DeltaCard.id).where(
                 DeltaCard.paper_id == paper_id

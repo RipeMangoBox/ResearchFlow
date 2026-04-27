@@ -60,7 +60,16 @@ async def extract_formulas(
     doc = fitz.open(pdf_path)
 
     # ── Primary: VLM page scan ──────────────────────────────────
-    vlm_results = await _vlm_page_scan(doc, paper_id, session)
+    # Gate by env flag — Kimi proxy currently rejects multimodal image
+    # uploads with "Connection error", and each rejected call wastes
+    # 30-60s per retry. At batch scale this dominates the wall clock.
+    # Set RF_DISABLE_VLM_FORMULA=1 to skip; PyMuPDF text extraction
+    # alone still gives method context, just no LaTeX.
+    import os as _os
+    if _os.getenv("RF_DISABLE_VLM_FORMULA") == "1":
+        vlm_results = []
+    else:
+        vlm_results = await _vlm_page_scan(doc, paper_id, session)
 
     # ── Enhanced: GROBID crop + OCR (if coords available) ───────
     if grobid_formulas:

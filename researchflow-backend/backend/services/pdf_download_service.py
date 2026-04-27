@@ -282,7 +282,14 @@ async def download_venue_papers_pdfs(
     """
     from backend.services.object_storage import get_storage, compute_checksum
 
-    where_clause = "pdf_url != '' AND (pdf_object_key IS NULL OR pdf_object_key = '')"
+    # Allow rows that have ANY downloadable identifier — pdf_url, arxiv_id,
+    # OR an OpenReview forum_id — because _resolve_vp_pdf_urls already builds
+    # arxiv/openreview URLs from those fields. Restricting to pdf_url alone
+    # filtered out ~165 ICLR rows that only had arxiv_id or forum_id.
+    where_clause = (
+        "(pdf_url <> '' OR arxiv_id <> '' OR openreview_forum_id <> '') "
+        "AND (pdf_object_key IS NULL OR pdf_object_key = '')"
+    )
     params: dict = {}
     if conf_years:
         where_clause += " AND conf_year = ANY(:conf_years)"

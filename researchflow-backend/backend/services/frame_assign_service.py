@@ -230,22 +230,15 @@ async def _discover_paradigm_via_llm(
         session.add(paradigm)
         await session.flush()
 
-        # Create live Slots
-        created_slots = []
-        for i, s_data in enumerate(slots_json):
-            slot = Slot(
-                paradigm_id=paradigm.id,
-                name=s_data["name"],
-                slot_type=s_data.get("slot_type", "architecture"),
-                description=s_data.get("description", ""),
-                is_required=s_data.get("is_required", True),
-                sort_order=i,
-            )
-            session.add(slot)
-            created_slots.append(slot)
-        await session.flush()
-
-        slot_dicts = [{"id": s.id, "name": s.name} for s in created_slots]
+        # Slots are stored inline in ParadigmTemplate.slots (JSONB).
+        # No separate Slot table needed — build slot_dicts from the JSONB data.
+        import uuid as _uuid
+        slot_dicts = []
+        for s_data in slots_json:
+            slot_dicts.append({
+                "id": str(_uuid.uuid4()),
+                "name": s_data["name"],
+            })
         logger.info(f"Auto-created paradigm '{paradigm_name}' (domain={domain}) with {len(slot_dicts)} slots")
 
         # Also record as candidate for audit trail

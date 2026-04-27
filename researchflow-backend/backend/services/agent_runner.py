@@ -37,7 +37,44 @@ Output a single JSON object with TWO top-level keys: "paper_essence" and "method
     "core_claim": str — main claim/thesis (1 sentence),
     "method_summary": str — concise method description (2-3 sentences),
     "main_contributions": list[str] — 2-5 key contributions,
-    "target_tasks": list[str] — tasks addressed (e.g., "video question answering"),
+    "target_tasks": list[str] — research TASKS this paper addresses, NOT
+        method names. A task is the *problem* being solved. Pick 1-3 from
+        this canonical list (use exact spelling):
+          ["Image Classification", "Object Detection", "Semantic Segmentation",
+           "Instance Segmentation", "Depth Estimation",
+           "Image Generation", "Video Generation", "Image Editing",
+           "Image Captioning", "Visual Question Answering", "Visual Reasoning",
+           "Cross-Modal Retrieval", "Cross-Modal Matching",
+           "Video Understanding", "Action Recognition", "Action Segmentation",
+           "Object Tracking", "3D Reconstruction", "Pose Estimation",
+           "Speech Recognition", "Speech Synthesis", "Audio Generation",
+           "Text Classification", "Text Generation", "Machine Translation",
+           "Reasoning", "Code Generation", "Math Reasoning",
+           "Reinforcement Learning", "Imitation Learning", "Federated Learning",
+           "Continual Learning", "Domain Adaptation", "Few-Shot Learning",
+           "Self-Supervised Learning", "Contrastive Learning",
+           "Adversarial Robustness", "OOD Detection", "Anomaly Detection",
+           "Neural Architecture Search", "Model Compression", "Pruning",
+           "Quantization", "Knowledge Distillation",
+           "Agent", "Embodied AI", "Robotics", "Autonomous Driving",
+           "Medical Imaging", "Time Series Forecasting",
+           "Recommender System", "Graph Learning", "Knowledge Graph",
+           "Benchmark / Evaluation", "Fairness", "Privacy", "Interpretability"]
+        STRICT RULES (avoid hub bloat):
+          - Pick MAXIMUM 2 tasks. One is preferred.
+          - Use "Benchmark / Evaluation" ONLY if the paper's PRIMARY contribution
+            is introducing a new benchmark/dataset. Papers that merely evaluate
+            on existing benchmarks should use the underlying task instead.
+          - Use "Agent" ONLY if agent behavior is the core research subject.
+            Papers that use an LLM in an agentic loop but contribute methods to
+            another task (e.g., Reasoning, Code Generation) should use that task.
+          - Use "Reasoning" ONLY for general logical/multi-step reasoning. Use
+            "Math Reasoning" / "Visual Reasoning" / "Code Generation" when the
+            paper targets one of those specifically.
+          - Prefer the most SPECIFIC matching task over a generic one.
+        If absolutely none fits, write a SHORT canonical name (≤4 words),
+        NEVER the paper's method/system name (e.g., NEVER "COS-PLAY" or
+        "WebGen-R1" — those are methods, not tasks),
     "target_modalities": list[str] — modalities (e.g., "text", "image", "video"),
     "training_paradigm": str — e.g., "supervised", "RLHF", "DPO",
     "limitations": list[str] — 1-3 limitations,
@@ -295,75 +332,88 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
         # ── Report Phase Agents ──────────────────────────────────────────
 
         "paper_report": {
-            "system": """You are a structured paper report generation agent. You produce a comprehensive 10-section report for a single paper based on all verified analysis artifacts.
+            "system": """You are a deep paper analysis report writer. Produce a single linear narrative — a reader should be able to start at section 1 and finish section 7 with a complete understanding of the paper's background, core innovation, framework, formulas, experiments, and position in the field.
 
-CRITICAL: Base everything on the verified extractions provided in the context. Do NOT invent facts, numbers, or paper titles. If a section cannot be filled due to missing data, write a brief note explaining what is missing rather than fabricating content.
+CRITICAL RULES
+- Base every fact on the provided analysis artifacts (PaperEssence, MethodDelta, DeepAnalysis, ReferenceRoleMap, GraphCandidates) and the figures_available list. Do NOT invent.
+- Write in Chinese with English terms (model/dataset/metric names) where natural.
+- Use EXACT numbers, EXACT figure labels (e.g. "Figure 3", "Table 2"), EXACT method names. Never write "显著提升" without a number.
+- If a piece of evidence is missing, just OMIT that sentence/bullet/cell entirely. NEVER write "（数据待补充）", "（待补充）", "TBD", "n/a" or similar placeholders — they pollute the rendered notes.
+- Total length 4000-7000 Chinese characters across all 7 sections.
 
-Given all verified blackboard items (PaperEssence, MethodDelta, ExperimentMatrix, FormulaFigureAnalysis, ReferenceRoleMap, GraphCandidates) and selected evidence, generate a PaperReport JSON object.
-
-Output a single JSON object with these fields:
+OUTPUT JSON SCHEMA
 
 {
-  "title_zh": str,
-  "title_en": str,
-  "sections": [
-    {
-      "section_type": str,
-      "title": str,
-      "body_md": str
-    }
+  "title_zh": str — short Chinese descriptor (≤24 chars), e.g. "运动生成的Flow Matching大模型范式",
+  "title_en": str — original paper title,
+  "sections": [ {"section_type": str, "title": str, "body_md": str} ],   // exactly 7
+  "figure_placements": [
+    {"marker": str, "preferred_labels": [str], "semantic_role": str, "section_hint": str}
   ]
 }
 
-The sections array MUST contain exactly 10 sections in this order:
+SECTION SPEC (7 sections, in order)
 
-1. section_type: "metadata"
-   title: "基本信息"
-   body_md: Paper title, authors, venue, year, links (code/data). Formatted as a metadata block.
+1. section_type: "metadata_overview"   title: "概览"
+   body_md (300-500 chars): A markdown table with rows:
+     | 中文题名 | {title_zh} |
+     | 英文题名 | {title_en} |
+     | 会议/期刊 | {venue} ({acceptance_type if known}) |
+     | 链接 | [arXiv]({arxiv_url}) · [Code]({code_url} ⭐{stars if known}) · [Project]({project_url}) |
+     | 主要任务 | {tasks} |
+     | 主要 baseline | {baselines} |
+   Then ONE-LINE TL;DR formatted as a `> [!abstract]` callout: "因为「{problem}」，作者在「{baseline}」基础上改了「{change}」，在「{benchmark}」上取得「{result}」"
+   Then 2-3 bullets of 关键性能 (specific numbers).
 
-2. section_type: "core_claim"
-   title: "核心主张"
-   body_md: The paper's central thesis in 1-2 sentences, followed by the key evidence supporting it. Include confidence assessment.
+2. section_type: "background_motivation"   title: "背景与动机"
+   body_md (800-1200 chars): Open with the PROBLEM in plain language + a concrete example. Then describe HOW 2-3 named existing methods handle it (1-2 sentences each). Then explain WHY they fall short — the SPECIFIC limitation that motivates this paper. End with 1-sentence preview of what this paper does. If a motivation/teaser figure exists in figures_available, insert {{FIG:motivation}}.
 
-3. section_type: "motivation"
-   title: "研究动机"
-   body_md: What problem does this paper address? Why is it important? What gap in prior work does it fill? Reference specific prior work limitations.
+3. section_type: "core_innovation"   title: "核心创新"
+   body_md (400-700 chars): The ONE key insight in essence. Format: "核心洞察：X，因为 Y，从而使 Z 成为可能。" Then a small "与 baseline 的差异" table (3 cols: 维度 | Baseline | 本文). Do NOT insert figure here.
 
-4. section_type: "pipeline"
-   title: "方法流程"
-   body_md: Step-by-step description of the proposed method pipeline. Use the pipeline_modules from MethodDelta. Include a text-based flow diagram if possible.
+4. section_type: "framework_overview"   title: "整体框架"
+   body_md (700-1100 chars): MUST start with {{FIG:pipeline}} or {{FIG:architecture}} marker (the overall framework diagram). Then describe data flow: input → module A → module B → ... → output. List each major module in 1 sentence (input/output/role). End with an ASCII or mermaid flow if helpful. Reader should know ALL components after this section.
 
-5. section_type: "formula"
-   title: "关键公式"
-   body_md: List key formulas with LaTeX notation and Chinese explanations. Show derivation steps if available. Highlight which formulas are novel vs. borrowed.
+5. section_type: "module_formulas"   title: "核心模块与公式推导"
+   body_md (1200-2200 chars): Pick the 2-3 most important modules. For EACH module use this template:
+     ### 模块 N: {名称}（对应框架图 {位置}）
+     **直觉**: 一句话为什么这样设计。
+     **Baseline 公式** ({baseline_name}): $$L_{{base}} = ...$$
+     符号: $\\theta$ = ..., ...（只解释关键符号）
+     **变化点**: 为什么 baseline 不够 → 改了什么假设/项/权重。
+     **本文公式（推导）**:
+     $$\\text{{Step 1}}: ... \\quad \\text{{加入了 X 项以解决 Y}}$$
+     $$\\text{{Step 2}}: ... \\quad \\text{{重归一化以保证 Z}}$$
+     $$\\text{{最终}}: L_{{final}} = ...$$
+     **对应消融**: Table N 显示移除该项 ΔX%。
+   Progress from simplest/most fundamental module to most complex. If the paper doesn't actually derive from a baseline, state the formula then explain each symbol — but always show the baseline form first when one exists.
 
-6. section_type: "experiment"
-   title: "实验结果"
-   body_md: Summarize main results with exact numbers. Include benchmark, metric, score, and comparison to baselines. Note ablation findings. Assess evidence strength.
+6. section_type: "experiment_analysis"   title: "实验与分析"
+   body_md (800-1400 chars):
+   - **CRITICAL: Do NOT reconstruct the paper's results table as a markdown `|...|` table** — Markdown table rendering breaks easily on complex headers, multi-row cells, or long numbers. Instead, refer to the original table image with a `{{TBL:result}}` (or `{{TBL:ablation}}` / `{{TBL:comparison}}`) marker, then summarize the 2-3 most consequential numbers in prose.
+   - Open with one or two **prose paragraphs** stating: which benchmark(s) the paper evaluates on, the headline number (e.g. "本文方法在 MS-COCO 上 mAP 达到 54.3，相比 baseline DINO 提升 +2.1"), and which gap this number actually closes. Insert `{{TBL:result}}` BEFORE these paragraphs so the reader sees the source table first.
+   - For result figures (qualitative grids, scatter plots, etc.) use `{{FIG:result}}` separately.
+   - Cover ablation: which removed component costs the most. Use `{{TBL:ablation}}` if there is a dedicated ablation table; otherwise `{{FIG:ablation}}` for an ablation plot. Quote the SPECIFIC delta (e.g. "去掉 X 后 FID 0.045 → 0.228, +0.183").
+   - End with a fairness check: are the named baselines actually the strongest available for this benchmark? compute/data budget? failure modes the authors disclose?
 
-7. section_type: "related_work"
-   title: "相关工作"
-   body_md: Categorize references by role (baseline, method source, etc.). Highlight the most important 3-5 references and their relationship to this paper.
+7. section_type: "lineage_positioning"   title: "方法谱系与知识库定位"
+   body_md (400-700 chars): Method family + parent method (named). Which slots changed (architecture / objective / training_recipe / data_curation / inference). Direct baselines (named, with how this paper differs in 1 line each). 2-3 follow-up directions. Tag this paper with: modality / paradigm / scenario / mechanism / constraint facets.
 
-8. section_type: "lineage"
-   title: "方法谱系"
-   body_md: Where does this method sit in its evolution chain? What did it inherit from its parent method? What did it change? Use slot-level language.
-
-9. section_type: "limitations"
-   title: "局限与展望"
-   body_md: Stated limitations from the paper + inferred limitations from the analysis. Potential future directions. Be honest about weaknesses.
-
-10. section_type: "knowledge_position"
-    title: "知识图谱定位"
-    body_md: How this paper connects to the broader knowledge graph. Which task nodes, method nodes, and dataset nodes does it touch? What is its contribution to the field's structure?
-
-Rules:
-1. Each section body_md should be 200-600 characters in Chinese.
-2. Use Markdown formatting (headers, bold, lists, code blocks for formulas).
-3. Include specific numbers, paper titles, and method names — not vague references.
-4. If a verified extraction is missing (e.g., no ExperimentMatrix), write a brief note in the relevant section: "（实验数据尚未提取，待补充）".
-5. title_zh should be a Chinese title for the report (not the paper title — a descriptive report title).
-6. title_en should be the original paper title in English.
+FIGURE / TABLE PLACEMENT RULES (CRITICAL)
+- Two marker families:
+    - `{{FIG:xxx}}` — for FIGURE images (diagrams, plots, photos). Match against figures_available entries with `type=figure`.
+    - `{{TBL:xxx}}` — for TABLE images (numeric result tables, ablation tables). Match against figures_available entries with `type=table`.
+- Use markers ONLY for items that ACTUALLY exist in figures_available (you'll be given a list with label + type + semantic_role + caption).
+- For each marker, output a figure_placements entry with:
+    "marker": the exact marker string used in body_md (incl. `{{TBL:...}}` form)
+    "preferred_labels": the ACTUAL labels from figures_available (e.g. ["Table 1", "Figure 3"]) — match by best fit
+    "semantic_role": one of motivation/pipeline/architecture/result/ablation/comparison/qualitative/example
+    "section_hint": which section_type the marker is in
+- Sections that MUST contain a marker if a matching item exists:
+    - framework_overview → `{{FIG:pipeline}}` or `{{FIG:architecture}}`
+    - experiment_analysis → `{{TBL:result}}` (table) AND/OR `{{FIG:result}}` (figure) as appropriate
+- Do NOT cluster all markers in one place — distribute across the narrative where they actually help understanding.
+- NEVER write markdown `|...|` tables for paper results — always use `{{TBL:xxx}}` to embed the table image instead.
 
 Output ONLY valid JSON, no markdown fences, no commentary.""",
             "output_schema": "PaperReport",
@@ -553,30 +603,55 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
     # ── Private Helpers ──────────────────────────────────────────────────
 
     def _parse_json_response(self, text: str, agent_name: str) -> dict:
-        """Parse LLM response text as JSON, handling common formatting issues."""
+        """Parse LLM response text as JSON, handling common formatting issues.
+
+        Handles: markdown fences, truncated JSON, leading text before JSON.
+        """
         cleaned = text.strip()
 
         # Strip markdown code fences if present
         if cleaned.startswith("```"):
-            # Remove opening fence (with optional language tag)
             first_newline = cleaned.find("\n")
             if first_newline != -1:
                 cleaned = cleaned[first_newline + 1:]
             else:
-                cleaned = cleaned[3:]  # strip just the ```
+                cleaned = cleaned[3:]
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3].rstrip()
 
+        # If response starts with non-JSON text, find the first {
+        if cleaned and cleaned[0] != "{":
+            brace_pos = cleaned.find("{")
+            if brace_pos != -1:
+                cleaned = cleaned[brace_pos:]
+
+        # Try direct parse first
         try:
             result = json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            logger.error(
-                "Agent %s returned invalid JSON: %s\nResponse preview: %.500s",
-                agent_name, e, text,
-            )
-            raise RuntimeError(
-                f"Agent {agent_name} returned invalid JSON: {e}"
-            ) from e
+        except json.JSONDecodeError:
+            # Layer 1: minimal escape fix — only doubles `\X` where X is NOT a
+            # valid JSON escape character. Preserves intentional escapes like
+            # `\n` exactly. Recovers most lightly-broken outputs.
+            try:
+                escaped = self._fix_invalid_escapes(cleaned)
+                result = json.loads(escaped)
+            except json.JSONDecodeError:
+                # Layer 2: aggressive — double EVERY lone `\` (preserves `\\`).
+                # Cost: intentional `\n` in source becomes literal `\\n`. Win:
+                # recovers Kimi LaTeX-laden outputs that emit single `\theta`,
+                # `\frac`, etc. Worth the tradeoff for Chinese reports where
+                # newlines are real `\n` chars (already passed) not escapes.
+                try:
+                    import re as _re
+                    aggressive = _re.sub(r"(?<!\\)\\(?!\\)", r"\\\\", cleaned)
+                    result = json.loads(aggressive)
+                    logger.warning(
+                        "Agent %s: recovered via aggressive backslash doubling",
+                        agent_name,
+                    )
+                except json.JSONDecodeError:
+                    # Layer 3: truncation repair (close open braces/brackets)
+                    result = self._repair_truncated_json(cleaned, agent_name)
 
         if not isinstance(result, dict):
             raise RuntimeError(
@@ -584,6 +659,107 @@ Output ONLY valid JSON, no markdown fences, no commentary.""",
             )
 
         return result
+
+    @staticmethod
+    def _fix_invalid_escapes(text: str) -> str:
+        r"""Inside JSON string literals, replace ``\X`` with ``\\X`` whenever
+        X is NOT a valid JSON escape character (``"``, ``\\``, ``/``, ``b``,
+        ``f``, ``n``, ``r``, ``t``, ``u``).
+
+        This salvages LaTeX-laden Kimi outputs like ``"\text{...}"`` →
+        ``"\\text{...}"``. Without this, `json.loads` raises
+        ``Invalid \\escape`` and the agent run fails.
+        """
+        valid_escapes = set('"\\/bfnrtu')
+        out = []
+        in_string = False
+        escape_pending = False
+        for ch in text:
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                out.append(ch)
+                continue
+            # in_string == True
+            if escape_pending:
+                # The previous char was `\`. If `ch` is a valid escape, keep
+                # both as-is; otherwise we already prepended an extra `\`
+                # below — so just emit `ch`.
+                out.append(ch)
+                escape_pending = False
+                continue
+            if ch == '\\':
+                escape_pending = True
+                out.append('\\')
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+                continue
+            out.append(ch)
+        # Second pass: turn `\X` (where X not in valid_escapes) into `\\X`.
+        # Doing this with a regex is simpler and covers all positions.
+        import re as _re
+        return _re.sub(
+            r'\\([^"\\/bfnrtu])',
+            lambda m: '\\\\' + m.group(1),
+            ''.join(out),
+        )
+
+    @staticmethod
+    def _repair_truncated_json(text: str, agent_name: str) -> dict:
+        """Attempt to repair truncated JSON by closing open braces/brackets."""
+        # Count unclosed delimiters
+        open_braces = 0
+        open_brackets = 0
+        in_string = False
+        escape_next = False
+
+        for ch in text:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                open_braces += 1
+            elif ch == "}":
+                open_braces -= 1
+            elif ch == "[":
+                open_brackets += 1
+            elif ch == "]":
+                open_brackets -= 1
+
+        # If we're inside a string, close it
+        repaired = text.rstrip()
+        if in_string:
+            repaired += '"'
+
+        # Close brackets then braces
+        repaired += "]" * max(0, open_brackets)
+        repaired += "}" * max(0, open_braces)
+
+        try:
+            result = json.loads(repaired)
+            logger.warning(
+                "Agent %s: repaired truncated JSON (added %d } and %d ])",
+                agent_name, max(0, open_braces), max(0, open_brackets),
+            )
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(
+                "Agent %s returned unrepairable JSON: %s\nPreview: %.500s",
+                agent_name, e, text,
+            )
+            raise RuntimeError(
+                f"Agent {agent_name} returned invalid JSON: {e}"
+            ) from e
 
     @staticmethod
     def _estimate_cost_from_response(resp) -> float:

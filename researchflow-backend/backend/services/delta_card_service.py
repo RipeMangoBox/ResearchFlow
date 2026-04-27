@@ -319,27 +319,27 @@ async def propose_assertions(
                 session, "mechanism", "method_nodes", mf_id
             )
             assertion = GraphAssertion(
-                from_node_id=idea_node.id,
+                from_node_id=dc_node.id,
                 to_node_id=mf_node.id,
                 edge_type="instance_of_method",
                 assertion_source="system_inferred",
-                confidence=idea.confidence,
+                confidence=delta_card.extraction_confidence,
                 status="published",
             )
             session.add(assertion)
             assertions.append(assertion)
 
-    # 4. targets_bottleneck: IdeaDelta → Bottleneck
-    if idea.primary_bottleneck_id:
+    # 4. targets_bottleneck: DeltaCard → Bottleneck
+    if delta_card.primary_bottleneck_id:
         bn_node = await get_or_create_node(
-            session, "bottleneck", "project_bottlenecks", idea.primary_bottleneck_id
+            session, "bottleneck", "project_bottlenecks", delta_card.primary_bottleneck_id
         )
         assertion = GraphAssertion(
-            from_node_id=idea_node.id,
+            from_node_id=dc_node.id,
             to_node_id=bn_node.id,
             edge_type="targets_bottleneck",
             assertion_source="system_inferred",
-            confidence=idea.confidence,
+            confidence=delta_card.extraction_confidence,
             status="published",
         )
         session.add(assertion)

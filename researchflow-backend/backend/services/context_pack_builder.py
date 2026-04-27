@@ -187,19 +187,11 @@ class ContextPackBuilder:
         "paper_report": {
             "global": ["report_section_schema"],
             "domain": [],
-            "paper": ["selected_evidence"],
+            "paper": ["selected_evidence", "figure_image_metadata"],
             "run": ["ALL_VERIFIED"],
             "token_budget": 80_000,
         },
 
-        # ── Legacy aliases (for backward compat during transition) ──
-        "shallow_paper": {
-            "global": ["node_types", "relation_types"],
-            "domain": ["scope", "existing_tasks_summary", "existing_methods_summary"],
-            "paper": ["abstract", "introduction_excerpt", "method_excerpt", "experiment_excerpt", "figure_table_captions"],
-            "run": [],
-            "token_budget": 12_000,
-        },
     }
 
     def __init__(self, session: AsyncSession):
@@ -542,6 +534,20 @@ class ContextPackBuilder:
                         for e in evidence_rows
                     ]
                     sections.append(f"[Selected Evidence]\n" + "\n".join(lines))
+
+            elif item == "figure_image_metadata":
+                # Load extracted figure images from L2 analysis
+                l2_figs = l2_analysis.extracted_figure_images if l2_analysis else None
+                if l2_figs and isinstance(l2_figs, list):
+                    lines = []
+                    for fig in l2_figs:
+                        lines.append(
+                            f"- {fig.get('label', 'Unknown')} (page {fig.get('page_num', '?')}): "
+                            f"role={fig.get('semantic_role', 'unknown')}, "
+                            f"caption={fig.get('caption', '')[:80]}, "
+                            f"url={fig.get('public_url', 'N/A')}"
+                        )
+                    sections.append(f"[Available Figures ({len(l2_figs)})]\n" + "\n".join(lines))
 
             else:
                 logger.debug("Unhandled paper context item: %s", item)

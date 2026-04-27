@@ -4,7 +4,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://hzh@localhost:5432/researchflow"
-    database_url_sync: str = "postgresql://hzh@localhost:5432/researchflow"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -32,6 +31,7 @@ class Settings(BaseSettings):
 
     # LLM
     anthropic_api_key: str = ""
+    anthropic_base_url: str = ""  # Custom base URL for Kimi/other Anthropic-compatible APIs
     openai_api_key: str = ""
     openai_base_url: str = ""  # Custom base URL for OpenAI-compatible APIs
     openai_model: str = ""     # Custom model name override
@@ -56,8 +56,6 @@ class Settings(BaseSettings):
     paper_analysis_dir: str = "../paperAnalysis"
     paper_pdfs_dir: str = "../paperPDFs"
     paper_collection_dir: str = "../paperCollection"
-    paper_ideas_dir: str = "../paperIDEAs"
-    exports_dir: str = "./exports"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

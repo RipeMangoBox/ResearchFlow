@@ -1,7 +1,7 @@
 ---
 name: papers-build-collection-index
 follows: rf-obsidian-markdown
-description: Builds/refreshes `paperCollection/index.jsonl` (agent index) and `paperCollection/` Obsidian navigation pages from `paperAnalysis/` frontmatter. Use when the user asks to update/rebuild indexes, regenerate navigation pages (by task/technique/venue), or after adding/editing analysis notes and PDF refs.
+description: Builds/refreshes `paperCollection/index.jsonl` (agent index) and `paperCollection/by_venue/` Obsidian navigation pages from `paperAnalysis/` frontmatter. Use when the user asks to update/rebuild the agent index, regenerate venue pages, or after adding/editing analysis notes and PDF refs. Task & technique browsing now lives in Obsidian tag/backlink navigation.
 ---
 
 # Build Index
@@ -25,9 +25,12 @@ This skill is the single writer for both outputs. `papers-analyze-pdf` does not 
 
 - `paperCollection/README.md` (home)
 - `paperCollection/_AllPapers.md` (grouped view)
-- `paperCollection/by_task/*.md`
-- `paperCollection/by_technique/_Index.md` + `paperCollection/by_technique/*.md`
 - `paperCollection/by_venue/_Index.md` + `paperCollection/by_venue/*.md`
+
+> `by_task/` and `by_technique/` were retired. Task pages and technique pages
+> were duplicating what Obsidian's built-in tag panel and backlink view
+> already provide off the `paperAnalysis/` frontmatter. The builder now
+> deletes any leftover `by_task/` / `by_technique/` directories on each run.
 
 ## Preconditions (what gets indexed)
 

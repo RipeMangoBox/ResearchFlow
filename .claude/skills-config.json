@@ -71,6 +71,10 @@
   "rf-obsidian-markdown": {
    "description": "Obsidian Flavored Markdown conventions for ResearchFlow. Defines wikilink, embed, callout, frontmatter, and tag rules that all .md-generating skills must follow. Ensures output renders correctly in Obsidian reading view, graph view, and backlink panels. Adapted from kepano/obsidian-skills.",
    "path": ".claude/skills/rf-obsidian-markdown/SKILL.md"
+  },
+  "ppt-master": {
+   "description": "AI-driven presentation generation system. Converts source documents (PDF/DOCX/URL/Markdown) into high-quality natively editable PPTX with real PowerPoint shapes through multi-role collaboration (Strategist → Image_Generator → Executor). Use when user asks to create PPT, make presentation, 生成PPT, 做PPT, or 制作演示文稿.",
+   "path": ".claude/skills/ppt-master/SKILL.md"
   }
  }
 }

@@ -167,8 +167,7 @@ async def run_full_pipeline(
 
     if not has_l4:
         from backend.services.ingest_workflow import IngestWorkflow
-        from backend.services.scoring_engine import ScoringEngine
-        workflow = IngestWorkflow(session, scoring_engine=ScoringEngine())
+        workflow = IngestWorkflow(session)
         v6_result = await workflow.deep_ingest(paper_id)
         progress["steps"]["deep_l4"] = {
             "agents_run": v6_result.get("agents_run", []),
@@ -228,25 +227,18 @@ async def run_full_pipeline(
                 await session.refresh(paper)
                 progress["steps"]["graph_repair"] = f"error: {str(e)[:80]}"
 
-    # Step 5.5: Post-L4 — fill paper fields from analysis + assign taxonomy
+    # Step 5.5: Post-L4 — assign ring and role_in_kb from DeltaCard
+    # Taxonomy assignment is handled by IngestWorkflow._write_taxonomy_facets (agent-driven)
+    # Citation discovery is handled by IngestWorkflow.discover_neighborhood (single entry)
     try:
         try:
             await session.commit()
         except Exception:
             await session.rollback()
         await session.refresh(paper)
-        # Get latest L4 analysis
-        latest_l4 = (await session.execute(
-            select(PaperAnalysis).where(
-                PaperAnalysis.paper_id == paper_id,
-                PaperAnalysis.level == AnalysisLevel.L4_DEEP,
-                PaperAnalysis.is_current.is_(True),
-            )
-        )).scalar_one_or_none()
 
-        if latest_l4:
-            # Assign ring from DeltaCard.structurality_score (not Paper — field removed)
-            if not paper.ring and paper.current_delta_card_id:
+        if paper.current_delta_card_id:
+            if not paper.ring:
                 from backend.models.delta_card import DeltaCard
                 dc = await session.get(DeltaCard, paper.current_delta_card_id)
                 if dc and dc.structurality_score is not None:
@@ -257,102 +249,12 @@ async def run_full_pipeline(
                         paper.ring = "structural"
                     else:
                         paper.ring = "plugin"
-
-            # Assign role_in_kb
             if not paper.role_in_kb:
                 paper.role_in_kb = "extension"
 
-        await session.flush()
-
-        # Taxonomy assignment — map paper fields to taxonomy facets
-        from backend.models.taxonomy import TaxonomyNode, PaperFacet
-        from sqlalchemy import delete
-        # Clear existing auto-assigned facets to avoid unique constraint violations on re-run
-        await session.execute(
-            delete(PaperFacet).where(
-                PaperFacet.paper_id == paper_id,
-                PaperFacet.source.in_(["auto_tags", "auto_category", "auto_mech", "auto_arxiv_cat"]),
-            )
-        )
-        if True:  # Always re-assign (idempotent)
-            # Auto-assign from paper.category, tags, method_family, keywords
-            assigned = 0
-            seen_node_roles = set()  # Track (node_id, facet_role) to prevent duplicates
-            for tag in (paper.tags or []):
-                tag_clean = tag.replace("task/", "").replace("dataset/", "").replace("repr/", "").replace("opensource/", "")
-                node = (await session.execute(
-                    select(TaxonomyNode).where(
-                        TaxonomyNode.name.ilike(f"%{tag_clean}%")
-                    ).limit(1)
-                )).scalar_one_or_none()
-                if node and (node.id, node.dimension) not in seen_node_roles:
-                    seen_node_roles.add((node.id, node.dimension))
-                    facet = PaperFacet(
-                        paper_id=paper_id, node_id=node.id,
-                        facet_role=node.dimension, source="auto_tags", confidence=0.6,
-                    )
-                    session.add(facet)
-                    assigned += 1
-
-            # Map category to domain
-            if paper.category:
-                cat_node = (await session.execute(
-                    select(TaxonomyNode).where(
-                        TaxonomyNode.name.ilike(f"%{paper.category}%"),
-                        TaxonomyNode.dimension == "domain",
-                    ).limit(1)
-                )).scalar_one_or_none()
-                if cat_node and (cat_node.id, "domain") not in seen_node_roles:
-                    seen_node_roles.add((cat_node.id, "domain"))
-                    session.add(PaperFacet(
-                        paper_id=paper_id, node_id=cat_node.id,
-                        facet_role="domain", source="auto_category", confidence=0.7,
-                    ))
-                    assigned += 1
-
-            # Map method_family
-            if paper.method_family:
-                mech_node = (await session.execute(
-                    select(TaxonomyNode).where(
-                        TaxonomyNode.name.ilike(f"%{paper.method_family.replace('_', '%')}%"),
-                    ).limit(1)
-                )).scalar_one_or_none()
-                if mech_node and (mech_node.id, "mechanism") not in seen_node_roles:
-                    seen_node_roles.add((mech_node.id, "mechanism"))
-                    session.add(PaperFacet(
-                        paper_id=paper_id, node_id=mech_node.id,
-                        facet_role="mechanism", source="auto_mech", confidence=0.6,
-                    ))
-                    assigned += 1
-
-            # Map keywords (arXiv categories) to modality/paradigm
-            keyword_map = {
-                "cs.CV": ("modality", "Image"), "cs.CL": ("modality", "Text"),
-                "cs.AI": ("domain", "Agent"), "cs.LG": ("learning_paradigm", "Reinforcement Learning"),
-                "cs.RO": ("domain", "Embodied AI"),
-            }
-            for kw in (paper.keywords or []):
-                if kw in keyword_map:
-                    dim, name = keyword_map[kw]
-                    kw_node = (await session.execute(
-                        select(TaxonomyNode).where(
-                            TaxonomyNode.name == name, TaxonomyNode.dimension == dim,
-                        ).limit(1)
-                    )).scalar_one_or_none()
-                    if kw_node and (kw_node.id, dim) not in seen_node_roles:
-                        seen_node_roles.add((kw_node.id, dim))
-                        session.add(PaperFacet(
-                            paper_id=paper_id, node_id=kw_node.id,
-                            facet_role=dim, source="auto_arxiv_cat", confidence=0.5,
-                        ))
-                        assigned += 1
-
-            progress["steps"]["taxonomy_assign"] = {"facets_assigned": assigned}
-        else:
-            progress["steps"]["taxonomy_assign"] = "skipped (already assigned)"
-
         await session.commit()
         await session.refresh(paper)
+        progress["steps"]["post_l4"] = "ring_and_role_assigned"
     except Exception as e:
         logger.warning(f"Post-L4 processing failed for {paper_id}: {e}")
         progress["steps"]["post_l4"] = f"error: {str(e)[:100]}"
@@ -361,31 +263,11 @@ async def run_full_pipeline(
         except Exception:
             pass
 
-    # Step 6: Discover related papers (references + citations via S2)
-    try:
-        from backend.services import discovery_service
-        disc_result = await discovery_service.discover_related_papers(
-            session, paper_id, max_references=20, max_citations=10
-        )
-        progress["steps"]["discover_citations"] = {
-            "refs_found": disc_result.get("references_found", 0) if isinstance(disc_result, dict) else 0,
-            "citations_found": disc_result.get("citations_found", 0) if isinstance(disc_result, dict) else 0,
-            "new_papers_ingested": disc_result.get("new_papers", 0) if isinstance(disc_result, dict) else 0,
-        }
-        await session.commit()
-    except Exception as e:
-        logger.warning(f"Citation discovery failed for {paper_id}: {e}")
-        progress["steps"]["discover_citations"] = f"error: {str(e)[:100]}"
-
     # Check graph output
-    from backend.models.delta_card import DeltaCard
     from backend.models.delta_card import DeltaCard
     from sqlalchemy import func, text
 
     dc_count = (await session.execute(
-        select(func.count()).select_from(DeltaCard).where(DeltaCard.paper_id == paper_id)
-    )).scalar()
-    idea_count = (await session.execute(
         select(func.count()).select_from(DeltaCard).where(DeltaCard.paper_id == paper_id)
     )).scalar()
     assertion_count = (await session.execute(text(
@@ -397,7 +279,6 @@ async def run_full_pipeline(
 
     progress["graph_output"] = {
         "delta_cards": dc_count,
-        "delta_cards": idea_count,
         "assertions": assertion_count or 0,
     }
 

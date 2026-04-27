@@ -110,6 +110,11 @@ class Paper(Base):
     # Source tracking
     source: Mapped[str | None] = mapped_column(String(50))
     source_ref: Mapped[str | None] = mapped_column(Text)
+    # Quality bucket — set by audit/triage. Values: test|low|normal|published.
+    # Defaults to 'normal'; flip to 'test'/'low' to soft-exclude from exports.
+    source_quality: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="normal", server_default="normal",
+    )
 
     # Graph / scholarly backbone links
     openalex_id: Mapped[str | None] = mapped_column(String(50))

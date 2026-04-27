@@ -1,10 +1,9 @@
-"""Job, ModelRun, ExecutionMemory, UserFeedback models."""
+"""Job and ModelRun models."""
 
 import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean,
     DateTime,
     Enum,
     Integer,
@@ -17,7 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
-from backend.models.enums import FeedbackType, JobStatus
+from backend.models.enums import JobStatus
 
 
 class Job(Base):
@@ -61,46 +60,6 @@ class ModelRun(Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[float | None] = mapped_column()
     latency_ms: Mapped[int | None] = mapped_column(Integer)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class ExecutionMemory(Base):
-    __tablename__ = "execution_memories"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    repo_url: Mapped[str | None] = mapped_column(Text)
-    env_fingerprint: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    failed_command: Mapped[str] = mapped_column(Text, nullable=False)
-    error_message: Mapped[str | None] = mapped_column(Text)
-    fix_action: Mapped[str] = mapped_column(Text, nullable=False)
-    verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    applicable_conditions: Mapped[str | None] = mapped_column(Text)
-    invalidation_conditions: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class UserFeedback(Base):
-    __tablename__ = "user_feedback"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    target_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    feedback_type: Mapped[FeedbackType] = mapped_column(
-        Enum(FeedbackType, name="feedback_type", create_type=False,
-             values_callable=lambda e: [m.value for m in e]),
-        nullable=False
-    )
-    old_value: Mapped[dict | None] = mapped_column(JSONB)
-    new_value: Mapped[dict | None] = mapped_column(JSONB)
-    comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

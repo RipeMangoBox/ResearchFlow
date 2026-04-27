@@ -1,0 +1,62 @@
+{
+  "00225ce2-86d0-46ef-9c6c-c30abd6b8826": {
+    "title": "MoMask: Generative Masked Modeling of 3D Human Mot",
+    "has_abstract": true,
+    "has_authors": true,
+    "code_url": true,
+    "cited_by_count": 371,
+    "acceptance_type": "oral",
+    "ring": null,
+    "has_delta_card": false,
+    "method_family": "[Mock] ProposedMethod",
+    "l2_sections": false,
+    "l2_formulas": false,
+    "l2_figures": false,
+    "l4_report": true,
+    "l4_report_len": 2474,
+    "l4_schema": "v0",
+    "blackboard_items": 5,
+    "delta_cards": 1,
+    "evidence_units": 0,
+    "graph_assertions": 0,
+    "taxonomy_facets": 2,
+    "paper_reports": 0,
+    "pipeline_result": {
+      "enrich_and_prepare": {
+        "enrich": "skipped",
+        "venue_resolve": "skipped",
+        "download_pdf": "skipped",
+        "parse_l2": "sections=[]"
+      },
+      "shallow": {
+        "agents_run": [
+          "shallow_extractor",
+          "reference_role"
+        ],
+        "has_paper_essence": true,
+        "has_method_delta": true
+      },
+      "known_refs": {
+        "known_refs_linked": 0,
+        "edges_created": 0,
+        "known_titles_set": "set()"
+      },
+      "deep_ingest": {
+        "paper_id": "00225ce2-86d0-46ef-9c6c-c30abd6b8826",
+        "agents_run": [
+          "deep_analyzer",
+          "graph_candidate",
+          "paper_report"
+        ],
+        "nodes_created": 0,
+        "edges_created": 0,
+        "report_sections": [],
+        "graph": {
+          "delta_card_id": "116ef043-f659-4598-9965-297a0a3db073",
+          "evidence_count": 0,
+          "assertion_count": 0
+        }
+      }
+    }
+  }
+}

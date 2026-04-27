@@ -419,13 +419,10 @@ def build_readme(papers: List[Paper], now: str) -> str:
     lines.append("## Start here")
     lines.append("")
     lines.append(f"- {md_link('paperCollection/_AllPapers.md', 'All papers (grouped)')}")
-    lines.append("- By task")
-    for t in tasks:
-        lines.append(f"  - {md_link(f'paperCollection/by_task/{sanitize_filename(t)}.md', t)}")
-    lines.append("- By technique (Technique tags)")
-    lines.append(f"  - {md_link('paperCollection/by_technique/_Index.md', 'Technique index')}")
     lines.append("- By venue/journal")
     lines.append(f"  - {md_link('paperCollection/by_venue/_Index.md', 'Venue index')}")
+    lines.append("")
+    lines.append("> Task & technique browsing now lives in Obsidian: search the `task/` and technique tag namespaces, or use the backlink panel on any paper note.")
     lines.append("")
     lines.append("## Notes")
     lines.append("")
@@ -658,47 +655,42 @@ def main() -> int:
         run_optional_tag_maintenance(passes=1)
         papers = load_papers()
 
-    # Prepare output dirs
+    # Prepare output dirs.
+    # by_task / by_technique were retired — task & technique browsing now goes
+    # through Obsidian tag/backlink navigation on `paperAnalysis/` frontmatter.
+    # Only by_venue remains because venue grouping has no tag equivalent.
     ensure_dir(PAPER_COLLECTION_DIR)
-    ensure_dir(PAPER_COLLECTION_DIR / "by_task")
-    ensure_dir(PAPER_COLLECTION_DIR / "by_technique")
     ensure_dir(PAPER_COLLECTION_DIR / "by_venue")
 
-    # Clean stale generated pages (avoid leaving old tag pages around).
-    clean_md_dir(PAPER_COLLECTION_DIR / "by_task")
-    clean_md_dir(PAPER_COLLECTION_DIR / "by_technique")
     clean_md_dir(PAPER_COLLECTION_DIR / "by_venue")
+
+    # Remove any stale by_task / by_technique directories left over from
+    # previous runs so the vault doesn't keep dead navigation pages.
+    import shutil as _shutil
+    for dead in ("by_task", "by_technique"):
+        dead_dir = PAPER_COLLECTION_DIR / dead
+        if dead_dir.exists():
+            _shutil.rmtree(dead_dir)
 
     # Agent index + home + all
     write_text(PAPER_COLLECTION_DIR / "index.jsonl", build_agent_index_jsonl(papers))
     write_text(PAPER_COLLECTION_DIR / "README.md", build_readme(papers, now))
     write_text(PAPER_COLLECTION_DIR / "_AllPapers.md", build_all_papers(papers, now))
 
-    # By task
+    # Track tasks/techniques only for stats (no per-tag page emission)
     by_task = group_by(papers, lambda p: p.category)
-    for task, task_papers in by_task.items():
-        out = PAPER_COLLECTION_DIR / "by_task" / f"{sanitize_filename(task)}.md"
-        write_text(out, build_task_page(task, task_papers, now))
-
-    # By technique
     tech_to_papers: Dict[str, List[Paper]] = {}
     for p in papers:
         for t in p.tags:
             tech_to_papers.setdefault(t, []).append(p)
-    techniques = sorted(tech_to_papers.keys(), key=lambda x: x.lower())
-    write_text(PAPER_COLLECTION_DIR / "by_technique" / "_Index.md", build_technique_index(techniques, now))
-    for t, t_papers in tech_to_papers.items():
-        out = PAPER_COLLECTION_DIR / "by_technique" / f"{sanitize_filename(t)}.md"
-        write_text(out, build_technique_page(t, t_papers, now))
 
-    # If still above threshold after normalization, emit stronger warning + refresh audit once more.
     if len(tech_to_papers) > TAG_EXPLOSION_THRESHOLD:
         print(
             f"[WARN] technique tags still high after normalization ({len(tech_to_papers)} > {TAG_EXPLOSION_THRESHOLD}); emitted tag audit report for manual consolidation"
         )
         run_optional_tag_maintenance(passes=0)
 
-    # By venue
+    # By venue (sole surviving navigation dimension)
     by_venue = group_by(papers, lambda p: p.venue)
     venues = sorted(by_venue.keys(), key=lambda x: x.lower())
     write_text(PAPER_COLLECTION_DIR / "by_venue" / "_Index.md", build_venue_index(venues, now))
@@ -707,8 +699,8 @@ def main() -> int:
         write_text(out, build_venue_page(v, v_papers, now))
 
     print(f"[OK] papers: {len(papers)}")
-    print(f"[OK] tasks: {len(by_task)}")
-    print(f"[OK] technique tags: {len(tech_to_papers)}")
+    print(f"[OK] tasks (stats only): {len(by_task)}")
+    print(f"[OK] technique tags (stats only): {len(tech_to_papers)}")
     print(f"[OK] venues: {len(by_venue)}")
     print(f"[OK] output: {PAPER_COLLECTION_DIR}")
     return 0

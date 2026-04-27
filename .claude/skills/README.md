@@ -38,6 +38,13 @@ This skills directory supports the local paper workflow covering **sync -> colle
 - **code-context-paper-retrieval** *(alias — routes to papers-query-knowledge-base code-context mode)*
   - Retrieve paper evidence relevant to a coding task. Triggers before code modification.
 
+### 3b. Deep paper report
+
+- **paper-report-v2**
+  - Generates the linear narrative report (7 sections: 概览 / 背景 / 核心创新 / 整体框架 / 公式推导 / 实验 / 谱系) for a single paper.
+  - Backed by `paper_report` agent in `researchflow-backend/backend/services/agent_runner.py`; sections persisted to `paper_reports` + `paper_report_sections` and denormalized into `paper_analyses.full_report_md` for vault export.
+  - Figure markers `{{FIG:xxx}}` are resolved to OSS public URLs by `vault_export_v6._resolve_figure_markers`.
+
 ### 4. Research ideation and review
 
 - **research-brainstorm-from-kb**
@@ -59,6 +66,16 @@ This skills directory supports the local paper workflow covering **sync -> colle
   - Evidence channels: (A) current session context, (B) cross-session git diffs and filesystem artifact scan across all workspace repos.
   - Output sections: 今日进展 / 核心结论 / 问题与思考 / 明日任务.
   - Built-in consistency check: numbers must cite artifacts, old/new env results must not be mixed, 明日任务 must follow from conclusions.
+
+### 5b. Operations and deployment
+
+- See `docs/deploy.md` for service topology, full env-var list, first-time
+  deploy commands, and routine ops (audit, backfill, vault rebuild).
+- `scripts/audit_kb_quality.py` produces the markdown quality report used to
+  decide which papers to flag as `low` / `test` via `papers.source_quality`.
+- `scripts/backfill_paper_figures.py` migrates legacy
+  `PaperAnalysis.extracted_figure_images` rows into the new
+  `paper_figures` table introduced by alembic 024.
 
 ### 6. Domain migration
 

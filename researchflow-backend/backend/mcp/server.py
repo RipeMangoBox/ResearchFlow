@@ -595,44 +595,25 @@ async def _dispatch(name: str, args: dict, session) -> dict:
             session, category=args.get("category"), max_papers=args.get("max_papers", 15),
         )
 
-    elif name == "propose_directions":
-        from backend.services import direction_service
-        cards = await direction_service.propose_directions(
-            session, topic=args["topic"], category=args.get("category"),
-        )
-        return {"directions": [
-            {"id": str(c.id), "title": c.title, "rationale": c.rationale,
-             "is_structural": c.is_structural, "confidence": c.confidence}
-            for c in cards
-        ]}
-
     elif name == "enqueue_analysis":
         from backend.services import analysis_service
         pid = UUID(args["paper_id"])
         if args["level"] == "skim":
             analysis = await analysis_service.skim_paper(session, pid)
+            if analysis:
+                return {"analysis_id": str(analysis.id), "level": analysis.level.value}
         else:
-            analysis = await analysis_service.deep_analyze_paper(session, pid)
-        if analysis:
-            return {"analysis_id": str(analysis.id), "level": analysis.level.value}
+            # Deep analysis is handled by IngestWorkflow.deep_ingest
+            from backend.services.ingest_workflow import IngestWorkflow
+            workflow = IngestWorkflow(session)
+            result = await workflow.deep_ingest(pid)
+            return result
         return {"error": "Paper not found"}
 
     elif name == "refresh_assets":
         from backend.services import enrich_service
         results = await enrich_service.enrich_batch(session, limit=args.get("limit", 10))
         return {"processed": len(results), "results": results}
-
-    elif name == "record_user_feedback":
-        from backend.models.system import UserFeedback
-        from backend.models.enums import FeedbackType
-        fb = UserFeedback(
-            target_type="paper",
-            target_id=UUID(args["paper_id"]),
-            feedback_type=FeedbackType(args["feedback_type"]),
-            comment=args["comment"],
-        )
-        session.add(fb)
-        return {"status": "recorded"}
 
     elif name == "get_paper_detail":
         from backend.services import paper_service

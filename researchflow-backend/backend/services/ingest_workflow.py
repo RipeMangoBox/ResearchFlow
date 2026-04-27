@@ -1,9 +1,13 @@
-"""V6 Ingest Workflow — orchestrates candidate → shallow → deep → profile → report.
+"""Unified Ingest Workflow — single pipeline for all paper processing.
 
-This is the main entry point for the V6 pipeline. Papers flow through:
-  Import → DiscoveryScore → [Shallow Ingest] → DeepIngestScore → [Deep Ingest] → [Profile] → [Report]
+Replaces both the old pipeline_service.run_full_pipeline and V6 run_full_v6_pipeline.
 
-Each phase is independently retryable. Score gates prevent low-value papers from consuming resources.
+Complete flow:
+  import_and_score → enrich_and_prepare (metadata+pdf+parse) → shallow_ingest
+  → deep_ingest (agents+graph+report) → discover_neighborhood
+
+Each phase is independently retryable. Score gates prevent low-value papers
+from consuming resources; force_ingest bypasses gates for top-conference papers.
 """
 
 import logging
@@ -19,6 +23,13 @@ from backend.services.scoring_engine import ScoringEngine
 
 logger = logging.getLogger(__name__)
 
+# Venues that bypass the scoring gate (top conferences)
+TOP_VENUES = {
+    "CVPR", "ICCV", "ECCV", "NeurIPS", "ICML", "ICLR", "ACL", "EMNLP",
+    "NAACL", "AAAI", "IJCAI", "SIGGRAPH", "KDD", "ICRA", "CORL",
+    "SIGIR", "WWW", "ICDM", "CIKM", "WACV",
+}
+
 
 class IngestWorkflow:
     """V6 multi-phase, score-gated paper ingestion workflow."""
@@ -28,6 +39,209 @@ class IngestWorkflow:
         self.engine = ScoringEngine()
         self.runner = AgentRunner(session)
         self.ctx_builder = ContextPackBuilder(self.session)
+
+    # ── Direct entry for existing papers (bypasses candidate layer) ──
+
+    async def run_for_existing_paper(
+        self,
+        paper_id: UUID,
+        *,
+        skip_enrich: bool = False,
+        skip_parse: bool = False,
+    ) -> dict:
+        """Run the full pipeline on a paper already in the papers table.
+
+        Bypasses candidate creation/scoring — the paper already exists.
+        Flow: enrich → parse → shallow agents → deep agents → materialize → report
+
+        Args:
+            paper_id: UUID of existing paper in papers table.
+            skip_enrich: Skip metadata enrichment if already done.
+            skip_parse: Skip L2 PDF parse if already done.
+
+        Returns:
+            Complete pipeline result dict with all phase outcomes.
+        """
+        from backend.models.paper import Paper
+        from backend.models.analysis import PaperAnalysis
+        from backend.models.enums import AnalysisLevel, PaperState
+
+        result = {"paper_id": str(paper_id), "phases": {}}
+
+        paper = await self.session.get(Paper, paper_id)
+        if not paper:
+            return {"error": f"Paper {paper_id} not found"}
+
+        # Phase 1: Enrich metadata (abstract, authors, code_url, citations)
+        if not skip_enrich:
+            try:
+                prep = await self.enrich_and_prepare(paper_id)
+                result["phases"]["enrich_and_prepare"] = prep
+                await self.session.commit()
+            except Exception as e:
+                logger.error("enrich_and_prepare failed for %s: %s", paper_id, e)
+                result["phases"]["enrich_and_prepare"] = {"error": str(e)[:200]}
+                try:
+                    await self.session.rollback()
+                except Exception:
+                    pass
+            try:
+                await self.session.refresh(paper)
+            except Exception:
+                paper = await self.session.get(Paper, paper_id)
+
+        # Phase 2: Run shallow agents (shallow_extractor + reference_role)
+        # Build context directly from Paper (no candidate needed)
+        agents_run = []
+        agent_results = {}
+
+        shallow_agents = [
+            ("shallow_extractor", "shallow_extract"),
+            ("reference_role", "reference_role_map"),
+        ]
+
+        for agent_name, result_key in shallow_agents:
+            try:
+                context = await self.ctx_builder.build(
+                    agent_name, paper_id=paper_id,
+                )
+            except Exception as e:
+                logger.warning("Context build failed for %s: %s", agent_name, e)
+                context = {
+                    "user_content": (
+                        f"Paper: {paper.title}\n"
+                        f"Abstract: {paper.abstract or 'N/A'}"
+                    ),
+                    "token_budget": 4096,
+                }
+
+            try:
+                res = await self.runner.run_agent(
+                    agent_name, context, paper_id=paper_id,
+                )
+                agents_run.append(agent_name)
+                agent_results[result_key] = res
+                await self.session.flush()
+            except Exception as e:
+                logger.error("%s failed for %s: %s", agent_name, paper_id, e)
+                agent_results[result_key] = {}
+                try:
+                    await self.session.rollback()
+                except Exception:
+                    pass
+
+        # Write L3-compatible PaperAnalysis from shallow output
+        shallow_extract = agent_results.get("shallow_extract", {})
+        paper_essence = shallow_extract.get("paper_essence", {})
+        method_delta = shallow_extract.get("method_delta", {})
+
+        if paper_essence:
+            try:
+                from sqlalchemy import select
+                old_l3 = (await self.session.execute(
+                    select(PaperAnalysis).where(
+                        PaperAnalysis.paper_id == paper_id,
+                        PaperAnalysis.level == AnalysisLevel.L3_SKIM,
+                        PaperAnalysis.is_current.is_(True),
+                    )
+                )).scalar_one_or_none()
+                if old_l3:
+                    old_l3.is_current = False
+
+                l3 = PaperAnalysis(
+                    paper_id=paper_id,
+                    level=AnalysisLevel.L3_SKIM,
+                    model_provider="agent",
+                    model_name="shallow_extractor",
+                    prompt_version="v7_unified",
+                    schema_version="v2",
+                    confidence=0.75,
+                    problem_summary=paper_essence.get("problem_statement"),
+                    method_summary=paper_essence.get("method_summary"),
+                    core_intuition=paper_essence.get("core_claim"),
+                    changed_slots=[s.get("slot_name", "") for s in method_delta.get("changed_slots", [])],
+                    is_plugin_patch=method_delta.get("is_plugin_patch"),
+                    worth_deep_read=bool(method_delta.get("should_create_method_node")),
+                    confidence_notes=paper_essence.get("evidence_refs"),
+                    is_current=True,
+                )
+                self.session.add(l3)
+                await self.session.flush()
+            except Exception as e:
+                logger.warning("L3 write failed: %s", e)
+
+        result["phases"]["shallow"] = {
+            "agents_run": agents_run,
+            "has_paper_essence": bool(paper_essence),
+            "has_method_delta": bool(method_delta),
+        }
+
+        # Link known references
+        ref_map = agent_results.get("reference_role_map", {})
+        classifications = ref_map.get("classifications", [])
+        try:
+            known_result = await self._handle_known_references(
+                paper_id, classifications,
+            )
+            result["phases"]["known_refs"] = known_result
+        except Exception as e:
+            logger.warning("Known refs failed: %s", e)
+
+        # Commit shallow results before deep phase
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+
+        # Phase 3: Deep agents + materialization
+        try:
+            deep_result = await self.deep_ingest(paper_id)
+            result["phases"]["deep_ingest"] = deep_result
+            await self.session.commit()
+        except Exception as e:
+            logger.error("deep_ingest failed for %s: %s", paper_id, e)
+            result["phases"]["deep_ingest"] = {"error": str(e)[:200]}
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+
+        # Phase 4: Post-L4 — derive ring & role_in_kb from the published
+        # DeltaCard's structurality_score. Without this, vault_export's
+        # _paper_level() falls back to dc_struct=0 → all papers classify
+        # as D-level and get filtered out of the export. (Previously this
+        # only ran inside pipeline_service.run_pipeline; task_pipeline_run
+        # → run_for_existing_paper bypassed it.)
+        try:
+            from backend.models.delta_card import DeltaCard
+            await self.session.refresh(paper)
+            if paper.current_delta_card_id and (
+                not paper.ring or not paper.role_in_kb
+            ):
+                dc = await self.session.get(DeltaCard, paper.current_delta_card_id)
+                if dc and dc.structurality_score is not None:
+                    s = float(dc.structurality_score)
+                    if not paper.ring:
+                        if s >= 0.7:
+                            paper.ring = "baseline"
+                        elif s >= 0.4:
+                            paper.ring = "structural"
+                        else:
+                            paper.ring = "plugin"
+                    if not paper.role_in_kb:
+                        paper.role_in_kb = "extension"
+                    await self.session.commit()
+                    result["phases"]["post_l4"] = {
+                        "ring": paper.ring, "role_in_kb": paper.role_in_kb,
+                    }
+        except Exception as e:
+            logger.warning("post_l4 ring assignment failed for %s: %s", paper_id, e)
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+
+        return result
 
     # ── Phase 1: Import & Score ────────────────────────────────────────
 
@@ -40,6 +254,7 @@ class IngestWorkflow:
         relation_hint: str | None = None,
         discovered_from_paper_id: UUID | None = None,
         domain_id: UUID | None = None,
+        force_ingest: bool = False,
     ) -> dict:
         """Create a candidate and compute its DiscoveryScore.
 
@@ -48,6 +263,9 @@ class IngestWorkflow:
             60-74 → candidate_pool
             40-59 → metadata_only
             < 40  → archive
+
+        If force_ingest=True (e.g. top-conference accepted papers),
+        always route to shallow_ingest regardless of score.
 
         Returns:
             {candidate_id, discovery_score, decision, status}
@@ -88,6 +306,16 @@ class IngestWorkflow:
             from backend.models.domain import DomainSpec
             domain = await self.session.get(DomainSpec, domain_id)
 
+        # Auto-detect top venue → force_ingest
+        if not force_ingest and isinstance(source, dict):
+            venue = (source.get("venue") or "").strip()
+            acceptance = (source.get("acceptance_type") or "").strip()
+            if venue:
+                venue_upper = venue.upper().split()[0] if venue else ""
+                if venue_upper in TOP_VENUES or acceptance in ("oral", "spotlight", "poster"):
+                    force_ingest = True
+                    logger.info("Auto force_ingest: venue=%s acceptance=%s", venue, acceptance)
+
         # Extract signals and compute discovery score
         signals = candidate_service._extract_discovery_signals(candidate, domain)
         score_result = self.engine.compute_discovery_score(signals, domain=domain)
@@ -103,8 +331,8 @@ class IngestWorkflow:
                 candidate.id, e,
             )
 
-        # Route based on decision
-        decision = score_result.decision
+        # Route based on decision (force_ingest overrides scoring gate)
+        decision = "shallow_ingest" if force_ingest else score_result.decision
         if decision == "shallow_ingest":
             candidate.status = "accepted"
         elif decision == "candidate_pool":
@@ -123,6 +351,110 @@ class IngestWorkflow:
             "decision": decision,
             "status": candidate.status,
         }
+
+    # ── Phase 1.5: Enrich & Prepare ──────────────────────────────────
+
+    async def enrich_and_prepare(self, paper_id: UUID) -> dict:
+        """Enrich metadata, download PDF, and run L2 parse.
+
+        Merges the old pipeline_service steps into the unified workflow:
+          1. Enrich metadata (arXiv, Crossref, S2, OpenAlex, DBLP, OpenReview)
+          2. Venue resolution (OpenReview + DBLP + arXiv comments)
+          3. Download PDF to OSS
+          4. L2 Parse (PyMuPDF + section extraction)
+
+        Returns progress dict.
+        """
+        from backend.models.paper import Paper
+        from backend.models.analysis import PaperAnalysis
+        from backend.models.enums import AnalysisLevel
+
+        progress: dict = {}
+        paper = await self.session.get(Paper, paper_id)
+        if not paper:
+            return {"error": f"Paper {paper_id} not found"}
+
+        # Step 1: Enrich metadata
+        if not paper.abstract or not paper.authors:
+            try:
+                import httpx
+                from backend.services import enrich_service
+                async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+                    enriched = await enrich_service.enrich_paper(self.session, paper, client)
+                progress["enrich"] = enriched if enriched else "no_data"
+                await self.session.flush()
+                await self.session.refresh(paper)
+            except Exception as e:
+                logger.warning("Enrich failed for %s: %s", paper_id, e)
+                progress["enrich"] = f"error: {str(e)[:100]}"
+        else:
+            progress["enrich"] = "skipped"
+
+        # Step 2: Venue resolution
+        if not paper.acceptance_type:
+            try:
+                from backend.services.venue_resolver_service import resolve_venue
+                authors_list = None
+                if paper.authors and isinstance(paper.authors, list):
+                    authors_list = [a.get("name", "") for a in paper.authors if isinstance(a, dict)]
+                venue_result = await resolve_venue(
+                    self.session, paper.id,
+                    title=paper.title, authors=authors_list,
+                    arxiv_id=paper.arxiv_id or "",
+                    current_venue=paper.venue or "",
+                    current_year=paper.year or 0,
+                )
+                if venue_result.get("acceptance_status") and venue_result["acceptance_status"] != "unknown":
+                    paper.acceptance_type = venue_result["acceptance_status"]
+                    if venue_result.get("venue"):
+                        paper.venue = venue_result["venue"][:100]
+                progress["venue_resolve"] = venue_result.get("acceptance_status", "unknown")
+                await self.session.flush()
+                await self.session.refresh(paper)
+            except Exception as e:
+                logger.warning("Venue resolution failed for %s: %s", paper_id, e)
+                progress["venue_resolve"] = f"error: {str(e)[:100]}"
+        else:
+            progress["venue_resolve"] = "skipped"
+
+        # Step 3: Download PDF
+        if paper.arxiv_id and not paper.pdf_path_local and not paper.pdf_object_key:
+            try:
+                from backend.services.pdf_download_service import download_pdf_to_oss
+                ok = await download_pdf_to_oss(self.session, paper_id)
+                progress["download_pdf"] = "success" if ok else "failed"
+                await self.session.flush()
+                await self.session.refresh(paper)
+            except Exception as e:
+                logger.warning("PDF download failed for %s: %s", paper_id, e)
+                progress["download_pdf"] = f"error: {str(e)[:100]}"
+        else:
+            progress["download_pdf"] = "skipped"
+
+        # Step 4: L2 Parse
+        from sqlalchemy import select
+        has_l2 = (await self.session.execute(
+            select(PaperAnalysis).where(
+                PaperAnalysis.paper_id == paper_id,
+                PaperAnalysis.level == AnalysisLevel.L2_PARSE,
+                PaperAnalysis.is_current.is_(True),
+            )
+        )).scalar_one_or_none()
+
+        if not has_l2 and (paper.pdf_path_local or paper.pdf_object_key):
+            try:
+                from backend.services import parse_service
+                l2 = await parse_service.parse_paper_pdf(self.session, paper_id)
+                sections = list(l2.extracted_sections.keys()) if l2 and l2.extracted_sections else []
+                progress["parse_l2"] = f"sections={sections}"
+                await self.session.flush()
+            except Exception as e:
+                logger.warning("L2 parse failed for %s: %s", paper_id, e)
+                progress["parse_l2"] = f"error: {str(e)[:100]}"
+        else:
+            progress["parse_l2"] = "skipped" if has_l2 else "no_pdf"
+
+        return progress
 
     # ── Phase 2: Shallow Ingest ────────────────────────────────────────
 
@@ -305,44 +637,20 @@ class IngestWorkflow:
 
         await self.session.flush()
 
-        # ── Step A: 处理已知论文引用 (对比流程，不重新分析) ──
+        # ── Link known references (对比流程，不重新分析) ──
+        # Unknown refs are discovered later by discover_neighborhood (single entry)
         ref_map = agent_results.get("reference_role_map", {})
         classifications = ref_map.get("classifications", [])
         known_result = await self._handle_known_references(
             paper_id, classifications,
             domain_id=candidate.discovered_from_domain_id,
         )
-        known_titles = known_result.get("known_titles_set", set())
-
-        # ── Step B: 只对真正未知的引用做递归发现 ──
-        references_discovered = 0
-        for ref_cls in classifications:
-            ref_title = ref_cls.get("ref_title")
-            if not ref_title:
-                continue
-            # 跳过已在 KB 中的论文（已在 Step A 中建了关系边）
-            if _normalize_title(ref_title) in known_titles:
-                continue
-            ingest_level = ref_cls.get("recommended_ingest_level", "skip")
-            if ingest_level in ("deep", "abstract"):
-                try:
-                    await self.import_and_score(
-                        {"title": ref_title},
-                        discovery_source="s2_reference",
-                        discovery_reason=f"ref_role={ref_cls.get('role', 'unknown')}",
-                        relation_hint=ref_cls.get("role"),
-                        discovered_from_paper_id=paper_id,
-                    )
-                    references_discovered += 1
-                except Exception as e:
-                    logger.debug("Ref import failed for %s: %s", ref_title, e)
 
         return {
             "paper_id": str(paper_id),
             "deep_ingest_score": deep_score_result.total,
             "decision": decision,
             "agents_run": agents_run,
-            "references_discovered": references_discovered,
             "known_refs_linked": known_result.get("known_refs_linked", 0),
             "edges_created": known_result.get("edges_created", 0),
         }
@@ -382,6 +690,31 @@ class IngestWorkflow:
         nodes_created = 0
         edges_created = 0
         report_sections = []
+
+        # ── Re-hydrate shallow-phase artifacts from the blackboard ──
+        # `_materialize_to_graph` (called below) reads `agent_results
+        # ["shallow_extract"]` to extract evidence_refs / method_delta /
+        # paper_essence. If we skip this rehydration the dict is empty,
+        # evidence_count stays 0, the DeltaCard never publishes, and
+        # `paper.current_delta_card_id` is never set — which cascades into
+        # missing ring / facets / vault export.
+        from backend.models.agent import AgentBlackboardItem
+        from sqlalchemy import select as _select
+        for _item_type, _result_key in (
+            ("shallow_extract", "shallow_extract"),
+            ("reference_role_map", "reference_role_map"),
+        ):
+            row = (await self.session.execute(
+                _select(AgentBlackboardItem)
+                .where(
+                    AgentBlackboardItem.paper_id == paper_id,
+                    AgentBlackboardItem.item_type == _item_type,
+                )
+                .order_by(AgentBlackboardItem.created_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            if row and row.value_json:
+                agent_results[_result_key] = row.value_json
 
         # ── Deep agents (sequential, each with own context pack) ──
 
@@ -482,11 +815,19 @@ class IngestWorkflow:
         # ── Report agent ──
 
         try:
+            figures_block = await self._build_figures_block(paper_id)
+            metadata_block = self._build_paper_metadata_block(paper)
+
             report_context = {
                 "user_content": (
-                    f"Paper: {paper.title}\n"
-                    f"Agent results: {agent_results}\n"
-                    f"Nodes created: {nodes_created}, Edges created: {edges_created}"
+                    f"Paper title: {paper.title}\n\n"
+                    f"=== Paper metadata (use in section 1 metadata_overview) ===\n"
+                    f"{metadata_block}\n\n"
+                    f"=== Figures available (use EXACT labels in figure_placements.preferred_labels) ===\n"
+                    f"{figures_block}\n\n"
+                    f"=== Agent analysis artifacts ===\n"
+                    f"{agent_results}\n\n"
+                    f"Graph nodes created: {nodes_created}, edges created: {edges_created}"
                 ),
                 "token_budget": 8192,
             }
@@ -494,7 +835,9 @@ class IngestWorkflow:
                 "paper_report", report_context, paper_id=paper_id,
             )
             agents_run.append("paper_report")
-            report_sections = list(report_result.get("sections", {}).keys())
+            agent_results["paper_report"] = report_result
+            secs = report_result.get("sections", [])
+            report_sections = [s.get("section_type", "") for s in secs] if isinstance(secs, list) else []
         except Exception as e:
             logger.error("paper_report agent failed for %s: %s", paper_id, e)
 
@@ -507,15 +850,81 @@ class IngestWorkflow:
                 paper, agent_results,
             )
             logger.info(
-                "Materialized graph for %s: dc=%s, idea=%s, evidence=%d, assertions=%d",
+                "Materialized graph for %s: dc=%s, evidence=%d, assertions=%d",
                 paper_id,
-                delta_card_result.get("delta_card_id"),
                 delta_card_result.get("delta_card_id"),
                 delta_card_result.get("evidence_count", 0),
                 delta_card_result.get("assertion_count", 0),
             )
+
+            # Mark blackboard items as verified after successful materialization
+            from sqlalchemy import update
+            from backend.models.agent import AgentBlackboardItem
+            await self.session.execute(
+                update(AgentBlackboardItem)
+                .where(
+                    AgentBlackboardItem.paper_id == paper_id,
+                    AgentBlackboardItem.is_verified.is_(False),
+                )
+                .values(is_verified=True)
+            )
         except Exception as e:
             logger.error("Graph materialization failed for %s: %s", paper_id, e)
+
+        # ── Phase 3B: Persist KB profiles to tables ──
+        if qualifying_nodes or qualifying_edges:
+            try:
+                await self._persist_kb_profiles(
+                    paper_id, agent_results.get("graph_candidates", {}),
+                )
+            except Exception as e:
+                logger.warning("KB profile persistence failed: %s", e)
+
+        # ── Phase 3C: Persist paper report to tables ──
+        report_result_data = agent_results.get("paper_report") if "paper_report" in agents_run else None
+        if not report_result_data:
+            # Try loading from blackboard
+            try:
+                from sqlalchemy import select as sa_select
+                from backend.models.agent import AgentBlackboardItem
+                bb = (await self.session.execute(
+                    sa_select(AgentBlackboardItem.value_json)
+                    .where(
+                        AgentBlackboardItem.paper_id == paper_id,
+                        AgentBlackboardItem.item_type == "paper_report",
+                    )
+                    .order_by(AgentBlackboardItem.created_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                if bb:
+                    report_result_data = bb
+            except Exception:
+                pass
+
+        if report_result_data:
+            try:
+                await self._persist_paper_report(paper_id, report_result_data)
+            except Exception as e:
+                logger.warning("Paper report persistence failed: %s", e)
+
+        # ── Phase 3D: Materialize paper-paper relations from reference_role_map ──
+        try:
+            from backend.services.paper_relation_service import materialize_for_paper
+            rel_stats = await materialize_for_paper(self.session, paper_id)
+            logger.info("Paper relations materialized for %s: %s", paper_id, rel_stats)
+        except Exception as e:
+            logger.warning("Paper relation materialization failed for %s: %s", paper_id, e)
+
+        # ── Phase 3E: Promote baseline references (multi-source search + ingest) ──
+        # For each baseline-role ref the agent identified, ensure the target
+        # paper is either already in `papers`, has been promoted from
+        # `venue_papers`, or has a fresh `paper_candidates` row queued.
+        try:
+            from backend.services.baseline_promoter import promote_for_paper as _promote_baselines
+            bp_stats = await _promote_baselines(self.session, paper_id, max_promote=8)
+            logger.info("Baseline promote for %s: %s", paper_id, bp_stats)
+        except Exception as e:
+            logger.warning("Baseline promote failed for %s: %s", paper_id, e)
 
         # Update paper absorption level
         paper.absorption_level = 3
@@ -537,6 +946,7 @@ class IngestWorkflow:
         Bridges agent blackboard outputs to the delta_card_service pipeline,
         then runs evolution/concept/reconciliation steps.
         """
+        from backend.models.paper import Paper
         from backend.services.delta_card_service import run_delta_card_pipeline
         from backend.services.evolution_service import link_to_parent_baselines
         from backend.services.concept_synthesizer_service import synthesize_concepts
@@ -640,28 +1050,42 @@ class IngestWorkflow:
 
         dc = result.get("delta_card")
 
-        # Post-delta steps (each wrapped to not block on failure)
+        # Post-delta steps — each in a SAVEPOINT so failures don't cascade.
+        # expire_all() after failures to avoid greenlet errors on detached objects.
+        paper_id_val = paper.id
+        paper_category = paper.category
+
         if dc and dc.id:
             try:
-                await link_to_parent_baselines(self.session, dc.id, analysis_data)
+                async with self.session.begin_nested():
+                    await link_to_parent_baselines(self.session, dc.id, analysis_data)
             except Exception as e:
-                logger.warning("link_to_parent_baselines failed: %s", e)
+                logger.warning("link_baselines failed: %s", e)
+                self.session.expire_all()
 
         try:
-            await synthesize_concepts(self.session, paper.id, analysis_data)
+            async with self.session.begin_nested():
+                await synthesize_concepts(self.session, paper_id_val, analysis_data)
         except Exception as e:
             logger.warning("synthesize_concepts failed: %s", e)
+            self.session.expire_all()
 
         try:
-            await reconcile_neighbors(self.session, paper.id, analysis_data)
+            async with self.session.begin_nested():
+                await reconcile_neighbors(self.session, paper_id_val, analysis_data)
         except Exception as e:
             logger.warning("reconcile_neighbors failed: %s", e)
+            self.session.expire_all()
 
-        # ── Write taxonomy facets (Layer A activation) ──
         try:
-            await self._write_taxonomy_facets(paper, paper_essence, method_delta_lite, experiment)
+            # Refresh paper object for taxonomy write (may be expired from earlier failures)
+            paper = await self.session.get(Paper, paper_id_val)
+            if paper:
+                async with self.session.begin_nested():
+                    await self._write_taxonomy_facets(paper, paper_essence, method_delta_lite, experiment)
         except Exception as e:
-            logger.warning("taxonomy facet write failed: %s", e)
+            logger.warning("taxonomy_facets failed: %s", e)
+            self.session.expire_all()
 
         return {
             "delta_card_id": str(dc.id) if dc else None,
@@ -757,6 +1181,372 @@ class IngestWorkflow:
                 await add_facet(paper.id, ds_node.id, "dataset")
 
         await self.session.flush()
+
+    # ── Persistence: KB profiles → tables ────────────────────────────
+
+    async def _persist_kb_profiles(self, paper_id: UUID, graph_candidates: dict):
+        """Persist kb_profiler agent output to KBNodeProfile / KBEdgeProfile tables.
+
+        Reads profiles from the blackboard and writes to the persistent tables
+        used by vault_export and the MCP server.
+        """
+        from sqlalchemy import select as sa_select
+        from backend.models.agent import AgentBlackboardItem
+        from backend.models.kb import KBNodeProfile, KBEdgeProfile
+
+        # Load latest kb_profiles from blackboard
+        bb = (await self.session.execute(
+            sa_select(AgentBlackboardItem)
+            .where(
+                AgentBlackboardItem.paper_id == paper_id,
+                AgentBlackboardItem.item_type == "kb_profiles",
+            )
+            .order_by(AgentBlackboardItem.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+
+        if not bb or not bb.value_json:
+            return
+
+        profiles_data = bb.value_json
+
+        # Persist node profiles
+        for np in profiles_data.get("node_profiles", []):
+            name = np.get("node_name", "")
+            if not name:
+                continue
+            profile = KBNodeProfile(
+                entity_type="graph_node_candidate",
+                entity_id=paper_id,  # linked to paper for now
+                one_liner=np.get("one_liner"),
+                short_intro_md=np.get("short_intro_md"),
+                detailed_md=np.get("detailed_md"),
+                structured_json=np.get("structured_json"),
+                evidence_refs=np.get("evidence_refs"),
+                generated_by_run_id=bb.run_id,
+            )
+            self.session.add(profile)
+
+        # Persist edge profiles
+        for ep in profiles_data.get("edge_profiles", []):
+            edge_profile = KBEdgeProfile(
+                source_entity_type="paper",
+                source_entity_id=paper_id,
+                target_entity_type="paper",
+                target_entity_id=paper_id,  # placeholder
+                relation_type=ep.get("relation_type", "unknown"),
+                one_liner=ep.get("one_liner"),
+                relation_summary=ep.get("relation_summary"),
+                source_context=ep.get("source_context"),
+                target_context=ep.get("target_context"),
+                evidence_refs=ep.get("evidence_refs"),
+                generated_by_run_id=bb.run_id,
+            )
+            self.session.add(edge_profile)
+
+        await self.session.flush()
+        logger.info(
+            "Persisted %d node profiles + %d edge profiles for paper %s",
+            len(profiles_data.get("node_profiles", [])),
+            len(profiles_data.get("edge_profiles", [])),
+            paper_id,
+        )
+
+    # ── Persistence: Paper report → tables ───────────────────────────
+
+    async def _build_figures_block(self, paper_id: UUID) -> str:
+        """Format figures from L2 paper_analyses for the paper_report context.
+
+        The agent must use EXACT labels (e.g. "Figure 1", "Table 2") from this
+        list when filling figure_placements.preferred_labels.
+        """
+        from sqlalchemy import text as sa_text
+
+        rows = (await self.session.execute(sa_text("""
+            SELECT extracted_figure_images
+            FROM paper_analyses
+            WHERE paper_id = :pid AND level = 'l2_parse' AND is_current = true
+              AND extracted_figure_images IS NOT NULL
+            ORDER BY created_at DESC LIMIT 1
+        """), {"pid": str(paper_id)})).fetchall()
+
+        if not rows or not rows[0][0]:
+            return "(no figures extracted for this paper)"
+
+        figs = rows[0][0] if isinstance(rows[0][0], list) else []
+        lines = []
+        for f in figs[:25]:
+            label = f.get("label") or f.get("figure_num") or "?"
+            role = f.get("semantic_role", "other")
+            caption = (f.get("caption") or f.get("description") or "")[:140]
+            lines.append(f"- {label} (role={role}): {caption}")
+        return "\n".join(lines) if lines else "(no figures extracted)"
+
+    def _build_paper_metadata_block(self, paper) -> str:
+        """Format paper metadata for the metadata_overview section."""
+        rows = []
+        if paper.venue:
+            v = paper.venue
+            if getattr(paper, "acceptance_type", None):
+                v = f"{v} ({paper.acceptance_type})"
+            rows.append(f"venue: {v}")
+        if paper.year:
+            rows.append(f"year: {paper.year}")
+        if getattr(paper, "arxiv_id", None):
+            rows.append(f"arxiv: https://arxiv.org/abs/{paper.arxiv_id}")
+        if paper.paper_link:
+            rows.append(f"paper_link: {paper.paper_link}")
+        if paper.code_url:
+            rows.append(f"code_url: {paper.code_url}")
+        if getattr(paper, "doi", None):
+            rows.append(f"doi: {paper.doi}")
+        if getattr(paper, "authors", None):
+            authors = paper.authors if isinstance(paper.authors, list) else [paper.authors]
+            rows.append(f"authors: {', '.join(str(a) for a in authors[:6])}")
+        if getattr(paper, "method_family", None):
+            rows.append(f"method_family: {paper.method_family}")
+        if getattr(paper, "tags", None):
+            tags = paper.tags if isinstance(paper.tags, list) else []
+            if tags:
+                rows.append(f"tags: {', '.join(tags[:8])}")
+        return "\n".join(rows) if rows else "(no metadata)"
+
+    # Standard KaTeX commands the agent may use. Macros NOT in this set are
+    # likely paper-private \newcommand defs (e.g. \visionfeature) that the
+    # LLM copied verbatim from the source TeX. They blow up Obsidian KaTeX
+    # rendering, so we wrap them in \text{...} so they render as plain text
+    # instead of breaking the whole equation.
+    _KATEX_KNOWN = frozenset((
+        # Greek
+        "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta",
+        "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi",
+        "omicron", "pi", "varpi", "rho", "varrho", "sigma", "varsigma", "tau",
+        "upsilon", "phi", "varphi", "chi", "psi", "omega",
+        "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon",
+        "Phi", "Psi", "Omega",
+        # Operators / structure
+        "frac", "sqrt", "sum", "prod", "int", "oint", "lim", "limsup", "liminf",
+        "sup", "inf", "max", "min", "argmax", "argmin", "log", "ln", "exp",
+        "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+        "det", "dim", "ker", "deg", "gcd", "Pr", "mod",
+        # Symbols
+        "infty", "partial", "nabla", "forall", "exists", "in", "notin", "subset",
+        "subseteq", "supset", "supseteq", "cup", "cap", "emptyset", "to", "mapsto",
+        "rightarrow", "leftarrow", "leftrightarrow", "Rightarrow", "Leftarrow",
+        "Leftrightarrow", "iff", "implies", "land", "lor", "lnot", "neg",
+        "approx", "neq", "leq", "geq", "ll", "gg", "equiv", "sim", "simeq",
+        "cong", "propto", "cdot", "cdots", "ldots", "vdots", "ddots", "dots",
+        "times", "div", "pm", "mp", "circ", "bullet", "ast", "star", "oplus",
+        "ominus", "otimes", "odot", "wedge", "vee", "perp", "parallel",
+        # Style / wrappers
+        "text", "textbf", "textit", "textrm", "texttt", "mathbf", "mathit",
+        "mathrm", "mathsf", "mathtt", "mathcal", "mathbb", "mathfrak", "mathscr",
+        "boldsymbol", "bm", "operatorname", "underbrace", "overbrace", "underline",
+        "overline", "widehat", "widetilde", "hat", "bar", "tilde", "vec", "dot", "ddot",
+        "color", "colorbox",
+        # Layout
+        "left", "right", "big", "Big", "bigg", "Bigg", "begin", "end",
+        "quad", "qquad", "hspace", "vspace", "phantom", "vphantom", "hphantom",
+        "displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle",
+        "label", "tag", "ref", "stackrel", "overset", "underset",
+        # Brackets
+        "langle", "rangle", "lceil", "rceil", "lfloor", "rfloor",
+        # Newcommand we do not want to touch (frequent in legit reports)
+        "begin{align}", "end{align}", "begin{pmatrix}", "end{pmatrix}",
+        "begin{bmatrix}", "end{bmatrix}", "begin{cases}", "end{cases}",
+        "begin{equation}", "end{equation}", "begin{aligned}", "end{aligned}",
+        "begin{matrix}", "end{matrix}", "begin{Vmatrix}", "end{Vmatrix}",
+        "&", "\\\\", "^", "_",
+        # Common misc
+        "triangleq", "triangleright", "triangleleft", "vartriangle",
+        "leftrightharpoons", "rightleftharpoons",
+        "rfloor", "lfloor", "vert", "Vert", "lvert", "rvert", "lVert", "rVert",
+        "lbrace", "rbrace", "lbrack", "rbrack",
+        "ne", "le", "ge", "lt", "gt",
+        "1", "2", "3",  # \1 \2 etc capture groups (rare but possible)
+        "newline", "linebreak",
+    ))
+
+    @staticmethod
+    def _wrap_unknown_macros(formula: str) -> str:
+        r"""Inside one ``$$...$$`` block, replace ``\X`` (X not a known KaTeX
+        command) with ``\text{X}`` so KaTeX renders the name as plain text
+        rather than throwing 'unknown command' and refusing the whole formula."""
+        import re as _re
+        def _repl(m: "_re.Match") -> str:
+            name = m.group(1)
+            if name in IngestWorkflow._KATEX_KNOWN:
+                return m.group(0)
+            # Wrap as plain text — preserves the name visibly, won't break render
+            return f"\\text{{{name}}}"
+        # Match \name where name is alphabetic ≥3 letters (skip short like \n, \t)
+        return _re.sub(r"\\([A-Za-z]{3,})", _repl, formula)
+
+    @staticmethod
+    def _strip_placeholders(body: str) -> str:
+        """Remove 'data missing' placeholder text the agent leaks into reports.
+
+        The agent prompt says 'write 数据待补充 if missing', so it sprawls into
+        bullet points, table cells, and prose ('（数据待补充具体数值）'). These
+        add no information for the reader and look unprofessional in vault.
+
+        Strategy: drop the parenthetical phrase wholesale; if the entire bullet
+        / line is *only* the placeholder, drop the line.
+        """
+        if not body or "数据待补充" not in body:
+            return body
+        import re as _re
+        # 1) Inline parenthetical forms: "（数据待补充xxx）" / "(数据待补充)" / "(数据待补充 …)"
+        body = _re.sub(r"[（(]\s*数据待补充[^（()）]{0,80}[）)]", "", body)
+        # 2) Standalone phrase
+        body = _re.sub(r"数据待补充[^\n。；]{0,40}", "", body)
+        # 3) Lines that are now empty bullets / table cells after stripping
+        lines = body.split("\n")
+        cleaned = []
+        for ln in lines:
+            stripped = ln.strip()
+            # skip bullets that became empty (e.g. "- " or "- :")
+            if _re.match(r"^[-*]\s*[:：]?\s*$", stripped):
+                continue
+            cleaned.append(ln)
+        return "\n".join(cleaned)
+
+    @staticmethod
+    def _sanitize_latex(body: str) -> str:
+        """Patch up common Kimi-K2.6 LaTeX malformations that break Obsidian KaTeX:
+        1. Trailing `}}$$` (one extra closing brace before block-math delimiter).
+        2. Paper-private macros (e.g. `\\visionfeature`) the LLM copied from the
+           source .tex but never defined → wrap with `\\text{...}`.
+        """
+        body = IngestWorkflow._strip_placeholders(body)
+        if not body or "$" not in body:
+            return body
+        import re as _re
+
+        def _fix_block(m: "_re.Match") -> str:
+            inner = m.group(1)
+            opens = inner.count("{"); closes = inner.count("}")
+            extra = closes - opens
+            if extra > 0:
+                while extra > 0 and inner.endswith("}"):
+                    inner = inner[:-1]; extra -= 1
+            return f"$${IngestWorkflow._wrap_unknown_macros(inner)}$$"
+
+        def _fix_inline(m: "_re.Match") -> str:
+            # Don't touch $$..$$ — those are handled by _fix_block; this only
+            # matches single-$ inline math.
+            return f"${IngestWorkflow._wrap_unknown_macros(m.group(1))}$"
+
+        # 1) Block math first (so inline pass doesn't see $$ as two $)
+        body = _re.sub(r"\$\$(.+?)\$\$", _fix_block, body, flags=_re.DOTALL)
+        # 2) Inline math: $...$ that is NOT preceded/followed by another $.
+        #    Pattern: bounded-length, no nested $, single-line.
+        body = _re.sub(
+            r"(?<!\$)\$(?!\$)([^\$\n]{1,400}?)\$(?!\$)",
+            _fix_inline,
+            body,
+        )
+        return body
+
+    async def _persist_paper_report(self, paper_id: UUID, report_data: dict):
+        """Persist paper_report agent output to PaperReport / PaperReportSection tables.
+
+        Also backfills paper_analyses.full_report_md for vault export.
+        figure_placements is appended as an HTML comment so the vault exporter
+        can match {{FIG:xxx}} markers to actual figure labels (no schema change).
+        """
+        import json as _json
+        from backend.models.kb import PaperReport, PaperReportSection
+        from backend.models.analysis import PaperAnalysis
+        from backend.models.enums import AnalysisLevel
+        from sqlalchemy import select as sa_select
+
+        title_zh = report_data.get("title_zh", "")
+        title_en = report_data.get("title_en", "")
+        sections = report_data.get("sections", [])
+        figure_placements = report_data.get("figure_placements", []) or []
+
+        if not sections:
+            return
+
+        # Create PaperReport
+        report = PaperReport(
+            paper_id=paper_id,
+            title_zh=title_zh,
+            title_en=title_en,
+        )
+        self.session.add(report)
+        await self.session.flush()
+
+        # Create sections
+        for i, sec in enumerate(sections):
+            section = PaperReportSection(
+                report_id=report.id,
+                section_type=sec.get("section_type", "unknown"),
+                title=sec.get("title"),
+                body_md=sec.get("body_md"),
+                order_index=i,
+            )
+            self.session.add(section)
+
+        # Backfill full_report_md on PaperAnalysis for vault export.
+        # The metadata_overview section is rendered without a "## 概览" heading
+        # because its body already contains the metadata table + TL;DR callout.
+        full_md_parts = []
+        for sec in sections:
+            stype = sec.get("section_type", "")
+            title = sec.get("title", "")
+            body = sec.get("body_md", "")
+            if not body:
+                continue
+            body = self._sanitize_latex(body)
+            if stype == "metadata_overview":
+                full_md_parts.append(body)
+            elif title:
+                full_md_parts.append(f"## {title}\n\n{body}")
+            else:
+                full_md_parts.append(body)
+
+        full_report_md = "\n\n".join(full_md_parts)
+
+        # Embed figure_placements as HTML comment for vault exporter
+        if figure_placements:
+            try:
+                fp_json = _json.dumps(figure_placements, ensure_ascii=False)
+                full_report_md += f"\n\n<!-- figure_placements: {fp_json} -->"
+            except Exception as e:
+                logger.debug("Failed to serialize figure_placements: %s", e)
+
+        if full_report_md:
+            l4 = (await self.session.execute(
+                sa_select(PaperAnalysis).where(
+                    PaperAnalysis.paper_id == paper_id,
+                    PaperAnalysis.level == AnalysisLevel.L4_DEEP,
+                    PaperAnalysis.is_current.is_(True),
+                )
+            )).scalar_one_or_none()
+
+            if l4:
+                l4.full_report_md = full_report_md
+            else:
+                # Create a new L4 analysis record
+                l4_new = PaperAnalysis(
+                    paper_id=paper_id,
+                    level=AnalysisLevel.L4_DEEP,
+                    model_provider="agent",
+                    model_name="paper_report",
+                    prompt_version="v7_unified",
+                    schema_version="v2",
+                    full_report_md=full_report_md,
+                    is_current=True,
+                )
+                self.session.add(l4_new)
+
+        await self.session.flush()
+        logger.info(
+            "Persisted paper report (%d sections) for paper %s",
+            len(sections), paper_id,
+        )
 
     # ── Phase 4: Neighborhood Discovery ───────────────────────────────
 
@@ -907,120 +1697,9 @@ class IngestWorkflow:
             "by_source": by_source,
         }
 
-    # ── Phase 5: Process Reference Roles ──────────────────────────────
-
-    async def process_reference_roles(
-        self,
-        paper_id: UUID,
-        domain_id: UUID | None = None,
-    ) -> dict:
-        """Process reference role classifications and import recommended refs.
-
-        Loads reference_role_map from the blackboard for this paper.
-        Based on recommended_ingest_level:
-            - "deep" → import_and_score with high priority
-            - "abstract" → import_and_score
-            - "metadata" → create candidate without scoring
-            - "skip" → ignore
-
-        Returns:
-            {full_imported, shallow_imported, metadata_imported, ignored}
-        """
-        from sqlalchemy import select
-        from backend.models.agent import AgentBlackboardItem
-
-        # Load latest reference_role_map from blackboard
-        stmt = (
-            select(AgentBlackboardItem)
-            .where(
-                AgentBlackboardItem.paper_id == paper_id,
-                AgentBlackboardItem.item_type == "reference_role_map",
-            )
-            .order_by(AgentBlackboardItem.created_at.desc())
-            .limit(1)
-        )
-        result = await self.session.execute(stmt)
-        bb_item = result.scalar_one_or_none()
-
-        if not bb_item or not bb_item.value_json:
-            return {
-                "full_imported": 0,
-                "shallow_imported": 0,
-                "metadata_imported": 0,
-                "ignored": 0,
-            }
-
-        ref_map = bb_item.value_json
-        classifications = ref_map.get("classifications", [])
-
-        full_imported = 0
-        shallow_imported = 0
-        metadata_imported = 0
-        ignored = 0
-
-        for ref_cls in classifications:
-            ingest_level = ref_cls.get("recommended_ingest_level", "skip")
-            ref_title = ref_cls.get("ref_title")
-            if not ref_title:
-                ignored += 1
-                continue
-
-            role = ref_cls.get("role", "unknown")
-
-            if ingest_level == "deep":
-                try:
-                    await self.import_and_score(
-                        {"title": ref_title},
-                        discovery_source="method_section_citation",
-                        discovery_reason=f"ref_role={role}, recommended=deep",
-                        relation_hint=role,
-                        discovered_from_paper_id=paper_id,
-                        domain_id=domain_id,
-                    )
-                    full_imported += 1
-                except Exception as e:
-                    logger.debug("Deep ref import failed for %s: %s", ref_title, e)
-
-            elif ingest_level == "abstract":
-                try:
-                    await self.import_and_score(
-                        {"title": ref_title},
-                        discovery_source="s2_reference",
-                        discovery_reason=f"ref_role={role}, recommended=abstract",
-                        relation_hint=role,
-                        discovered_from_paper_id=paper_id,
-                        domain_id=domain_id,
-                    )
-                    shallow_imported += 1
-                except Exception as e:
-                    logger.debug("Shallow ref import failed for %s: %s", ref_title, e)
-
-            elif ingest_level == "metadata":
-                try:
-                    await candidate_service.create_candidate(
-                        self.session,
-                        title=ref_title,
-                        discovery_source="s2_reference",
-                        discovery_reason=f"ref_role={role}, metadata_only",
-                        relation_hint=role,
-                        discovered_from_paper_id=paper_id,
-                        discovered_from_domain_id=domain_id,
-                    )
-                    metadata_imported += 1
-                except Exception as e:
-                    logger.debug("Metadata ref import failed for %s: %s", ref_title, e)
-
-            else:
-                ignored += 1
-
-        await self.session.flush()
-
-        return {
-            "full_imported": full_imported,
-            "shallow_imported": shallow_imported,
-            "metadata_imported": metadata_imported,
-            "ignored": ignored,
-        }
+    # process_reference_roles — REMOVED
+    # Known refs are handled by _handle_known_references in shallow_ingest.
+    # Unknown refs are discovered by discover_neighborhood (single entry point).
 
     # ── Known Reference Handling (对比流程) ────────────────────────
 
@@ -1139,18 +1818,25 @@ class IngestWorkflow:
             "known_titles_set": known_titles_set,
         }
 
-    # ── Full V6 Pipeline ─────────────────────────────────────────────
+    # ── Unified Pipeline ───────────────────────────────────────────
 
-    async def run_full_v6_pipeline(
+    async def run_unified_pipeline(
         self,
-        source: str,
+        source: str | dict,
         *,
         domain_id: UUID | None = None,
+        force_ingest: bool = False,
     ) -> dict:
-        """Run the complete V6 pipeline end-to-end.
+        """Run the complete unified pipeline end-to-end.
 
-        import_and_score → shallow_ingest → deep_ingest
-        + discover_neighborhood + process_reference_roles
+        Replaces both old pipeline_service.run_full_pipeline and run_full_v6_pipeline.
+
+        Flow:
+          1. import_and_score (candidate creation + scoring gate)
+          2. shallow_ingest (promote + shallow agents)
+          3. enrich_and_prepare (metadata + pdf + L2 parse)
+          4. deep_ingest (deep agents + graph + report)
+          5. discover_neighborhood (S2 refs/citations)
 
         Returns complete pipeline result dict.
         """
@@ -1162,7 +1848,7 @@ class IngestWorkflow:
         # Phase 1: Import & Score
         try:
             import_result = await self.import_and_score(
-                source, domain_id=domain_id,
+                source, domain_id=domain_id, force_ingest=force_ingest,
             )
             result["phases"]["import_and_score"] = import_result
         except Exception as e:
@@ -1173,64 +1859,71 @@ class IngestWorkflow:
         candidate_id = import_result.get("candidate_id")
         decision = import_result.get("decision", "archive")
 
-        if decision not in ("shallow_ingest",):
+        if decision != "shallow_ingest":
             result["final_decision"] = decision
             return result
 
-        # Phase 2: Shallow Ingest
-        if candidate_id:
-            from uuid import UUID as _UUID
-            cid = _UUID(candidate_id) if isinstance(candidate_id, str) else candidate_id
-            try:
-                shallow_result = await self.shallow_ingest(cid)
-                result["phases"]["shallow_ingest"] = shallow_result
-            except Exception as e:
-                logger.error("shallow_ingest failed: %s", e)
-                result["phases"]["shallow_ingest"] = {"error": str(e)}
-                result["final_decision"] = "shallow_failed"
-                return result
-
-            paper_id_str = shallow_result.get("paper_id")
-            deep_decision = shallow_result.get("decision", "no_graph")
-
-            # Phase 2.5: Neighborhood Discovery (non-blocking)
-            if paper_id_str:
-                pid = _UUID(paper_id_str) if isinstance(paper_id_str, str) else paper_id_str
-                try:
-                    disc_result = await self.discover_neighborhood(
-                        pid, domain_id=domain_id,
-                    )
-                    result["phases"]["discover_neighborhood"] = disc_result
-                except Exception as e:
-                    logger.error("discover_neighborhood failed: %s", e)
-                    result["phases"]["discover_neighborhood"] = {"error": str(e)}
-
-                # Phase 2.6: Process Reference Roles
-                try:
-                    ref_result = await self.process_reference_roles(
-                        pid, domain_id=domain_id,
-                    )
-                    result["phases"]["process_reference_roles"] = ref_result
-                except Exception as e:
-                    logger.error("process_reference_roles failed: %s", e)
-                    result["phases"]["process_reference_roles"] = {"error": str(e)}
-
-            # Phase 3: Deep Ingest (if qualified)
-            if deep_decision in ("auto_full_paper", "full_review_needed") and paper_id_str:
-                pid = _UUID(paper_id_str) if isinstance(paper_id_str, str) else paper_id_str
-                review_needed = deep_decision == "full_review_needed"
-                try:
-                    deep_result = await self.deep_ingest(
-                        pid, review_needed=review_needed,
-                    )
-                    result["phases"]["deep_ingest"] = deep_result
-                except Exception as e:
-                    logger.error("deep_ingest failed: %s", e)
-                    result["phases"]["deep_ingest"] = {"error": str(e)}
-
-            result["final_decision"] = deep_decision
-        else:
+        if not candidate_id:
             result["final_decision"] = decision
+            return result
 
+        from uuid import UUID as _UUID
+        cid = _UUID(candidate_id) if isinstance(candidate_id, str) else candidate_id
+
+        # Phase 2: Shallow Ingest (promote + shallow agents)
+        try:
+            shallow_result = await self.shallow_ingest(cid)
+            result["phases"]["shallow_ingest"] = shallow_result
+        except Exception as e:
+            logger.error("shallow_ingest failed: %s", e)
+            result["phases"]["shallow_ingest"] = {"error": str(e)}
+            result["final_decision"] = "shallow_failed"
+            return result
+
+        paper_id_str = shallow_result.get("paper_id")
+        deep_decision = shallow_result.get("decision", "no_graph")
+
+        if not paper_id_str:
+            result["final_decision"] = deep_decision
+            return result
+
+        pid = _UUID(paper_id_str) if isinstance(paper_id_str, str) else paper_id_str
+
+        # Phase 2.5: Enrich & Prepare (metadata, pdf, L2 parse)
+        try:
+            prep_result = await self.enrich_and_prepare(pid)
+            result["phases"]["enrich_and_prepare"] = prep_result
+        except Exception as e:
+            logger.error("enrich_and_prepare failed: %s", e)
+            result["phases"]["enrich_and_prepare"] = {"error": str(e)}
+
+        # Phase 3: Deep Ingest (if qualified, or force_ingest)
+        if force_ingest:
+            deep_decision = "auto_full_paper"
+
+        if deep_decision in ("auto_full_paper", "full_review_needed"):
+            try:
+                deep_result = await self.deep_ingest(
+                    pid, review_needed=(deep_decision == "full_review_needed"),
+                )
+                result["phases"]["deep_ingest"] = deep_result
+            except Exception as e:
+                logger.error("deep_ingest failed: %s", e)
+                result["phases"]["deep_ingest"] = {"error": str(e)}
+
+        # Phase 4: Neighborhood Discovery (S2 refs/citations, non-blocking)
+        try:
+            disc_result = await self.discover_neighborhood(
+                pid, domain_id=domain_id,
+            )
+            result["phases"]["discover_neighborhood"] = disc_result
+        except Exception as e:
+            logger.error("discover_neighborhood failed: %s", e)
+            result["phases"]["discover_neighborhood"] = {"error": str(e)}
+
+        result["final_decision"] = deep_decision
         await self.session.commit()
         return result
+
+    # ── Backward compat alias ──
+    run_full_v6_pipeline = run_unified_pipeline

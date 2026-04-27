@@ -1,4 +1,4 @@
-"""TeX source extraction — arXiv e-print → formulas, citations, figures.
+r"""TeX source extraction — arXiv e-print → formulas, citations, figures.
 
 When a paper has an arxiv_id, we can download the LaTeX source and extract:
   - Formulas: exact LaTeX from equation/align environments (zero OCR error)

@@ -214,21 +214,37 @@ async def task_parse_batch(ctx: dict, limit: int = 5):
 
 
 async def task_pipeline_run(ctx: dict, paper_id: str):
-    """Run full pipeline for a single paper (called from API enqueue or cron).
+    """Run the FULL pipeline for an existing paper.
 
-    This runs in the worker process (1.5GB memory), not the API process.
-    Each paper goes through: download → enrich → parse → skim → deep → graph.
+    Use run_for_existing_paper — it runs enrich → parse → shallow agents
+    (shallow_extractor + reference_role) → deep agents → materialize. The
+    earlier version skipped shallow_ingest, so structural papers ended up
+    with empty shallow_extract blackboard, no delta_card, and no facets.
     """
     from uuid import UUID
     from backend.database import async_session
-    from backend.services import pipeline_service
+    from backend.services.ingest_workflow import IngestWorkflow
+    from backend.models.paper import Paper
+    from backend.models.enums import PaperState
 
     async with async_session() as session:
         try:
-            result = await pipeline_service.run_full_pipeline(session, UUID(paper_id))
+            pid = UUID(paper_id)
+            # Idempotency: arq retries from worker restarts and dup-enqueue
+            # produce many redundant invocations for papers already at
+            # l4_deep with a published DeltaCard. Skip them — re-running
+            # the full LLM pipeline costs ~$0.05 per paper for no gain.
+            paper = await session.get(Paper, pid)
+            if paper is None:
+                return {"paper_id": paper_id, "skipped": "not_found"}
+            if (paper.state == PaperState.L4_DEEP
+                    and paper.current_delta_card_id is not None):
+                return {"paper_id": paper_id, "skipped": "already_l4_deep"}
+
+            workflow = IngestWorkflow(session)
+            result = await workflow.run_for_existing_paper(pid)
             await session.commit()
-            final = result.get("final_state", "unknown")
-            logger.info(f"Pipeline completed for {paper_id}: {final}")
+            logger.info(f"Pipeline completed for {paper_id}")
             return result
         except Exception as e:
             await session.rollback()
@@ -239,20 +255,15 @@ async def task_pipeline_run(ctx: dict, paper_id: str):
 async def task_pipeline_recover(ctx: dict, limit: int = 5):
     """Auto-recover papers stuck in intermediate states.
 
-    Scans for papers that should have progressed but didn't (e.g., downloaded
-    but not parsed, parsed but not skimmed). Re-runs the full pipeline for each.
-
-    This is the key to self-healing: even if a pipeline run fails due to
-    transient proxy errors, this cron will pick it up and retry.
+    Uses IngestWorkflow for recovery (enrich + parse + deep analysis).
     """
     from backend.database import async_session
     from backend.models.paper import Paper
     from backend.models.enums import PaperState
-    from backend.services import pipeline_service
-    from sqlalchemy import select, func
+    from backend.services.ingest_workflow import IngestWorkflow
+    from sqlalchemy import select
     from datetime import datetime, timedelta, timezone
 
-    # Papers stuck for > 10 minutes in intermediate states
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
     stuck_states = [
         PaperState.WAIT,
@@ -264,40 +275,46 @@ async def task_pipeline_recover(ctx: dict, limit: int = 5):
     ]
 
     async with async_session() as session:
-        papers = (await session.execute(
-            select(Paper).where(
+        # Pre-extract (id, state) tuples — never reuse ORM instances across
+        # a commit cycle. After session.commit() the instance may be expired
+        # and next attribute access triggers a lazy load OUTSIDE the greenlet
+        # context, throwing MissingGreenlet. Plain Python tuples are immune.
+        rows = (await session.execute(
+            select(Paper.id, Paper.state).where(
                 Paper.state.in_(stuck_states),
                 Paper.arxiv_id.isnot(None),
                 Paper.updated_at < cutoff,
             ).order_by(Paper.analysis_priority.desc().nullsfirst())
             .limit(limit)
-        )).scalars().all()
+        )).all()
 
-        if not papers:
+        if not rows:
             return {"recovered": 0}
 
+        targets = [(pid, st.value if st else "?") for pid, st in rows]
+
         results = []
-        for paper in papers:
-            pid = paper.id  # capture before try to avoid MissingGreenlet after rollback
+        for pid, state_val in targets:
             pid_str = str(pid)
-            title_short = (paper.title or "")[:40]
-            state_val = paper.state.value if paper.state else "?"
             try:
-                logger.info(f"Auto-recovering paper {pid} (state={state_val}, title={title_short})")
-                result = await pipeline_service.run_full_pipeline(session, pid)
+                logger.info(f"Auto-recovering paper {pid} (state={state_val})")
+                workflow = IngestWorkflow(session)
+                await workflow.enrich_and_prepare(pid)
+                await workflow.deep_ingest(pid)
                 await session.commit()
+                # Re-read the new state via raw query — no ORM instance reuse.
+                new_state = (await session.execute(
+                    select(Paper.state).where(Paper.id == pid)
+                )).scalar_one_or_none()
                 results.append({
                     "paper_id": pid_str,
                     "from_state": state_val,
-                    "to_state": result.get("final_state", "?"),
+                    "to_state": new_state.value if new_state else "?",
                 })
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Recovery failed for {pid}: {e}")
-                results.append({
-                    "paper_id": pid_str,
-                    "error": str(e)[:100],
-                })
+                results.append({"paper_id": pid_str, "error": str(e)[:100]})
 
     return {"recovered": len(results), "results": results}
 
@@ -336,33 +353,6 @@ async def task_refresh_stale_profiles_v6(ctx: dict, threshold: int = 3, limit: i
         await session.commit()
     return {"refreshed": count}
 
-
-async def task_process_reference_roles_v6(ctx: dict, limit: int = 30):
-    """Process reference role maps for recursive discovery."""
-    from backend.database import async_session
-    from backend.services.ingest_workflow import IngestWorkflow
-    from sqlalchemy import select
-    from backend.models.agent import AgentBlackboardItem
-
-    async with async_session() as session:
-        items = (await session.execute(
-            select(AgentBlackboardItem.paper_id)
-            .where(
-                AgentBlackboardItem.item_type == "reference_role_map",
-                AgentBlackboardItem.is_verified == False,  # noqa: E712
-            )
-            .limit(limit)
-        )).scalars().all()
-        total = 0
-        for paper_id in items:
-            try:
-                workflow = IngestWorkflow(session)
-                result = await workflow.process_reference_roles(paper_id)
-                total += result.get("full_imported", 0) + result.get("shallow_imported", 0)
-            except Exception:
-                continue
-        await session.commit()
-    return {"papers_processed": len(items), "refs_imported": total}
 
 
 # ── V6 incremental sync tasks ─────────────────────────────────────
@@ -560,7 +550,6 @@ class WorkerSettings:
         task_score_candidates_v6,
         task_auto_promote_v6,
         task_refresh_stale_profiles_v6,
-        task_process_reference_roles_v6,
         # V6 incremental sync
         task_arxiv_daily_sync_v6,
         task_citation_refresh_v6,
@@ -597,8 +586,6 @@ class WorkerSettings:
         cron(task_auto_promote_v6, hour=9, minute=0),
         # V6: Refresh stale profiles daily at 05:00
         cron(task_refresh_stale_profiles_v6, hour=5, minute=0),
-        # V6: Process reference roles every 4 hours
-        cron(task_process_reference_roles_v6, hour={1, 5, 9, 13, 17, 21}, minute=45),
         # V6 incremental: arXiv daily sync at 10:00
         cron(task_arxiv_daily_sync_v6, hour=10, minute=0),
         # V6 incremental: Citation refresh Wednesday 03:00
@@ -618,5 +605,9 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _parse_redis_url(settings.redis_url)
-    max_jobs = 2
+    # Concurrency 4: tried 6 but Kimi proxy throttles under that load —
+    # 19 LLM timeouts in 60min, each forcing 3x retry → effective rate
+    # actually DROPPED from ~50/h to ~14/h. 4 keeps Kimi happy and
+    # lets every call succeed first try, which is cheaper end-to-end.
+    max_jobs = 4
     job_timeout = 1200  # 20 min per job (L4 with max_tokens=16K can take 5-10 min)

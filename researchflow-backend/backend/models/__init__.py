@@ -17,6 +17,8 @@ from backend.models.enums import (
 )
 from backend.models.paper import Paper, PaperAsset, PaperVersion
 from backend.models.analysis import PaperAnalysis, ParadigmTemplate
+from backend.models.figure import PaperFigure
+from backend.models.paper_relation import PaperRelation
 from backend.models.evidence import EvidenceUnit
 from backend.models.research import ProjectBottleneck, PaperBottleneckClaim
 from backend.models.digest import Digest
@@ -44,7 +46,7 @@ __all__ = [
     "Importance", "JobStatus", "PaperState", "PeriodType", "Tier",
     # Layer C: Paper
     "Paper", "PaperAsset", "PaperVersion",
-    "PaperAnalysis", "ParadigmTemplate",
+    "PaperAnalysis", "ParadigmTemplate", "PaperFigure", "PaperRelation",
     "EvidenceUnit",
     "DeltaCard", "DeltaCardLineage",
     "ProjectBottleneck", "PaperBottleneckClaim",

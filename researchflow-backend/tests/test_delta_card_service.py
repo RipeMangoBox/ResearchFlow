@@ -6,7 +6,6 @@ import pytest_asyncio
 
 from backend.services import delta_card_service
 from backend.models.delta_card import DeltaCard
-from backend.models.graph import IdeaDelta
 from backend.models.evidence import EvidenceUnit
 from backend.models.assertion import GraphNode, GraphAssertion
 
@@ -63,38 +62,8 @@ async def test_persist_evidence_for_card(session, sample_paper, sample_analysis_
 
 
 @pytest.mark.asyncio
-async def test_derive_idea_delta(session, sample_paper, sample_analysis_data):
-    """IdeaDelta should be derived from DeltaCard with correct links."""
-    card = await delta_card_service.build_delta_card(
-        session, paper_id=sample_paper.id, analysis_id=None,
-        analysis_data=sample_analysis_data,
-    )
-    evidence = await delta_card_service.persist_evidence_for_card(
-        session, sample_paper.id, None, card.id,
-        sample_analysis_data["evidence_units"],
-    )
-
-    idea = await delta_card_service.derive_idea_delta(
-        session, card, evidence,
-        changed_slots_graph=[{"slot_name": "denoiser", "change_type": "structural"}],
-    )
-
-    assert idea is not None
-    assert idea.paper_id == sample_paper.id
-    assert idea.delta_card_id == card.id
-    assert idea.delta_statement == card.delta_statement
-    assert idea.evidence_count == 3
-    assert idea.publish_status == "draft"
-
-    # Evidence should be linked to idea
-    for eu in evidence:
-        await session.refresh(eu)
-        assert eu.idea_delta_id == idea.id
-
-
-@pytest.mark.asyncio
 async def test_propose_assertions(session, sample_paper, sample_paradigm, sample_analysis_data):
-    """Assertions should be created for idea→evidence, idea→slot, etc."""
+    """Assertions should be created for delta_card→evidence, delta_card→slot, etc."""
     paradigm, slots = sample_paradigm
 
     card = await delta_card_service.build_delta_card(
@@ -105,17 +74,12 @@ async def test_propose_assertions(session, sample_paper, sample_paradigm, sample
         session, sample_paper.id, None, card.id,
         sample_analysis_data["evidence_units"],
     )
-    idea = await delta_card_service.derive_idea_delta(
-        session, card, evidence,
-        changed_slots_graph=[{"slot_name": "denoiser", "change_type": "structural"}],
-    )
 
     assertions = await delta_card_service.propose_assertions(
-        session, idea, evidence,
+        session, card, evidence,
         paradigm_slots=[{"id": s.id, "name": s.name} for s in slots],
     )
 
-    # Should have: 3 supported_by + 1 changes_slot (denoiser) = 4
     assert len(assertions) >= 4
     edge_types = [a.edge_type for a in assertions]
     assert "supported_by" in edge_types
@@ -124,7 +88,7 @@ async def test_propose_assertions(session, sample_paper, sample_paradigm, sample
 
 @pytest.mark.asyncio
 async def test_full_pipeline(session, sample_paper, sample_paradigm, sample_analysis_data):
-    """Full pipeline should produce delta_card + idea + evidence + assertions."""
+    """Full pipeline should produce delta_card + evidence + assertions."""
     paradigm, slots = sample_paradigm
 
     result = await delta_card_service.run_delta_card_pipeline(
@@ -142,14 +106,11 @@ async def test_full_pipeline(session, sample_paper, sample_paradigm, sample_anal
     )
 
     assert "delta_card" in result
-    assert "idea_delta" in result
     assert "evidence_units" in result
     assert "assertions" in result
 
     dc = result["delta_card"]
-    idea = result["idea_delta"]
     assert dc.paper_id == sample_paper.id
-    assert idea.delta_card_id == dc.id
     assert len(result["evidence_units"]) == 3
     assert len(result["assertions"]) >= 4
 
