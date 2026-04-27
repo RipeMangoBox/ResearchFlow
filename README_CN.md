@@ -22,6 +22,8 @@
   <img alt="MIT license" src="https://img.shields.io/badge/License-MIT-111827?style=flat-square"/>
 </p>
 
+> 🔥 **ResearchFlow 社区交流** | **[💬 微信交流 / ResearchFlow微信交流群](./WECHAT_CN.md)**
+
 ---
 
 > 🧠 **知识先行，而非执行先行。** 大多数 AI 科研工具关注“帮你跑实验、写论文”。ResearchFlow 更关注上游问题：**你的 agent 在做决策时，手里有没有足够的、结构化的、可检索的论文证据？** 没有这一层，idea 容易空泛，代码修改缺乏依据，reviewer 质疑也难以回应。
