@@ -14,6 +14,7 @@ It is navigation-only and does not participate in execution.
 - Analyze PDFs into the KB: `papers-analyze-pdf`
 - Rebuild indexes or search the KB: `papers-build-collection-index` / `papers-query-knowledge-base`
 - Compare papers in prose: `papers-query-knowledge-base`
+- Generate ideas from KB evidence + domain bottleneck diagnosis + web papers + decision rules: `idea-emerge`
 - Explore research ideas when the direction is still open-ended: `research-brainstorm-from-kb`
 - Narrow an existing direction into an executable plan: `idea-focus-coach`
 - Run strict reviewer-style pressure testing when you want challenge rather than co-creation: `reviewer-stress-test`
@@ -65,6 +66,11 @@ It is navigation-only and does not participate in execution.
 
 ### 2.3 Paper ideas and research planning
 
+- `idea-emerge`
+  - When to use: you want to generate research ideas from evidence and explicit decision rules rather than only summarize papers.
+  - Input: ResearchFlow KB evidence, domain bottleneck diagnosis, task-specific web papers, cross-domain operators, explicit decision rules, implementation traces, baselines, metrics, and task constraints.
+  - Output: `paperIDEAs/` idea-emergence note with domain bottleneck diagnosis, evidence ledger, knowledge/evidence cards, decision-rule cards, operator/gap cards, candidate score breakdown, `S3` hard gates, rejected or parked ideas, and iteration log.
+  - Routing note: use this before `research-brainstorm-from-kb` when the task starts from evidence and constraints; use brainstorm when an idea direction is already stated and needs divergent variants.
 - `research-brainstorm-from-kb`
   - When to use: you need divergent candidate ideas.
   - Input: a question or direction draft.
@@ -128,6 +134,7 @@ All skills are triggered either by description matching or explicit invocation. 
 | `papers-audit-metadata-consistency`  | suggestive            | Suggest after a batch analysis pass                                                      |
 | `papers-build-collection-index`      | suggestive            | Suggest after analysis is complete if refreshed indexes are needed                       |
 | `papers-query-knowledge-base`        | explicit / silent     | Explicit for user queries; silent as an internal dependency; code-context mode before code edits |
+| `idea-emerge`                        | explicit              | When KB evidence, domain bottleneck diagnosis, task-core web papers, cross-domain operators, and explicit decision rules should generate idea candidates |
 | `research-brainstorm-from-kb`        | explicit              | When the user asks for open-ended candidate directions                                   |
 | `idea-focus-coach`                   | explicit              | When the user has a real direction and wants to narrow it into scope cuts or MVPs        |
 | `reviewer-stress-test`               | explicit              | When the user has a formed idea and wants challenge rather than co-creation              |

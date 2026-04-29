@@ -14,6 +14,7 @@
 - 把 PDF 分析进知识库：`papers-analyze-pdf`
 - 重建索引或检索知识库：`papers-build-collection-index` / `papers-query-knowledge-base`
 - 生成论文文字对比：`papers-query-knowledge-base`
+- 从 KB 证据 + 领域瓶颈诊断 + web 论文 + 明确决策规则生成 idea：`idea-emerge`
 - 方向仍然开放、需要发散 idea：`research-brainstorm-from-kb`
 - 已经有方向，需要收敛成可执行方案：`idea-focus-coach`
 - 想做严格的审稿式压测，而不是共创收敛：`reviewer-stress-test`
@@ -71,6 +72,11 @@
 
 ### 2.3 Paper idea 与研究规划
 
+- `idea-emerge`
+  - 何时使用：你想从证据和明确决策规则中生成 research idea，而不只是总结论文。
+  - 输入：ResearchFlow KB 证据、领域瓶颈诊断、任务核心 web 论文、跨领域 operator、显式决策规则、实现痕迹、baseline、metric 和任务约束。
+  - 输出：`paperIDEAs/` 下的 idea-emergence 笔记，包含领域瓶颈诊断、evidence ledger、knowledge/evidence cards、decision-rule cards、operator/gap cards、候选评分拆解、`S3` hard gates、被拒绝或暂存的 ideas 和迭代日志。
+  - 路由说明：当任务起点是“证据和约束如何长出 idea”时先用这个；当已经有明确研究方向、需要发散变体时再用 `research-brainstorm-from-kb`。
 - `research-brainstorm-from-kb`
   - 何时使用：你需要发散候选 idea。
   - 输入：问题陈述或方向草案。
@@ -138,6 +144,7 @@
 | `papers-audit-metadata-consistency` | 建议式 | 批量分析完成后建议执行 |
 | `papers-build-collection-index` | 建议式 | 分析完成后，如需刷新索引时 |
 | `papers-query-knowledge-base` | 显式 / 静默 | 用户问答时显式；作为内部依赖时静默调用；代码修改前建议 code-context 模式 |
+| `idea-emerge` | 显式 | 需要从 KB 证据、领域瓶颈诊断、任务核心 web 论文、跨领域 operator、明确决策规则中生成 idea 候选时 |
 | `research-brainstorm-from-kb` | 显式 | 用户要求开放式候选方向时 |
 | `idea-focus-coach` | 显式 | 用户已有真实方向，想做 scope cut 或 MVP 规划时 |
 | `reviewer-stress-test` | 显式 | 用户已有较成型 idea，想先接受压测时 |

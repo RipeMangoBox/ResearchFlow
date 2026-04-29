@@ -8,6 +8,10 @@
    "description": "Guides research ideation from broad thoughts to a focused, testable plan with explicit scope cuts, prioritized hypotheses, and immediate next experiments. Calls papers-query-knowledge-base for local KB evidence and web search for frontier context. Use when the user wants co-creation and step-by-step narrowing, not review verdicts. Can be used independently from reviewer-stress-test.",
    "path": ".claude/skills/idea-focus-coach/SKILL.md"
   },
+  "idea-emerge": {
+   "description": "Generates research ideas from ResearchFlow KB evidence, domain bottleneck diagnosis, task-specific web papers, cross-domain operators, explicit research-decision rules, implementation traces, and task constraints. Use before brainstorming or focus when the user wants idea candidates with evidence anchors, novelty checks, baselines, metrics, and kill criteria rather than paper summaries or generic inspiration.",
+   "path": ".claude/skills/idea-emerge/SKILL.md"
+  },
   "notes-export-share-version": {
    "description": "Converts internal research notes into shareable Obsidian-friendly Markdown files. Use when the user explicitly asks to make a share version, export a note for sharing, hide knowledge base traces, replace internal wiki links with public paper links, rewrite internal wording for external readers, or generate a content-driven share filename.",
    "path": ".claude/skills/notes-export-share-version/SKILL.md"
@@ -49,7 +53,7 @@
    "path": ".claude/skills/research-brainstorm-from-kb/SKILL.md"
   },
   "research-workflow": {
-   "description": "Unified entry for the research pipeline. Maps current work to one stage (sync/collect/download/analyze/build/query/ideate/focus/review/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.",
+   "description": "Unified entry for the research pipeline. Maps current work to one stage (sync/collect/download/analyze/build/query/emerge/ideate/focus/review/audit/export), recommends the right existing skill/command, supports step-by-step and end-to-end guidance, and keeps stage boundaries clear without duplicating underlying capabilities.",
    "path": ".claude/skills/research-workflow/SKILL.md"
   },
   "reviewer-stress-test": {

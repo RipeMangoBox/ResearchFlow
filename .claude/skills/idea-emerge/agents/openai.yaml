@@ -1,0 +1,4 @@
+interface:
+  display_name: "Idea Emerge"
+  short_description: "Generate testable ideas from bottleneck evidence"
+  default_prompt: "Use $idea-emerge to generate scored research idea candidates from KB evidence, domain bottleneck diagnosis, task-core papers, cross-domain operators, decision rules, and implementation constraints."

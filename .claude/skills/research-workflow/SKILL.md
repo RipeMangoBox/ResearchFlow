@@ -2,7 +2,7 @@
 name: research-workflow
 description: >
   Unified entry for the research pipeline. Maps current work to one stage
-  (sync/collect/download/analyze/build/query/ideate/focus/review/audit/export),
+  (sync/collect/download/analyze/build/query/emerge/ideate/focus/review/audit/export),
   recommends the right existing skill/command, supports step-by-step and
   end-to-end guidance, and keeps stage boundaries clear without duplicating
   underlying capabilities. Note: question-bank and pdfs-compress have been
@@ -23,7 +23,7 @@ KB build chain:
 - note: sync (`papers-sync-from-zotero`) writes `Downloaded` directly, skipping download
 
 KB usage chain:
-- query (including comparison requests) → ideate → focus → review
+- query (including comparison requests) → emerge → ideate → focus → review
 
 Support chain:
 - audit / export / code-context
@@ -53,6 +53,8 @@ Support chain:
   - `papers-build-collection-index` (refreshes both `paperCollection/index.jsonl` for agents and Obsidian navigation pages)
 - query
   - `papers-query-knowledge-base` (includes code-context mode for pre-coding retrieval; also handles comparison requests)
+- emerge
+  - `idea-emerge` (generates idea candidates from KB evidence, domain bottleneck diagnosis, task-core web papers, cross-domain operators, explicit decision rules, implementation traces, and task constraints)
 - ideate
   - `research-brainstorm-from-kb`
 - focus
@@ -72,6 +74,7 @@ Support chain:
 - analyze: PDF path or `Downloaded` queue
 - build: no extra input (defaults to current repository)
 - query: task description/keywords (optional changed files, mode=brief/deep; comparison requests also route here)
+- emerge: KB evidence, domain bottleneck diagnosis, task-core web papers, cross-domain literature, explicit decision rules, implementation traces, baselines, metrics, and task constraints
 - ideate: research problem statement
 - focus: initial idea + goal preferences (can come from ideate or be independent input)
 - review: idea / roadmap / full paper (can come from focus or be independent input)

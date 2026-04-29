@@ -3,12 +3,12 @@
 Single source of truth: keep the maintained skill library in `.claude/skills`.
 If you also want Codex-compatible paths, run `python3 scripts/setup_shared_skills.py` on macOS/Linux or `py -3 scripts\setup_shared_skills.py` on Windows to generate `.codex/skills` aliases without copying.
 
-This skills directory supports the local paper workflow covering **sync -> collect -> download -> analyze -> build -> query -> ideate -> focus -> review**.
+This skills directory supports the local paper workflow covering **sync -> collect -> download -> analyze -> build -> query -> emerge -> ideate -> focus -> review**.
 
 ### 1. Workflow entry
 
 - **research-workflow**
-  - Routes work to one stage among sync / collect / download / analyze / build / query / ideate / focus / review / audit / export.
+  - Routes work to one stage among sync / collect / download / analyze / build / query / emerge / ideate / focus / review / audit / export.
   - Returns the current stage, required inputs, suggested command or skill, expected outputs, and next step.
 
 ### 2. Paper pipeline skills
@@ -40,6 +40,10 @@ This skills directory supports the local paper workflow covering **sync -> colle
 
 ### 4. Research ideation and review
 
+- **idea-emerge**
+  - Generate research idea candidates from local KB evidence, domain bottleneck diagnosis, task-core web papers, cross-domain operators, explicit decision rules, implementation traces, and task constraints.
+  - Outputs domain bottleneck diagnosis, evidence ledger, cards, candidate score breakdown, `S3` hard gates, rejected or parked ideas, and next-skill handoff.
+  - Use this before open-ended brainstorming when the input is evidence and constraints rather than a cleanly stated research question.
 - **research-brainstorm-from-kb**
   - Turn a research question into structured idea notes using the local knowledge base.
 - **idea-focus-coach** (independent)
@@ -77,6 +81,7 @@ This skills directory supports the local paper workflow covering **sync -> colle
 - Need a metadata quality pass -> `papers-audit-metadata-consistency`
 - Need to search, summarize, compare, or cite papers in prose -> `papers-query-knowledge-base`
 - Need paper suggestions before coding -> `papers-query-knowledge-base` (code-context mode)
+- Need to turn KB evidence, domain bottleneck diagnosis, task-core papers, cross-domain operators, and decision rules into idea candidates -> `idea-emerge`
 - Need idea generation backed by the knowledge base while the direction is still open-ended -> `research-brainstorm-from-kb`
 - Need collaborative narrowing from a broad-but-real idea to an executable plan -> `idea-focus-coach`
 - Need strict reviewer-mode challenge with repair paths -> `reviewer-stress-test`
