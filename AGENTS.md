@@ -2,6 +2,7 @@
 
 > Architecture & data model: [ARCHITECTURE.md](researchflow-backend/ARCHITECTURE.md)
 > Deployment: [DEPLOY.md](researchflow-backend/DEPLOY.md)
+> Analysis plan & execution contract: [analysis_plan.md](docs/analysis_plan.md)
 
 ## Source of truth
 
@@ -94,3 +95,8 @@ Materialization (pure DB):
 4. Pipeline steps are idempotent — already-completed steps are auto-skipped
 5. Metadata observations are append-only — canonical resolver picks best value
 6. DeltaCard publish gate: evidence_refs ≥ 2
+7. Planned analysis batches must declare goal, source, selection rule, budget, and output target before agents run
+8. Agents must consume only declared context and preserve source anchors in blackboard/DB outputs
+9. Deep analysis runs only after deterministic DeepIngestScore promotion; graph candidates must pass node/edge score gates
+10. Paper reports and profiles must be generated from verified blackboard items, not from new unsupported claims
+11. Generated exports, snapshots, backups, local storage, and symlinks stay out of Git

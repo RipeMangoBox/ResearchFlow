@@ -180,6 +180,21 @@ Blackboard 模式 (agent_blackboard_items 表):
 | 2 | 比较集不是论文自己说了算 | baseline_comparator_service: 从 DB 查 4 个来源自动补齐 |
 | 3 | 高价值结论必须有证据 | DeltaCard 发布门控: evidence_refs ≥ 2 |
 
+### 4.4 分析计划契约
+
+批量分析的总览和 agent 执行约束维护在
+[`docs/analysis_plan.md`](../docs/analysis_plan.md)。架构层只定义能力边界；
+实际执行时，每个批次必须先声明 goal、source、selection rule、budget 和
+output target，再按 6-Agent Pipeline 推进。
+
+执行约束:
+
+- 只通过 API/service 写入 PostgreSQL；Markdown/Obsidian 是导出投影。
+- 每个 agent 只消费声明过的上下文，并把证据 anchor 写入 blackboard/DB。
+- DeepIngestScore、node score、edge score 和 DeltaCard evidence gate 是硬门槛。
+- paper_report 与 kb_profile 只能使用已验证 blackboard items，不新增无证据结论。
+- 生成导出、快照、备份、本地 storage 和软链接不得作为源码提交。
+
 ---
 
 ## 5. Obsidian Vault 导出

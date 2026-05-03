@@ -41,6 +41,7 @@ TODO.md
 # === Paper data (large / personal, not committed) ===
 paperPDFs/
 paperAnalysis/processing/
+/obsidian-vault
 
 # === PaperBite (separate project) ===
 PaperBite/
@@ -58,3 +59,9 @@ linkedCodebases/*
 
 # === Assets (originals too large) ===
 assets/LOGO.original.png
+
+# === Local snapshots / generated runtime state ===
+/ResearchFlow_remote_snapshot_*/
+researchflow-backend/backups/
+researchflow-backend/storage
+.claude/skills/ppt-master
